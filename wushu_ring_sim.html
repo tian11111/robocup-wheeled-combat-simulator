@@ -1,0 +1,1833 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2026 武术擂台·轮式格斗机器人 决策逻辑仿真器</title>
+<style>
+  :root{
+    --bg:#14171c; --panel:#1e242c; --panel2:#252d37; --line:#333d49;
+    --txt:#dbe4ee; --muted:#8b98a6; --acc:#4da3ff;
+    --st-wait:#8b98a6; --st-mount:#ff9f43; --st-search:#4da3ff;
+    --st-attack:#ff5b5b; --st-score:#3ddc84; --st-recover:#b07bff; --st-done:#5a6472;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{background:var(--bg); color:var(--txt); font-family:"Microsoft YaHei","PingFang SC",sans-serif; font-size:13px;}
+  header{
+    display:flex; align-items:center; gap:14px; padding:10px 16px;
+    background:linear-gradient(180deg,#202834,#1a2028); border-bottom:1px solid var(--line);
+  }
+  header h1{font-size:17px; letter-spacing:1px; white-space:nowrap;}
+  header .warn{
+    font-size:12px; color:#ffd166; background:#3a3013; border:1px solid #6b5516;
+    padding:3px 10px; border-radius:4px; white-space:nowrap;
+  }
+  header .ver{margin-left:auto; color:var(--muted); font-size:11px; white-space:nowrap;}
+  .main{display:flex; gap:12px; padding:12px; align-items:flex-start;}
+  .left{flex:0 0 auto;}
+  canvas{
+    display:block; background:#2a3038; border:1px solid var(--line); border-radius:6px; cursor:default;
+  }
+  .hint{color:var(--muted); font-size:11px; margin-top:6px; line-height:1.7;}
+  .right{flex:1 1 300px; display:flex; flex-direction:column; gap:10px; min-width:280px;}
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px 12px;}
+  .panel h3{font-size:12px; color:var(--muted); margin-bottom:6px; letter-spacing:1px; font-weight:normal;}
+  .st-row{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;}
+  .st-row .lab{color:var(--muted); width:64px;}
+  #stateBadge,#themBadge{
+    font-size:16px; font-weight:bold; padding:2px 10px; border-radius:4px; letter-spacing:1px;
+  }
+  #actionText{font-size:14px; font-weight:bold; color:#fff;}
+  #subText,#themSub{color:var(--muted); font-size:12px;}
+  .scores{display:flex; gap:14px; margin-top:6px; color:var(--txt); font-size:13px; flex-wrap:wrap;}
+  .scores b{font-size:16px; color:#fff;}
+  .fsm-chain{color:var(--muted); font-size:10.5px; margin-top:6px; letter-spacing:.3px; line-height:1.8;}
+  #log{
+    height:190px; overflow-y:auto; font-family:Consolas,monospace; font-size:11.5px; line-height:1.75;
+    background:#14181e; border:1px solid var(--line); border-radius:4px; padding:6px 8px;
+  }
+  #log .t{color:#5a6472;}
+  #log .us{color:#9fd0ff;}
+  #log .them{color:#ffb3b3;}
+  #log .score{color:#ffd166;}
+  #log .warn{color:#ff9f9f;}
+  #sensors{display:grid; grid-template-columns:1fr 1fr; gap:3px 10px;}
+  .sen{display:flex; align-items:center; gap:6px; font-size:11.5px; padding:1px 0;}
+  .sen .nm{color:var(--muted); width:74px; flex:0 0 auto;}
+  .sen .val{font-family:Consolas,monospace; min-width:44px; text-align:right;}
+  .sen .bar{flex:1; height:6px; background:#14181e; border-radius:3px; overflow:hidden;}
+  .sen .bar i{display:block; height:100%; border-radius:3px; transition:background .1s;}
+  .bottom{display:flex; gap:12px; padding:0 12px 14px; flex-wrap:wrap;}
+  .bottom .panel{flex:1 1 320px;}
+  .sliders{display:grid; grid-template-columns:repeat(auto-fill,minmax(215px,1fr)); gap:6px 14px;}
+  .sliders label{display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--muted); white-space:nowrap;}
+  .sliders input[type=range]{flex:1; min-width:60px; accent-color:var(--acc);}
+  .sliders span{font-family:Consolas,monospace; color:var(--txt); min-width:38px; text-align:right;}
+  .ctrl-row{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px;}
+  button{
+    background:var(--panel2); color:var(--txt); border:1px solid var(--line); border-radius:4px;
+    padding:5px 12px; font-size:12px; cursor:pointer;
+  }
+  button:hover{border-color:var(--acc); color:#fff;}
+  button.primary{background:#1d4a75; border-color:#2d6fae; color:#fff; font-weight:bold;}
+  button.primary:hover{background:#25629c;}
+  button.active{background:#2d6fae; border-color:#4da3ff; color:#fff;}
+  button.danger{background:#5a2330; border-color:#a03c4f;}
+  button.danger:hover{border-color:#ff5b5b;}
+  .grp{display:inline-flex; border:1px solid var(--line); border-radius:4px; overflow:hidden;}
+  .grp button{border:none; border-radius:0; padding:5px 10px;}
+  .sep{width:1px; height:20px; background:var(--line);}
+  .scene-btns{margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;}
+  .scene-btns .cap{color:var(--muted); font-size:11px; margin-right:2px;}
+  select{background:var(--panel2); color:var(--txt); border:1px solid var(--line); border-radius:4px; padding:2px 6px; font-size:11px;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🥊 2026 武术擂台·轮式格斗机器人 — 决策逻辑仿真器</h1>
+  <div class="warn">⚠ 仅决策逻辑仿真，物理/标定需实车验证</div>
+  <div class="ver">规则参考: RoboCup 2026 轮式格斗 · 场地 3.8×3.8m / 擂台 2.4×2.4m·高6cm · 双车同算法 · AI Agent 可无头链接(见 SIMULATOR.md)</div>
+</header>
+
+<div class="main">
+  <div class="left">
+    <canvas id="cv" width="800" height="800"></canvas>
+    <div class="hint">
+      🖱 拖拽: 移动机器人 / 对手 / 能量块（可拖到任意位置）<br>
+      🖲 滚轮(悬停车上): 旋转车头 · 按钮 ⟲⟳: 旋转 15°<br>
+      ⌨ Enter: 发令(两车同时 arm) · R: 重置 · 无头/子进程模式: node sim_server.js / sim_battle.js (见 SIMULATOR.md)
+    </div>
+  </div>
+
+  <div class="right">
+    <div class="panel">
+      <div class="st-row"><span class="lab">我方状态</span><span id="stateBadge">WAIT_START</span><span id="subText"></span></div>
+      <div class="st-row"><span class="lab">对手状态</span><span id="themBadge">WAIT_START</span><span id="themSub"></span></div>
+      <div class="st-row"><span class="lab">当前动作</span><span id="actionText">等待发令</span></div>
+      <div class="scores">
+        <span>我方 <b id="scoreUs">0</b></span>
+        <span>对手 <b id="scoreThem">0</b></span>
+        <span>比赛 <b id="clock">2:00</b></span>
+      </div>
+      <div class="fsm-chain">双车同算法: WAIT_START → MOUNT_RING(姿态确认→倒车登台→失败前冲找墙→换面→正冲备选) → SEARCH(对角IR→转向→视觉分类) → ATTACK / SCORE_BLOCK / 绕行 → RECOVER(屁股朝擂台→登台→贴边回中→计数超限) → FINISHED</div>
+    </div>
+
+    <div class="panel">
+      <h3>事件日志 [fsm]</h3>
+      <div id="log"></div>
+    </div>
+
+    <div class="panel">
+      <h3 style="display:flex; align-items:center; gap:8px;">传感器 (14 路 · 灰度≈1000台上白/300黑带/0走道 · 红外0~1)
+        <select id="sensSel"><option value="us">我方</option><option value="them">对手</option></select>
+      </h3>
+      <div id="sensors"></div>
+    </div>
+  </div>
+</div>
+
+<div class="bottom">
+  <div class="panel">
+    <h3>参数 (实时生效)</h3>
+    <div class="sliders" id="sliders"></div>
+  </div>
+  <div class="panel">
+    <h3>控制 / 场景</h3>
+    <div class="ctrl-row">
+      <button class="primary" id="btnArm">▶ 发令 (arm 双车)</button>
+      <button class="danger" id="btnReset">↺ 重置</button>
+      <span class="sep"></span>
+      <span class="grp" id="speedGrp">
+        <button data-sp="0.5">0.5x</button>
+        <button data-sp="1" class="active">1x</button>
+        <button data-sp="2">2x</button>
+      </span>
+      <span class="sep"></span>
+      <button id="btnRotL">⟲ 左转</button>
+      <button id="btnRotR">⟳ 右转</button>
+    </div>
+    <div class="scene-btns">
+      <span class="cap">场景快捷:</span>
+      <button id="scCenter">车·台上中心</button>
+      <button id="scEdge">车·台边黑带</button>
+      <button id="scFloor">车·走道</button>
+      <button id="scHang">车·悬空边缘</button>
+      <span class="sep"></span>
+      <button id="scOppOn">对手·上台</button>
+      <button id="scOppGo">对手·回出发区</button>
+      <span class="sep"></span>
+      <input type="file" id="importPy" accept=".py" style="display:none">
+      <button id="btnImport" title="选一个小车决策程序(.py, 含 decide(obs)) 上传到本地服务器">📤 导入小车程序</button>
+      <button id="btnImportDir" title="导入实车代码文件夹(不复制, 直接引用路径, 改代码即时生效)">📁 导入代码文件夹</button>
+      <span class="cap" style="margin-left:6px;">我方</span>
+      <select id="selUs"></select>
+      <span class="cap">对手</span>
+      <select id="selThem"></select>
+      <button id="btnRemoteStart" title="用选择的程序实时对战">▶ 远程对战</button>
+      <button id="btnRemoteStop">⏹ 停止</button>
+      <span id="remoteStatus" style="color:var(--muted); font-size:11px;"></span>
+    </div>
+    <div id="dirImportRow" style="display:none; margin-top:6px; gap:6px; align-items:center; font-size:11px;">
+      <input id="dirPath" placeholder="文件夹路径, 如 D:\project\robocup\robocup-2026-wheeled-combat" style="width:330px; padding:3px 6px; background:#14181e; border:1px solid var(--line); border-radius:4px; color:#ddd;">
+      <input id="dirEntry" placeholder="入口(留空自动: tools/sim_robot_main.py→main.py)" style="width:230px; padding:3px 6px; background:#14181e; border:1px solid var(--line); border-radius:4px; color:#ddd;">
+      <input id="dirName" placeholder="名字(留空=目录名)" style="width:120px; padding:3px 6px; background:#14181e; border:1px solid var(--line); border-radius:4px; color:#ddd;">
+      <button id="btnDirGo">导入</button>
+      <span id="dirStatus" style="color:var(--muted);"></span>
+    </div>
+    <div id="remoteOutWrap" style="margin-top:8px; display:none;">
+      <div style="color:var(--muted); font-size:11px; margin-bottom:4px;">小车程序输出面板 (子进程 stdout/stderr/事件)</div>
+      <div id="remoteOut" style="height:110px; overflow-y:auto; font-family:Consolas,monospace; font-size:11px; line-height:1.7; background:#14181e; border:1px solid var(--line); border-radius:4px; padding:6px 8px; color:#9fd0ff;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ===== CORE-BEGIN ============================================================
+ * 纯逻辑核心（无 DOM 依赖）：双车对称场景/传感器/状态机/物理/计分。
+ * 我方(US)与对手(THEM)是两台完全同构的车, 共用同一套 FSM 与 14 路传感器,
+ * 可由 GUI / HTTP API / 子进程(用户自己的小车程序) 任意方式控制。
+ * 确定性: resetAll({seed}) 后所有随机(噪声/识别/能量块摆放)可复现。
+ * ========================================================================== */
+
+// ---------- 世界常量 (m) ----------
+const FIELD = 3.8, CENTER = 1.9, HALF = 1.2;
+const EL = CENTER - HALF, ER = CENTER + HALF;      // 擂台边 0.7 / 3.1
+const BODY = 0.16;                                  // 车身碰撞半径
+
+// ---------- 通用小车参数 ----------
+// 物理/显示不再假定所有队伍都是 26cm 方车。长度、宽度决定车身
+// footprint；frontExtent/rearExtent 包含铲子/前后外挂伸出量，用于台沿
+// 连续碰撞；collisionRadius 用于车-车/车-能量块的保守分离。
+const DEFAULT_VEHICLE = Object.freeze({
+  id:'default',
+  length:0.26, width:0.26, height:0.09,
+  collisionRadius:BODY,
+  frontExtent:0.22, rearExtent:0.14, sideExtent:0.14,
+  shovelLength:0.04, shovelWidth:0.24,
+  maxSpeed:1.5, maxTurnRate:4.0, accelK:12,
+  mass:1.0, pushFactor:1.0,
+});
+function vehicleNumber(value, fallback, lo, hi){
+  const n=Number(value);
+  return Number.isFinite(n) ? Math.max(lo,Math.min(hi,n)) : fallback;
+}
+function cloneVehicle(v){ return { ...v }; }
+function normalizeVehicle(input, base){
+  const src = input && typeof input==='object' ? input : {};
+  const b = { ...DEFAULT_VEHICLE, ...(base||{}), ...src };
+  b.id = String(b.id || 'custom');
+  b.length = vehicleNumber(b.length, DEFAULT_VEHICLE.length, 0.08, 0.8);
+  b.width = vehicleNumber(b.width, DEFAULT_VEHICLE.width, 0.08, 0.8);
+  b.height = vehicleNumber(b.height, DEFAULT_VEHICLE.height, 0.02, 0.4);
+  b.shovelLength = vehicleNumber(b.shovelLength, DEFAULT_VEHICLE.shovelLength, 0, 0.5);
+  b.shovelWidth = vehicleNumber(b.shovelWidth, DEFAULT_VEHICLE.shovelWidth, 0.02, 0.8);
+  b.collisionRadius = vehicleNumber(
+    b.collisionRadius, Math.max(b.length,b.width)/2, 0.04, 0.6
+  );
+  b.collisionRadius = Math.max(b.collisionRadius, Math.max(b.length,b.width)/2);
+  b.frontExtent = vehicleNumber(b.frontExtent, Math.max(b.length/2,b.shovelLength), 0.04, 0.9);
+  b.rearExtent = vehicleNumber(b.rearExtent, b.length/2, 0.04, 0.9);
+  b.sideExtent = vehicleNumber(b.sideExtent, b.width/2, 0.04, 0.9);
+  b.frontExtent = Math.max(b.frontExtent, b.length/2 + b.shovelLength);
+  b.rearExtent = Math.max(b.rearExtent, b.length/2);
+  b.sideExtent = Math.max(b.sideExtent, b.width/2, b.shovelWidth/2);
+  b.maxSpeed = vehicleNumber(b.maxSpeed, DEFAULT_VEHICLE.maxSpeed, 0.05, 3.0);
+  b.maxTurnRate = vehicleNumber(b.maxTurnRate, DEFAULT_VEHICLE.maxTurnRate, 0.1, 12.0);
+  b.accelK = vehicleNumber(b.accelK, DEFAULT_VEHICLE.accelK, 1, 40);
+  b.mass = vehicleNumber(b.mass, DEFAULT_VEHICLE.mass, 0.05, 10);
+  b.pushFactor = vehicleNumber(b.pushFactor, DEFAULT_VEHICLE.pushFactor, 0.1, 3);
+  return b;
+}
+
+// ---------- 可调参数 ----------
+const params = {
+  EDGE_THRESHOLD: 400,      // 灰度边缘阈值(接近黑带; SEARCH 扫描避边用)
+  FALL_THRESHOLD: 150,      // 掉台判定(灰度低于此=不在台上; 登台 climbed 信号用)
+  ON_STAGE_THRESHOLD: 500,  // 登台判定(灰度高于此=台上)
+  grayNoise: 30,            // 灰度噪声 ±
+  irNoise: 0.02,            // 红外噪声 ±
+  IR_TRIGGER: 0.35,         // 红外触发阈值
+  MOUNT_SPEED: 780,         // 倒车冲台速度(代码单位, 显示 780/800)
+  classifyRate: 100,        // 视觉识别成功率 %
+  RECOVER_LIMIT: 3,         // 恢复次数上限
+  simSpeed: 1,              // 倍速(仅 GUI 使用)
+  seed: null,               // 随机种子: null=真随机, 数字=可复现
+};
+
+// ---------- 可复现随机 ----------
+let rng = Math.random;
+function mulberry32(a){
+  return function(){
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function setSeed(s){ rng = (s === undefined || s === null) ? Math.random : mulberry32(s); }
+
+// ---------- 状态机枚举 ----------
+const S = Object.freeze({
+  WAIT:'WAIT_START', MOUNT:'MOUNT_RING', SEARCH:'SEARCH', ATTACK:'ATTACK',
+  SCORE:'SCORE_BLOCK', RECOVER:'RECOVER', DONE:'FINISHED', MANUAL:'MANUAL',
+});
+
+// ---------- 机器人 (我方/对手 完全同构) ----------
+function mkRobot(cfg){
+  const vehicle = normalizeVehicle(cfg.vehicle);
+  return {
+    name: cfg.name, color: cfg.color, headColor: cfg.headColor,
+    x: cfg.x, y: cfg.y, th: cfg.th, v:0, w:0, vx:0, vy:0,
+    vehicle, r:vehicle.collisionRadius,
+    wasOn:false, dropPending:false,
+    fsm: {
+      state:S.WAIT, action:'等待发令', armed:false, manual:false, timer:120,
+      mount:{ phase:'posture', t:0, faces:0, rushSeen:false, climbed:false, backoffT:0, fwdAltAligned:false },
+      rec:{ phase:'spin', t:0, count:0, fallDir:0 },
+      scan:{ dir:1, phase:'scan', target:null, t:0, side:1 },
+      scores:{ us:0, them:0 },
+      bonusUs:0, bonusThem:0, simT:0, doneReason:'',
+      inactiveT:0, inactiveWarned:false,
+    },
+    sens:{ gF:0,gB:0,gL:0,gR:0, uL:0,uR:0, sFL:0,sFR:0, dLF:0,dRF:0,dLB:0,dRB:0, f:0, r:0 },
+    probe:{},
+  };
+}
+const US   = mkRobot({ name:'我方', color:'#eceff3', headColor:'#4da3ff', x:0.35, y:0.3, th:0.852 });
+const THEM = mkRobot({ name:'对手', color:'#7a828c', headColor:'#ff5b5b', x:3.55, y:3.6, th:-2.2 });
+const robots = [US, THEM];
+// 共享计分板: 双方 fsm.scores 指向同一对象; us=我方分, them=对手分
+const scoreBoard = { us: 0, them: 0 };
+US.fsm.scores = THEM.fsm.scores = scoreBoard;
+const gain = (r, pts) => { if (r === US) scoreBoard.us += pts; else scoreBoard.them += pts; };
+const oppGain = (r, pts) => gain(r === US ? THEM : US, pts);
+const bot = US, opp = THEM;            // 兼容别名
+const fs = US.fsm, fs2 = THEM.fsm;     // 兼容别名
+const SENS = US.sens, SENS2 = THEM.sens;
+
+// ---------- 能量块 ----------
+const buffs = [
+  { kind:'buff', name:'增益块', x:1.35, y:1.35, vx:0, vy:0, r:0.075, wasOn:true, out:false, contactThisStep:[], lastContactRole:null },
+  { kind:'buff', name:'增益块', x:2.5,  y:2.6, vx:0, vy:0, r:0.075, wasOn:true, out:false, contactThisStep:[], lastContactRole:null },
+];
+const deb = { kind:'debuff', name:'减益块', x:1.6, y:2.4, vx:0, vy:0, r:0.075, wasOn:true, out:false, contactThisStep:[], lastContactRole:null };
+const blocks = [buffs[0], buffs[1], deb];
+const objs = blocks;                    // 兼容别名(仅能量块)
+const matchScore = { phase:'both_off', t:0 };
+// ---------- 裁判比赛阶段 ----------
+// PREP=最多60s赛前准备, READY=准备结束等待发令, RUNNING=正赛,
+// PAUSED=暂停/调试, FINISHED=比赛结束。旧 API 仍可直接 arm() 开始正赛。
+const matchControl = {
+  phase:'PREP', prepRemaining:60, matchTimer:120, paused:false,
+  restartPenalties:{ us:0, them:0 },
+};
+
+// ---------- 日志 ----------
+const logEvents = [];
+let onLog = null;
+function logFor(r, msg, cls){
+  const e = { t: +r.fsm.simT.toFixed(1), msg: `[${r.name}] ${msg}`, cls: cls || (r===US?'us':'them') };
+  logEvents.push(e);
+  if(logEvents.length > 500) logEvents.shift();
+  if(onLog) onLog(e);
+}
+function log(msg, cls){ logFor(US, msg, cls); }
+function getLog(){ return logEvents.map(e => ({ ...e })); }
+
+// ---------- 工具 ----------
+const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+const norm = a=> { while(a>Math.PI)a-=2*Math.PI; while(a<-Math.PI)a+=2*Math.PI; return a; };
+const dist = (a,b)=> Math.hypot(b.x-a.x, b.y-a.y);
+function onPlatform(x,y){ return x>=EL && x<=ER && y>=EL && y<=ER; }
+const onStage = r => onPlatform(r.x, r.y);
+function nearestPlatPoint(x,y){ return { x:clamp(x,EL,ER), y:clamp(y,EL,ER) }; }
+function frontPt(r,d){ return { x:r.x+Math.cos(r.th)*d, y:r.y+Math.sin(r.th)*d }; }
+function rearPt(r,d){ return { x:r.x-Math.cos(r.th)*d, y:r.y-Math.sin(r.th)*d }; }
+function fullOn(r){ return onPlatform(r.x,r.y)&&onPlatform(frontPt(r,0.16).x,frontPt(r,0.16).y)&&onPlatform(rearPt(r,0.16).x,rearPt(r,0.16).y); }
+function hangOn(r){ return onPlatform(r.x,r.y) && !onPlatform(frontPt(r,0.16).x,frontPt(r,0.16).y); }
+const other = r => r===US ? THEM : US;
+const dirName = a=> { const d=norm(a-Math.PI/2); if(Math.abs(d)<0.4)return '南'; if(Math.abs(norm(a))<0.4)return '东'; if(Math.abs(d-Math.PI)<0.4||Math.abs(d+Math.PI)<0.4)return '北'; return '西'; };
+
+// ---------- 场地灰度模型 ----------
+function fieldGray(x,y){
+  if(x<EL||x>ER||y<EL||y>ER) return 0;                        // 走道≈0
+  const dx=Math.abs(x-CENTER)/HALF, dy=Math.abs(y-CENTER)/HALF;
+  const t=Math.max(dx,dy);                                    // 0=中心 1=整圈黑边
+  let g = 300 + 700*(1-t);                                    // 中心≈1000, 黑带≈300
+  if(Math.abs(x-CENTER)<0.30 && Math.abs(y-CENTER)<0.30) g = 650;  // 中央红区(白"武")
+  return g;
+}
+function distToNearestEdge(x,y){
+  return Math.min(Math.abs(x-EL),Math.abs(x-ER),Math.abs(y-EL),Math.abs(y-ER));
+}
+
+// ---------- 传感器 (每车 14 路, 完全对称) ----------
+function irProbeFor(r, ox,oy,ang,half,range,inclEdge,inclFence){
+  let best=null;
+  const targets = blocks.concat([other(r)]);
+  for(const o of targets){
+    const dx=o.x-ox, dy=o.y-oy, d=Math.hypot(dx,dy);
+    if(d>range+o.r) continue;
+    const a=norm(Math.atan2(dy,dx)-ang);
+    if(Math.abs(a)>half+Math.asin(Math.min(1,o.r/Math.max(0.05,d)))) continue;
+    const dd=d-o.r;
+    if(!best||dd<best.d) best={d:dd, obj:o};
+  }
+  if(inclEdge && !onPlatform(ox,oy)){          // 从台下探测台沿
+    for(let s=0.05; s<=range; s+=0.05){
+      const px=ox+Math.cos(ang)*s, py=oy+Math.sin(ang)*s;
+      if(onPlatform(px,py)){ if(!best||s<best.d) best={d:s, obj:null}; break; }
+    }
+  }
+  if(inclFence){                                // 围栏(后向)
+    const s=fenceDist(ox,oy,ang,range);
+    if(s!=null && (!best||s<best.d)) best={d:s, obj:null};
+  }
+  return best;
+}
+function fenceDist(ox,oy,ang,range){
+  for(let s=0.05; s<=range; s+=0.05){
+    const px=ox+Math.cos(ang)*s, py=oy+Math.sin(ang)*s;
+    if(px<0.05||px>3.75||py<0.05||py>3.75) return s;
+  }
+  return null;
+}
+// 台壁反射: 走道上铲前红外对白台壁的反射距离(真机物理)。
+// 不模拟的话走道上 sFL/sFR 恒≈0, 实车 FSM 的 front_edge_ahead 会误判
+// "铲前悬空"→ 危机刹死, 永远进不了登台流程(真机走道朝台壁有强反射)。
+function wallProbe(px,py,ang,range){
+  if(onPlatform(px,py)) return null;   // 起点已在台上 → 无台壁可反射(台面由 sv 逻辑处理)
+  for(let s=0.06; s<=range; s+=0.06){
+    if(onPlatform(px+Math.cos(ang)*s, py+Math.sin(ang)*s)) return s;
+  }
+  return null;
+}
+const irVal = (pr, range)=> pr==null? 0 : clamp(1 - pr.d/range, 0, 1);
+
+function sampleSensorsFor(r){
+  const gN = ()=> (rng()*2-1)*params.grayNoise;
+  const iN = ()=> (rng()*2-1)*params.irNoise;
+  const c = r, sens = r.sens, probe = r.probe, off=0.11;
+  const pt = a=> ({ x:c.x+Math.cos(c.th+a)*off, y:c.y+Math.sin(c.th+a)*off });
+  const f=pt(0), b=pt(Math.PI), l=pt(Math.PI/2), rr=pt(-Math.PI/2);
+  sens.gF = clamp(fieldGray(f.x,f.y)+gN(), 0, 1000);
+  sens.gB = clamp(fieldGray(b.x,b.y)+gN(), 0, 1000);
+  sens.gL = clamp(fieldGray(l.x,l.y)+gN(), 0, 1000);
+  sens.gR = clamp(fieldGray(rr.x,rr.y)+gN(), 0, 1000);
+
+  // 铲下红外 ×2 (铲子底部两点, 0/1)
+  const fw = (d,lat)=> ({ x:c.x+Math.cos(c.th)*d - Math.sin(c.th)*lat, y:c.y+Math.sin(c.th)*d + Math.cos(c.th)*lat });
+  const pL=fw(0.14,0.06), pR=fw(0.14,-0.06);
+  sens.uL = onPlatform(pL.x,pL.y)?1:0;
+  sens.uR = onPlatform(pR.x,pR.y)?1:0;
+
+  // 铲前红外 ×2 (目标物/台壁反射/地面反射取近者)。
+  // 真机语义(2026-08-12): 铲前红外**朝下照地**——走道/台面恒有反射,
+  // 只有"车在台上且铲前越过台沿"(悬空)才无反射。原实现走道 sFL≈0 →
+  // 实车 FSM front_edge_ahead 误判"铲前悬空" → align_reverse 姿态确认
+  // 失败 → 登台卡死。地面反射值 0.3(<内置 IR_TRIGGER 0.35, 不误触发找墙;
+  // >SimDriver 0.15, 实车侧判"有反射")。
+  const sfl=(px,py)=>{
+    const p=irProbeFor(r, px,py, c.th, 0.30, 0.9, !onPlatform(px,py), false);
+    const w=wallProbe(px,py,c.th,0.9);
+    let g=0;
+    if(!onPlatform(c.x,c.y)) g=0.3;              // 车在走道 → 铲前照走道地面
+    else if(onPlatform(px,py)) g=1;              // 车在台上+铲前台上 → 台面(sv 已有)
+    // 车在台上+铲前台下 = 铲子伸出台沿(悬空) → 无反射
+    let best=null;
+    const cand=[p, w!=null?{d:w,obj:'台壁'}:null, g?{d:0.9*(1-g),obj:'地面'}:null];
+    for(const cdt of cand){ if(cdt && (!best || cdt.d<best.d)) best=cdt; }
+    return best;
+  };
+  probe.sFL=sfl(pL.x,pL.y); probe.sFR=sfl(pR.x,pR.y);
+  let sv=0;
+  if(onPlatform(c.x,c.y)){ const sp=frontPt(r,0.35); sv = onPlatform(sp.x,sp.y)? 1 : 0.12; }
+  sens.sFL = Math.max(irVal(probe.sFL,0.9), sv) + iN();
+  sens.sFR = Math.max(irVal(probe.sFR,0.9), sv) + iN();
+
+  // 对角红外 ×4
+  const diag=(ang)=>{ probe[ang.k]=irProbeFor(r,c.x,c.y, ang.a, 0.55, 1.6, false, false); return sens[ang.k]=irVal(probe[ang.k],1.6)+iN(); };
+  diag({k:'dLF',a:c.th-Math.PI/4}); diag({k:'dRF',a:c.th+Math.PI/4});
+  diag({k:'dLB',a:c.th+3*Math.PI/4}); diag({k:'dRB',a:c.th-3*Math.PI/4});
+
+  // 正前红外
+  probe.f = irProbeFor(r,c.x,c.y, c.th, 0.4, 2.2, !onPlatform(c.x,c.y), false);
+  let fv = irVal(probe.f, 2.2);
+  if(onPlatform(c.x,c.y)){ const sp=frontPt(r,0.25); fv = Math.max(fv, onPlatform(sp.x,sp.y)? 1 : 0.12); }
+  sens.f = fv + iN();
+
+  // 后向红外
+  probe.r = irProbeFor(r,c.x,c.y, c.th+Math.PI, 0.7, 1.3, false, true);
+  sens.r = irVal(probe.r, 1.3) + iN();
+  for(const k in sens) sens[k] = clamp(sens[k], 0, k[0]==='g' ? 1000 : 1.2);
+}
+function sampleSensors(){ sampleSensorsFor(US); }
+
+// ---------- FSM 辅助 (按车参数化) ----------
+function setAct(r,a){ r.fsm.action = a; }
+function enterSearchFor(r){
+  const st = r.fsm;
+  st.state=S.SEARCH; st.rec.count=0;
+  st.scan = { dir: rng()<0.5?1:-1, phase:'scan', target:null, t:0, side:1 };
+  r.v=0; r.w=0;
+  logFor(r, `[fsm] SEARCH: 旋转扫描中…`);
+}
+function enterRecoverFor(r, phase){
+  const st = r.fsm;
+  st.rec.count++;
+  if(st.rec.count > params.RECOVER_LIMIT){ toDoneFor(r, '恢复次数超限 → 停车'); return; }
+  st.state=S.RECOVER; st.rec.phase=phase; st.rec.t=0;
+  logFor(r, `[fsm] RECOVER: 进入恢复(第${st.rec.count}次, 上限${params.RECOVER_LIMIT})`);
+}
+function toDoneFor(r, reason){
+  const st = r.fsm;
+  st.state=S.DONE; r.v=0; r.w=0; setAct(r,'停车, 比赛结束');
+  st.doneReason = reason;
+  logFor(r, `[fsm] FINISHED: ${reason}`);
+  if(US.fsm.state===S.DONE && THEM.fsm.state===S.DONE){
+    matchControl.phase='FINISHED'; matchControl.paused=false; matchControl.matchTimer=0;
+  }
+}
+function rotateTo(r, target, wmax, tol){
+  const e=norm(target-r.th);
+  r.w = clamp(e, -wmax, wmax);
+  return Math.abs(e) < (tol||0.1);
+}
+function driveToward(r, p, v, wmax){
+  const e=norm(Math.atan2(p.y-r.y, p.x-r.x)-r.th);
+  r.w = clamp(e*3.5, -wmax, wmax);
+  r.v = v;
+}
+const angleTo = (r,p)=> Math.atan2(p.y-r.y, p.x-r.x);
+
+// ---------- 危机门控 (每车) ----------
+function crisisGateFor(r){
+  const st = r.fsm;
+  if(!st.armed || st.state===S.MOUNT || st.state===S.RECOVER || st.state===S.DONE) return;
+  if(r.dragLock) return;                    // 拖拽中不判危机(位置由 GUI 控制)
+  const sens = r.sens;
+  const hang = onStage(r) && sens.f < 0.25;
+  if(hang && Math.abs(r.v) > 0.05){
+    r.v = 0; r.w = 0;
+    logFor(r, `[fsm] 危机门控: 前红外悬空(safety 危机) → 急刹 → RECOVER`, 'warn');
+    enterRecoverFor(r, 'backup');
+    return;
+  }
+  if(r.dropPending || (r.wasOn && !onStage(r))){
+    r.dropPending = false;
+    logFor(r, `[fsm] 掉台! (方向 ${dirName(Math.atan2(r.y-CENTER,r.x-CENTER))}) → RECOVER`, 'warn');
+    enterRecoverFor(r, 'spin');
+    return;
+  }
+}
+
+// ---------- 登台引擎 ----------
+function mountSpeed(){ return params.MOUNT_SPEED/1000*0.75; }
+function mountTick(r, dt, mode){
+  const m = r.fsm.mount; m.t += dt;
+  if(fullOn(r)){
+    logFor(r, `[fsm] 已上台 on_stage ✓ → SEARCH`);
+    enterSearchFor(r);
+    return;
+  }
+  switch(m.phase){
+    case 'posture':
+      setAct(r,'姿态确认');
+      m.phase='align'; m.t=0;
+      logFor(r, `[fsm] MOUNT_RING: 姿态确认 (不在台上) → 摆正`);
+      break;
+    case 'align': {
+      setAct(r,'摆正(后向对准擂台)');
+      // 2026-08-14 规则: 屁股正对边缘垂直登台——垂直对准最近台壁段;
+      // 走廊(无垂直壁段)回退朝最近台点(会被台壁挡, 转 rush 找墙)
+      const mAng = mountAlignAngle(r);
+      const target = mAng === null ? angleTo(r, nearestPlatPoint(r.x,r.y)) + Math.PI : mAng + Math.PI;
+      if(rotateTo(r, target, 1.6, 0.12)){
+        m.phase='reverse'; m.t=0; m.climbed=false;
+        logFor(r, `[fsm] MOUNT_RING: 摆正完成 → 倒车登台(${params.MOUNT_SPEED}/800)`);
+      }
+      if(m.t>5){ m.phase='rush'; m.t=0; m.rushSeen=false; logFor(r, `[fsm] MOUNT_RING: 摆正超时 → 前冲找墙`); }
+      break;
+    }
+    case 'reverse':
+      setAct(r, `倒车冲台 ${params.MOUNT_SPEED}/800`);
+      r.v = -mountSpeed();
+      if(r.sens.gB > params.FALL_THRESHOLD && !m.climbed){
+        m.climbed=true; logFor(r, `[fsm] 登台信号: 后向灰度 ${r.sens.gB.toFixed(0)}>${params.FALL_THRESHOLD} → climbed`);
+      }
+      if(m.t>7){ m.phase='rush'; m.t=0; m.rushSeen=false; logFor(r, `[fsm] MOUNT_RING: 倒车超时失败 → 前冲找墙`); }
+      else if(!m.climbed && r.sens.r>0.55 && m.t>0.5){
+        m.phase='rush'; m.t=0; m.rushSeen=false; logFor(r, `[fsm] MOUNT_RING: 后向受阻(倒车登台失败) → 前冲找墙`);
+      }
+      break;
+    case 'rush':
+      setAct(r,'前冲找墙');
+      r.v = 1.0;
+      if(r.sens.sFL>params.IR_TRIGGER || r.sens.sFR>params.IR_TRIGGER) m.rushSeen=true;
+      if(m.rushSeen && r.sens.sFL<params.IR_TRIGGER && r.sens.sFR<params.IR_TRIGGER && onPlatform(frontPt(r,0.1).x,frontPt(r,0.1).y)){
+        m.phase='fwdMount'; m.t=0;
+        logFor(r, `[fsm] 触发丢失: 铲前红外丢信号 = climbed → 正向登台`);
+      }
+      if(m.t>3.5){
+        m.phase='backoff'; m.t=0; m.backoffT=0;
+        logFor(r, `[fsm] MOUNT_RING: 冲满时限(围栏) → 倒车`);
+      }
+      break;
+    case 'fwdMount':
+      setAct(r,'正向登台');
+      r.v = 0.9;
+      if(m.t>3){ m.phase='backoff'; m.t=0; m.backoffT=0; logFor(r, `[fsm] MOUNT_RING: 正向登台受阻 → 倒车`); }
+      break;
+    case 'backoff':
+      setAct(r,'倒车避让');
+      m.backoffT += dt;
+      if(m.backoffT < 0.6){ r.v = -0.6; }
+      else {
+        r.v = 0;
+        rotateTo(r, r.th + (m.faces%2? -1:1)*Math.PI/2, 1.6, 0.1);
+        if(m.backoffT > 1.7){
+          m.faces++;
+          m.t=0;
+          if(m.faces >= 4){
+            if(mode==='ring'){ m.phase='fwdAlt'; m.fwdAltAligned=false; m.t=0; logFor(r, `[fsm] MOUNT_RING: 换面重试完毕 → 正冲备选`); }
+            else { r.fsm.rec.phase='edgeback'; r.fsm.rec.t=0; logFor(r, `[fsm] RECOVER: 姿态登台失败 → 贴边回中`); }
+          } else {
+            m.phase='posture'; m.t=0;
+            logFor(r, `[fsm] MOUNT_RING: 换面重试 (第 ${m.faces} 面)`);
+          }
+        }
+      }
+      break;
+    case 'fwdAlt':
+      setAct(r,'正冲备选(直冲擂台)');
+      if(!m.fwdAltAligned){
+        // 2026-08-14: 正冲也垂直对准台壁段(斜冲会被挡)
+        const mAng = mountAlignAngle(r);
+        const tgt = mAng === null ? angleTo(r,{x:CENTER,y:CENTER}) : mAng;
+        if(rotateTo(r, tgt, 1.7, 0.12)){ m.fwdAltAligned=true; m.t=0; }
+        if(m.t>4){ m.fwdAltAligned=false; m.t=0; }
+      } else {
+        r.v = 1.0;
+        if(m.t>8){ logFor(r, `[fsm] MOUNT_RING: 正冲备选失败, 放弃登台`, 'warn'); toDoneFor(r, '登台失败'); }
+      }
+      break;
+  }
+}
+
+// ---------- RECOVER ----------
+function recoverTick(r, dt){
+  const rc = r.fsm.rec; rc.t += dt;
+  switch(rc.phase){
+    case 'backup':
+      setAct(r,'危机恢复: 屁股朝擂台倒车回台');
+      rotateTo(r, angleTo(r,{x:CENTER,y:CENTER})+Math.PI, 1.6, 0.15);
+      r.v = -0.6;
+      if(r.sens.f > 0.25 && !hangOn(r)){ logFor(r, `[fsm] RECOVER: 倒车回台成功 → SEARCH`); enterSearchFor(r); }
+      else if(rc.t>4){ rc.t=0; logFor(r, `[fsm] RECOVER: 回台超时 → 重新摆位`); }
+      if(!onStage(r)){ rc.phase='spin'; rc.t=0; logFor(r, `[fsm] RECOVER: 已离台 → 转为掉台恢复流程`); }
+      break;
+    case 'spin':
+      setAct(r,'掉台恢复: 屁股朝擂台');
+      if(rotateTo(r, angleTo(r,{x:CENTER,y:CENTER})+Math.PI, 1.7, 0.21)){
+        rc.phase='mount'; rc.t=0;
+        r.fsm.mount = { phase:'posture', t:0, faces:0, rushSeen:false, climbed:false, backoffT:0, fwdAltAligned:false };
+        logFor(r, `[fsm] RECOVER: 屁股已对准擂台 → 姿态登台`);
+      }
+      if(rc.t>5){ rc.phase='edgeback'; rc.t=0; logFor(r, `[fsm] RECOVER: 摆位超时 → 贴边回中`); }
+      break;
+    case 'mount':
+      setAct(r,'姿态登台');
+      mountTick(r, dt, 'recover');
+      break;
+    case 'edgeback':
+      setAct(r,'贴边回中');
+      {
+        const tgt = nearestPlatPoint(CENTER + Math.cos(rc.fallDir)*HALF*0.9, CENTER + Math.sin(rc.fallDir)*HALF*0.9);
+        driveToward(r, tgt, 0.7, 1.2);
+        if(dist(r,tgt) < 0.2 || rc.t>2.5){
+          rc.count++;
+          logFor(r, `[fsm] RECOVER: 贴边回中完成(第${rc.count}次) → 重新摆位`);
+          if(rc.count>params.RECOVER_LIMIT){ toDoneFor(r, '恢复次数超限 → 停车'); return; }
+          rc.phase='spin'; rc.t=0;
+        }
+      }
+      break;
+  }
+}
+
+// ---------- SEARCH ----------
+function findTargetFor(r){
+  let best=null;
+  const list=[['dLF','左前'],['dRF','右前'],['dLB','左后'],['dRB','右后'],['f','正前']];
+  for(const [k,rel] of list){
+    const pr=r.probe[k];
+    if(!pr||!pr.obj||r.sens[k]<params.IR_TRIGGER) continue;
+    if(!onPlatform(pr.obj.x,pr.obj.y)) continue;          // 只追台上的目标
+    if(!best||pr.d<best.d) best={ obj:pr.obj, d:pr.d, rel };
+  }
+  return best;
+}
+function searchTick(r, dt){
+  const sc = r.fsm.scan;
+  switch(sc.phase){
+    case 'scan':
+      // 扫描避边: 在台上、车头朝外(前方0.35m采样出台)且前灰度压到黑带(<EDGE_THRESHOLD)
+      // → 先倒车回台再继续扫描, 防止旋转扫描时挂边掉台
+      if(onStage(r) && r.sens.gF < params.EDGE_THRESHOLD
+         && !onPlatform(frontPt(r,0.35).x, frontPt(r,0.35).y)){
+        setAct(r,'扫描避边(压到黑带, 倒车回台)');
+        r.v = -0.5; r.w = 0;
+        sc.t += dt;
+        if(sc.t > 0.6){ sc.t = 0; }
+        break;
+      }
+      setAct(r,'旋转扫描');
+      r.w = sc.dir*2.0; r.v = 0;
+      if(sc.t===undefined) sc.t=0;
+      sc.t += dt;
+      if(sc.t>0.2){
+        const t=findTargetFor(r);
+        if(t){ sc.target=t; sc.phase='turn'; sc.t=0;
+          logFor(r, `[fsm] SEARCH: 对角红外发现目标[${t.obj.name}] (${t.d.toFixed(1)}m, ${t.rel}) → 转向`);
+        } else sc.t=0;
+      }
+      break;
+    case 'turn':
+      setAct(r, `转向目标[${sc.target.obj.name}]`);
+      driveToward(r, sc.target.obj, 0, 2.0);
+      sc.t += dt;
+      if(Math.abs(norm(angleTo(r,sc.target.obj)-r.th)) < 0.15){
+        sc.phase='classify'; sc.t=0;
+        logFor(r, `[fsm] SEARCH: 已对准 → 视觉识别中…`);
+      }
+      if(sc.t>3 || !onPlatform(sc.target.obj.x,sc.target.obj.y)){
+        logFor(r, `[fsm] SEARCH: 目标丢失 → 继续扫描`); sc.phase='scan'; sc.target=null;
+      }
+      break;
+    case 'classify':
+      setAct(r,'视觉识别中…');
+      sc.t += dt;
+      if(sc.t>0.5){
+        const t=sc.target;
+        const ok = rng()*100 < params.classifyRate;
+        if(ok){
+          if(t.obj.kind==='buff'){ logFor(r, `[fsm] 视觉分类 → 增益块 → SCORE_BLOCK`); r.fsm.state=S.SCORE; r.v=0; r.w=0; }
+          else if(t.obj.kind==='debuff'){ logFor(r, `[fsm] 视觉分类 → 减益块 → 绕行规避`); sc.phase='evade'; sc.t=0; sc.side=rng()<0.5?1:-1; }
+          else { logFor(r, `[fsm] 视觉分类 → 对手 → ATTACK`); r.fsm.state=S.ATTACK; r.v=0; r.w=0; }
+        } else {
+          if(r.sens.f > params.IR_TRIGGER){
+            logFor(r, `[fsm] 识别不到 + 前向持续 → 判定为对手 → ATTACK`); r.fsm.state=S.ATTACK; r.v=0; r.w=0;
+          } else {
+            logFor(r, `[fsm] 识别不到, 前向无持续 → 放弃, 继续扫描`); sc.phase='scan'; sc.target=null;
+          }
+        }
+      }
+      break;
+    case 'evade':
+      setAct(r,'绕行规避(减益块)');
+      sc.t += dt;
+      {
+        const d = blocks.find(b=>b.kind==='debuff');
+        if(!d || !onPlatform(d.x,d.y)){ logFor(r, `[fsm] 绕行: 减益块消失 → 继续扫描`); sc.phase='scan'; break; }
+        const pvx=-(d.y-r.y), pvy=(d.x-r.x);
+        const n=Math.hypot(pvx,pvy)||1;
+        const gx=d.x+pvx/n*0.7*sc.side, gy=d.y+pvy/n*0.7*sc.side;
+        driveToward(r, {x:gx,y:gy}, 0.9, 2.0);
+        if(dist(r,{x:gx,y:gy})<0.25 || sc.t>4){
+          logFor(r, `[fsm] 绕行完成 → 继续扫描`); sc.phase='scan'; sc.target=null;
+        }
+      }
+      break;
+  }
+}
+
+// ---------- ATTACK / SCORE_BLOCK ----------
+function attackTick(r, dt){
+  const o = other(r);
+  if(!onStage(o)){ logFor(r, `[fsm] ATTACK: 目标失效(不在台上) → SEARCH`); enterSearchFor(r); return; }
+  const d = dist(r,o);
+  setAct(r, d < 0.42 ? '全速推进(推对手, 逼近边缘)' : '全速推进(追击对手)');
+  driveToward(r, o, 1.25, 2.5);
+}
+function scoreTick(r, dt){
+  const b = blocks.find(x=>x.kind==='buff');
+  if(!b || !onPlatform(b.x,b.y)){ logFor(r, `[fsm] SCORE_BLOCK: 增益块丢失 → SEARCH`); enterSearchFor(r); return; }
+  if(distToNearestEdge(b.x,b.y) < 0.45){ setAct(r,'推增益块接近边缘, 减速'); driveToward(r, b, 0.35, 2.0); }
+  else { setAct(r,'推增益块'); driveToward(r, b, 0.9, 2.0); }
+}
+
+// ---------- FSM 主调度 (每车) ----------
+function fsmTickFor(r, dt){
+  crisisGateFor(r);
+  const st = r.fsm;
+  if(st.state===S.RECOVER){ recoverTick(r, dt); return; }
+  switch(st.state){
+    case S.WAIT:
+      setAct(r,'等待发令');
+      r.v=0; r.w=0;
+      break;
+    case S.MOUNT:  mountTick(r, dt, 'ring'); break;
+    case S.SEARCH: searchTick(r, dt); break;
+    case S.ATTACK: attackTick(r, dt); break;
+    case S.SCORE:  scoreTick(r, dt); break;
+    case S.DONE:
+      setAct(r,'停车, 比赛结束');
+      r.v=0; r.w=0;
+      break;
+  }
+}
+
+// ---------- 运动 / 物理 (双车 + 能量块) ----------
+// ---------- 台壁阻挡物理 (2026-08-12) ----------
+// 真机 6cm 台阶: 从台下进入台上必须"垂直对准台沿 + 法向速度足够"才能登台
+// (倒车冲台/正冲登台流程); 斜着撞台沿被挡住——法向速度清零、切向保留(沿壁滑行)。
+// 从台上到台下 = 自由掉落(不阻挡)。
+// 此前无此物理, 车可任意穿台 → 实车 FSM 的时序型登台(前冲找墙→倒车)空间语义
+// 全失真(卡 mount_ring↔RECOVER 循环); 内置 FSM 倒车登台 0.585m/s 垂直进入不受影响。
+// 台角斜入(同时穿 x/y 边)法线取对角方向 → 45° 倒车进台角=垂直, 仍可登台。
+const MOUNT_VMIN = 0.3;        // 登台最小法向速度 (m/s) (内置 FSM 倒车 0.585)
+const MOUNT_ANGLE = 0.26;      // 登台最大入射角 (rad≈15°) (与台沿法线夹角;
+                                // 2026-08-14 规则: 必须屁股正对边缘垂直登台)
+const ACCEL_K = 12;            // 加速度限制系数 (1/s): 实际速度向目标速度收敛速率
+// 登台对准方向: 垂直指向最近的台壁段(台壁=矩形四条边, 车在走廊/台上时无垂直壁段→null)
+function mountAlignAngle(r){
+  const inX = r.x >= EL && r.x <= ER, inY = r.y >= EL && r.y <= ER;
+  if(inX && r.y < EL) return Math.PI/2;        // 南边: 车尾朝 +y
+  if(inX && r.y > ER) return -Math.PI/2;       // 北边: 车尾朝 -y
+  if(inY && r.x < EL) return 0;                // 西边: 车尾朝 +x
+  if(inY && r.x > ER) return Math.PI;          // 东边: 车尾朝 -x
+  return null;                                 // 台角走廊/台上: 无垂直壁段
+}
+function footprintSupport(r, nx, ny){
+  const v = r.vehicle || DEFAULT_VEHICLE;
+  const c=Math.cos(r.th), s=Math.sin(r.th);
+  const along = c*nx + s*ny;
+  const lateral = -s*nx + c*ny;
+  const longitudinal = along >= 0 ? v.frontExtent : v.rearExtent;
+  return Math.abs(along)*longitudinal + Math.abs(lateral)*v.sideExtent;
+}
+function stageWall(r, px, py){
+  // 车中心不再是唯一碰撞点：车身/铲子先接触台沿时就必须阻挡，
+  // 否则会出现“中心还在台下、车头已经穿过台壁”的视觉穿模。
+  if(onPlatform(px,py)) return;                              // 台上→台下允许自由掉落
+  const walls = [
+    { nx:0,  ny:1,  axis:'y', boundary:EL },                 // 南边，向北入台
+    { nx:0,  ny:-1, axis:'y', boundary:ER },                 // 北边，向南入台
+    { nx:1,  ny:0,  axis:'x', boundary:EL },                 // 西边，向东入台
+    { nx:-1, ny:0,  axis:'x', boundary:ER },                 // 东边，向西入台
+  ];
+  const desiredVx = r.v*Math.cos(r.th), desiredVy = r.v*Math.sin(r.th);
+  const contacts=[];
+  for(const wall of walls){
+    const coord0 = wall.axis==='x' ? px : py;
+    const coord1 = wall.axis==='x' ? r.x : r.y;
+    const nAxis = wall.axis==='x' ? wall.nx : wall.ny;
+    const in0 = (coord0-wall.boundary)*nAxis;
+    const in1 = (coord1-wall.boundary)*nAxis;
+    if(in0 >= 0) continue;                                  // 原来中心已在台内，出沿不阻挡
+    const tangentSupport = footprintSupport(r, -wall.ny, wall.nx);
+    const tangentCoord = wall.axis==='x' ? r.y : r.x;
+    if(tangentCoord < EL-tangentSupport || tangentCoord > ER+tangentSupport) continue;
+    const support = footprintSupport(r, wall.nx, wall.ny);
+    if(in1 < -support-0.001) continue;                      // 车身仍未接触台沿
+    // 登台门槛看当前控制意图速度；实际速度仍用于碰撞后的速度清零。
+    // 这样首帧加速度尚未收敛时不会把正常冲台误判成“低速顶台”。
+    const vn = desiredVx*wall.nx + desiredVy*wall.ny;
+    if(vn <= 0.0001) continue;                              // 没有向台内运动
+    const vt = Math.abs(desiredVx*wall.ny - desiredVy*wall.nx);
+    contacts.push({ wall, support, in1, vn, vt });
+  }
+  if(!contacts.length) return;
+
+  // 斜穿台角必须阻挡；只有单面接触且法向速度/入射角达标才放行。
+  if(contacts.length===1){
+    const c=contacts[0];
+    // 车身刚接触台沿时就可开始“冲台”，不必等车中心越过台边；
+    // 否则 footprint 已被挡在 EL-support 处，永远无法进入允许区。
+    if(c.vn > MOUNT_VMIN && c.vt < c.vn*Math.tan(MOUNT_ANGLE)) return;
+  }
+  for(const c of contacts){
+    const {wall,support}=c;
+    const nAxis = wall.axis==='x' ? wall.nx : wall.ny;
+    const safe = wall.boundary - nAxis*(support+0.002);
+    if(wall.axis==='x') r.x=safe; else r.y=safe;
+    const avn = r.vx*wall.nx + r.vy*wall.ny;
+    if(avn>0){ r.vx -= wall.nx*avn; r.vy -= wall.ny*avn; }
+  }
+}
+function markBlockContact(o, r){
+  if(!o.contactThisStep) o.contactThisStep=[];
+  const role = r===US ? 'us' : 'them';
+  if(!o.contactThisStep.includes(role)) o.contactThisStep.push(role);
+}
+function finalizeBlockContacts(){
+  for(const o of blocks){
+    if(!o.contactThisStep || !o.contactThisStep.length) continue;
+    o.lastContactRole = o.contactThisStep.length > 1 ? 'simultaneous' : o.contactThisStep[0];
+  }
+}
+// 离散帧之外的线段扫掠：自定义车允许更高速度时，车中心可能一帧跨过
+// 能量块/对手而没有出现最终重叠。该函数只返回最近接触点，不改变状态，
+// 保持核心碰撞确定性（仅决策逻辑仿真，不承诺逐帧动力学保真）。
+function sweptCircleContact(ax, ay, bx, by, cx, cy, radius){
+  const dx=bx-ax, dy=by-ay, len2=dx*dx+dy*dy;
+  const t=len2>1e-12 ? clamp(((cx-ax)*dx+(cy-ay)*dy)/len2, 0, 1) : 0;
+  const qx=ax+dx*t, qy=ay+dy*t;
+  const ex=cx-qx, ey=cy-qy, d=Math.hypot(ex,ey);
+  if(d >= radius) return null;
+  let nx, ny;
+  if(d>1e-9){ nx=ex/d; ny=ey/d; }
+  else if(Math.hypot(dx,dy)>1e-9){ const l=Math.hypot(dx,dy); nx=dx/l; ny=dy/l; }
+  else { nx=1; ny=0; }
+  return { qx, qy, nx, ny, d, t };
+}
+function motionFor(r, dt){
+  const vehicle = r.vehicle || DEFAULT_VEHICLE;
+  r.v = clamp(r.v, -vehicle.maxSpeed, vehicle.maxSpeed);
+  r.w = clamp(r.w, -vehicle.maxTurnRate, vehicle.maxTurnRate);
+  r.th += r.w*dt;
+  const px = r.x, py = r.y;    // 旧位置 (台沿穿越判定)
+  // 2026-08-14 加速度限制: 实际速度向目标速度平滑收敛(启动/停止有过渡, 移动更真实)
+  const tvx = r.v*Math.cos(r.th), tvy = r.v*Math.sin(r.th);
+  const k = 1 - Math.exp(-(vehicle.accelK||ACCEL_K)*dt);
+  r.vx += (tvx - r.vx)*k;
+  r.vy += (tvy - r.vy)*k;
+  r.x += r.vx*dt; r.y += r.vy*dt;
+  stageWall(r, px, py);        // 台壁阻挡: 斜撞滑行 / 垂直+速度登台
+  const B=0.12;
+  // 围栏: 撞墙时法向速度清零(不再挤墙)
+  if(r.x < B){ r.x = B; if(r.vx<0) r.vx = 0; }
+  else if(r.x > 3.8-B){ r.x = 3.8-B; if(r.vx>0) r.vx = 0; }
+  if(r.y < B){ r.y = B; if(r.vy<0) r.vy = 0; }
+  else if(r.y > 3.8-B){ r.y = 3.8-B; if(r.vy>0) r.vy = 0; }
+  // 能量块: 推块速度继承(带上限防抖) + 摩擦 (dragLock: 拖拽中不参与物理; out: 已下台静止)
+  for(const o of blocks){
+    if(o.dragLock || o.out) continue;
+    const dx=o.x-r.x, dy=o.y-r.y, d=Math.hypot(dx,dy)||0.001;
+    const R=(r.r||BODY)+o.r;
+    if(d<R){
+      markBlockContact(o, r);
+      const nx=dx/d, ny=dy/d;
+      o.x=r.x+nx*R; o.y=r.y+ny*R;
+      const dot=(r.vx*nx+r.vy*ny);
+      if(dot>0){
+        const push=(r.vehicle?.pushFactor||1)*dot;
+        o.vx+=nx*push; o.vy+=ny*push;
+      }
+    } else {
+      const hit=sweptCircleContact(px,py,r.x,r.y,o.x,o.y,R);
+      if(hit){
+        markBlockContact(o, r);
+        o.x=hit.qx+hit.nx*R; o.y=hit.qy+hit.ny*R;
+        const dot=(r.vx*hit.nx+r.vy*hit.ny);
+        if(dot>0){
+          const push=(r.vehicle?.pushFactor||1)*dot;
+          o.vx+=hit.nx*push; o.vy+=hit.ny*push;
+        }
+      }
+    }
+    o.x+=o.vx*dt; o.y+=o.vy*dt;
+    const fric=Math.exp(-2.2*dt); o.vx*=fric; o.vy*=fric;
+    const spd=Math.hypot(o.vx,o.vy);
+    if(spd>2.0){ o.vx*=2.0/spd; o.vy*=2.0/spd; }
+    o.x=clamp(o.x,0.12,3.68); o.y=clamp(o.y,0.12,3.68);
+  }
+  // 能量块之间: 简单分离(防重叠; 拖拽中的块不参与)
+  for(let i=0;i<blocks.length;i++) for(let j=i+1;j<blocks.length;j++){
+    const a=blocks[i], b=blocks[j];
+    if(a.dragLock || b.dragLock || a.out || b.out) continue;
+    const bdx=b.x-a.x, bdy=b.y-a.y, bd=Math.hypot(bdx,bdy)||0.001;
+    const BR=a.r+b.r;
+    if(bd<BR){
+      const bnx=bdx/bd, bny=bdy/bd, bov=BR-bd;
+      a.x-=bnx*bov*0.5; a.y-=bny*bov*0.5;
+      b.x+=bnx*bov*0.5; b.y+=bny*bov*0.5;
+    }
+  }
+  // 对另一台车: 恢复系数 e=0.3 的法向交换 + 切向摩擦 + 对称分离
+  const o = other(r);
+  const dx=o.x-r.x, dy=o.y-r.y, d=Math.hypot(dx,dy)||0.001;
+  const R = r.r + o.r;
+  const swept=sweptCircleContact(px,py,r.x,r.y,o.x,o.y,R);
+  if(d < R || swept){
+    const nx=d<R ? dx/d : swept.nx, ny=d<R ? dy/d : swept.ny;
+    const overlap = d<R ? R-d : 0;
+    r.x -= nx*overlap*0.5; r.y -= ny*overlap*0.5;
+    o.x += nx*overlap*0.5; o.y += ny*overlap*0.5;
+    const rv = r.vx*nx + r.vy*ny;
+    const ov = o.vx*nx + o.vy*ny;
+    if(rv > ov + 0.02){                       // 相对法向速度阈值, 防抖动
+      // 2026-08-14 动态恢复系数: 低速推挤柔和(E=0.2) / 高速撞击明显弹开(E 大)
+      const rel = rv - ov;
+      const E = clamp(0.2 + rel*0.15, 0.2, 0.45);
+      const invR = 1/Math.max(0.05, Number(r.vehicle?.mass)||1);
+      const invO = 1/Math.max(0.05, Number(o.vehicle?.mass)||1);
+      const push = clamp(Number(r.vehicle?.pushFactor)||1, 0.1, 3);
+      const impulse = rel*(1+E)*push/(invR+invO);
+      r.vx -= nx*impulse*invR; r.vy -= ny*impulse*invR;
+      o.vx += nx*impulse*invO; o.vy += ny*impulse*invO;
+      // 切向摩擦: 碰撞时两车侧向速度相互衰减(车身打滑感)
+      const tx=-ny, ty=nx;
+      const rt = r.vx*tx + r.vy*ty;
+      const ot = o.vx*tx + o.vy*ty;
+      const ft = (rt-ot)*0.2;
+      r.vx -= tx*ft; r.vy -= ty*ft;
+      o.vx += tx*ft; o.vy += ty*ft;
+    }
+  }
+}
+function motion(dt){ motionFor(US, dt); }
+
+// ---------- 计分 / 掉台判定 (全局) ----------
+// 2026-08-14 规则修正: 能量块被推下台后**本场不再参与**(out, 静止留在台外),
+// 比赛结束 resetAll 才重新摆放回台上——不做延迟重生(用户确认规则)。
+function respawnBlock(o){
+  for(let i=0;i<20;i++){
+    const x=EL+0.35+rng()*(2*HALF-0.7), y=EL+0.35+rng()*(2*HALF-0.7);
+    if(Math.min(dist(US,{x,y}),dist(THEM,{x,y}))>0.8 && !(x>1.6&&x<2.2&&y>1.6&&y<2.2)){ o.x=x; o.y=y; break; }
+  }
+  o.vx=0; o.vy=0; o.wasOn=true; o.out=false;
+  o.contactThisStep=[]; o.lastContactRole=null;
+}
+function objFallCheckAll(d){
+  d = d || 0.05;
+  finalizeBlockContacts();
+  // 能量块掉台 (dragLock: 拖拽中不判掉落/重生, 位置由 GUI 控制;
+  // 且 **wasOn 保持拖前值**——若拖拽中同步成 false, 松手后块在台外会丢失
+  // "曾上台"状态永不重生, 卡死在台外。松手后第一帧 wasOn&&!on → 正常判定)
+  for(const o of blocks){
+    if(o.dragLock) continue;
+    if(o.out) continue;                          // 已推下台: 本场不再参与(静止)
+    const on = onPlatform(o.x,o.y);
+    if(o.wasOn && !on){
+      o.wasOn=false;
+      const role = o.lastContactRole;
+      const pusher = role==='us' ? US : role==='them' ? THEM : null;
+      if(o.kind==='buff' && pusher){
+        gain(pusher, 3);
+        logFor(pusher, `[score] 增益块被推下擂台! ${pusher.name} +3 (${scoreBoard.us}:${scoreBoard.them})`, 'score');
+        if(pusher.fsm.state===S.SCORE){ pusher.v=0; pusher.w=0; enterSearchFor(pusher); }
+      } else if(o.kind==='debuff' && pusher){
+        oppGain(pusher, 6);
+        logFor(pusher, `[score] 失误! 减益块被推下, 对方 +6 (${scoreBoard.us}:${scoreBoard.them})`, 'score');
+      } else if(role==='simultaneous') {
+        log(`[score] 双方同时接触${o.name}并将其推出台外, 按规则不计分`, 'score');
+      } else {
+        log(`[score] ${o.name}离开擂台(无有效最后接触), 不计分`, 'score');
+      }
+      o.out = true;                                // 下台后本场移出，不再参与物理/计分
+      o.vx = o.vy = 0;                           // 下台即静止(不再被推)
+    } else if(on) o.wasOn=true;
+  }
+  // 车掉台：以同一帧的前后状态统一判定，避免双方同时掉台各自得分。
+  const prevUs = US.wasOn, prevThem = THEM.wasOn;
+  const nowUs = onStage(US), nowThem = onStage(THEM);
+  const usDrop = prevUs && !nowUs, themDrop = prevThem && !nowThem;
+  if(usDrop){
+    US.dropPending = true;
+    US.fsm.rec.fallDir = Math.atan2(US.y-CENTER, US.x-CENTER);
+  }
+  if(themDrop){
+    THEM.dropPending = true;
+    THEM.fsm.rec.fallDir = Math.atan2(THEM.y-CENTER, THEM.x-CENTER);
+  }
+  if(usDrop && themDrop){
+    log('[score] 双方同帧掉台, 按规则双方均不得分', 'score');
+  } else if(usDrop && prevThem && nowThem && US.fsm.armed && US.fsm.state!==S.DONE){
+    oppGain(US, 1);
+    logFor(US, `[score] 我方掉台, 对方 +1 (${scoreBoard.us}:${scoreBoard.them})`, 'score');
+  } else if(themDrop && prevUs && nowUs && THEM.fsm.armed && THEM.fsm.state!==S.DONE){
+    oppGain(THEM, 1);
+    logFor(THEM, `[score] 对手掉台, 我方 +1 (${scoreBoard.us}:${scoreBoard.them})`, 'score');
+  } else if(usDrop || themDrop){
+    log('[score] 掉台时另一方不在台上, 按规则本次不计分', 'score');
+  }
+  US.wasOn = nowUs; THEM.wasOn = nowThem;
+}
+
+// ---------- 计时 / 读秒 (每车) ----------
+function scoringTickFor(r, dt){
+  const st = r.fsm;
+  st.simT += dt;
+  st.timer -= dt;
+  matchControl.matchTimer = Math.max(0, Math.min(US.fsm.timer, THEM.fsm.timer));
+  if(st.timer<=0){
+    st.timer=0;
+    if(st.state!==S.DONE){ logFor(r, `[fsm] 比赛时间到 → FINISHED`); toDoneFor(r, '比赛时间结束'); }
+    return;
+  }
+}
+function beginPreparation(seconds){
+  const d = Number(seconds);
+  matchControl.phase='PREP'; matchControl.paused=false;
+  matchControl.prepRemaining = Number.isFinite(d) ? clamp(d, 0, 60) : 60;
+  log('[referee] 进入赛前准备阶段(最多60秒)', 'score');
+}
+function pauseMatch(reason){
+  if(matchControl.phase==='RUNNING'){
+    matchControl.phase='PAUSED'; matchControl.paused=true;
+    log(`[referee] 比赛暂停${reason ? ': '+reason : ''}`, 'warn');
+  }
+  return matchControl.phase;
+}
+function resumeMatch(){
+  if(matchControl.phase==='PAUSED'){
+    matchControl.phase='RUNNING'; matchControl.paused=false;
+    log('[referee] 比赛继续', 'score');
+  }
+  return matchControl.phase;
+}
+function restartFor(role, kind){
+  const r = role==='them' || role===THEM ? THEM : US;
+  const key = r===US ? 'us' : 'them';
+  const label = String(kind || 'debug').toLowerCase();
+  const pts = label.includes('restart') || label.includes('reboot') ? 4 : 3;
+  matchControl.restartPenalties[key] += pts;
+  oppGain(r, pts);
+  logFor(r, `[referee] ${pts===4?'重启':'调试'}判罚, 对方 +${pts} (${scoreBoard.us}:${scoreBoard.them})`, 'score');
+  return pts;
+}
+function updateScoreClock(d){
+  const phase = onStage(US) && !onStage(THEM) ? 'us_only'
+    : !onStage(US) && onStage(THEM) ? 'them_only'
+    : onStage(US) && onStage(THEM) ? 'both_on' : 'both_off';
+  if(phase !== matchScore.phase){ matchScore.phase=phase; matchScore.t=0; return; }
+  if(phase==='us_only' || phase==='them_only'){
+    matchScore.t += d;
+    while(matchScore.t >= 10){
+      matchScore.t -= 10;
+      const r = phase==='us_only' ? US : THEM;
+      gain(r, 1);
+      logFor(r, `[score] 登台/掉台读秒: ${r.name} +1 (${scoreBoard.us}:${scoreBoard.them})`, 'score');
+    }
+  } else {
+    matchScore.t=0;
+  }
+}
+function updateInactivity(d){
+  for(const r of robots){
+    const st=r.fsm;
+    const exempt = !st.armed || st.state===S.WAIT || st.state===S.MOUNT || st.state===S.RECOVER || st.state===S.DONE || !onStage(r);
+    if(exempt){ st.inactiveT=0; st.inactiveWarned=false; continue; }
+    const moving = Math.hypot(r.vx,r.vy)>0.05 || Math.abs(r.w)>0.15;
+    if(moving){ st.inactiveT=0; st.inactiveWarned=false; continue; }
+    st.inactiveT += d;
+    if(st.inactiveT >= 10 && !st.inactiveWarned){
+      st.inactiveWarned=true;
+      oppGain(r, 1);
+      logFor(r, `[score] 消极比赛超过10秒, 对方 +1 (${scoreBoard.us}:${scoreBoard.them})`, 'warn');
+    }
+  }
+}
+
+// ---------- 无头 API ----------
+// stepSim(dt, action): action={v,w} 提供时按手动策略控制我方(US), 对手继续自身 FSM;
+// 统一走 stepSimExt, 保证另一台车(可能处于手动/外部策略)不会冻结。
+function stepSim(dt, action){
+  const d = Math.min(dt, 0.1);
+  stepSimExt(d, action && typeof action.v === 'number' ? { us: action, them: null } : null);
+}
+function stepSimExt(d, acts){
+  // acts: {us:{v,w}|null, them:{v,w}|null} — null 表示该车由自身 FSM 决策
+  d = Math.min(Number(d)||0, 0.1);
+  const hasExternalAction = !!(acts && (acts.us || acts.them));
+  // 外部策略调用本身等价于“调试驱动”，允许在准备阶段直接做场景/物理桩测；
+  // 正式 UI/内置 FSM 仍受裁判暂停与赛前阶段门控。
+  if(matchControl.phase==='PAUSED' || matchControl.phase==='FINISHED') return;
+  if(matchControl.phase==='PREP' && !hasExternalAction){
+    matchControl.prepRemaining = Math.max(0, matchControl.prepRemaining-d);
+    if(matchControl.prepRemaining<=1e-9){ matchControl.prepRemaining=0; matchControl.phase='READY'; }
+    objFallCheckAll(0); // 拖拽测试/裁判仍需在未发令阶段识别能量块离台
+    return;
+  }
+  if(matchControl.phase==='READY' && !hasExternalAction){ objFallCheckAll(0); return; }
+  if(hasExternalAction && (matchControl.phase==='PREP' || matchControl.phase==='READY')){
+    matchControl.phase='RUNNING'; matchControl.paused=false; matchControl.prepRemaining=0;
+  }
+  for(const o of blocks) o.contactThisStep=[];
+  for(const r of robots){
+    const act = acts && acts[r.name==='我方'?'us':'them'];
+    if(act){
+      const st = r.fsm;
+      st.armed = true; st.manual = true;
+      if(st.state!==S.DONE) st.state = S.MANUAL;
+    }
+  }
+  for(const r of robots){
+    const st = r.fsm;
+    const act = acts && acts[r.name==='我方'?'us':'them'];
+    if(act){
+      st.simT += d; st.timer -= d;
+      if(st.timer<=0){ st.timer=0; if(st.state!==S.DONE) toDoneFor(r, '比赛时间结束(手动模式)'); }
+      const vehicle = r.vehicle || DEFAULT_VEHICLE;
+      r.v = clamp(act.v||0, -vehicle.maxSpeed, vehicle.maxSpeed);
+      r.w = clamp(act.w||0, -vehicle.maxTurnRate, vehicle.maxTurnRate);
+      st.action = `外部策略 v=${r.v.toFixed(2)} w=${r.w.toFixed(2)}`;
+    } else if(st.armed && st.state!==S.DONE){
+      scoringTickFor(r, d);
+    }
+    sampleSensorsFor(r);
+  }
+  for(const r of robots){
+    const act = acts && acts[r.name==='我方'?'us':'them'];
+    if(act) continue;
+    if(r.fsm.armed && r.fsm.state!==S.DONE) fsmTickFor(r, d);
+  }
+  for(const r of robots){
+    if(r.fsm.armed || r.fsm.manual) motionFor(r, d);
+  }
+  objFallCheckAll(d);
+  updateScoreClock(d);
+  updateInactivity(d);
+  matchControl.matchTimer = Math.max(0, Math.min(US.fsm.timer, THEM.fsm.timer));
+  for(const r of robots){ if(!r.dragLock) r.wasOn = onStage(r); }
+}
+function armFor(r){
+  const st = r.fsm;
+  if(st.manual){ logFor(r, '手动模式无需发令', 'warn'); return; }
+  if(st.armed){
+    if(st.state===S.WAIT) logFor(r, '已在等待/运行中', 'warn');
+    return;
+  }
+  st.armed=true; st.bonusUs=st.bonusThem=st.simT;
+  if(matchControl.phase==='PREP' || matchControl.phase==='READY'){
+    matchControl.phase='RUNNING'; matchControl.paused=false; matchControl.prepRemaining=0;
+  }
+  matchScore.phase = onStage(US) && !onStage(THEM) ? 'us_only'
+    : !onStage(US) && onStage(THEM) ? 'them_only'
+    : onStage(US) && onStage(THEM) ? 'both_on' : 'both_off';
+  matchScore.t=0;
+  st.state=S.MOUNT;
+  st.mount={ phase:'posture', t:0, faces:0, rushSeen:false, climbed:false, backoffT:0, fwdAltAligned:false };
+  logFor(r, `[fsm] 发令! WAIT_START → MOUNT_RING`);
+}
+function arm(){ for(const r of robots) armFor(r); }
+function startManual(){
+  matchControl.phase='RUNNING'; matchControl.paused=false; matchControl.prepRemaining=0;
+  for(const r of robots){
+    r.fsm.armed=true; r.fsm.manual=true; r.fsm.state=S.MANUAL;
+    r.fsm.timer=120; r.fsm.simT=0;
+    logFor(r, '手动策略模式: 外部策略通过 step({v,w}) 控制, 掉台不自动恢复');
+  }
+}
+function resetAll(opts){
+  opts = opts || {};
+  if(opts.params) Object.assign(params, opts.params);
+  // 每台车的物理/动力参数独立保存；reset 不会悄悄恢复默认值，
+  // 只有显式传入 vehicles.us / vehicles.them 时才替换对应配置。
+  // 这样 GUI、HTTP API 和批量对战都能复用同一套车辆 profile。
+  if(opts.vehicles && typeof opts.vehicles==='object'){
+    if(opts.vehicles.us && typeof opts.vehicles.us==='object') setVehicleFor('us', opts.vehicles.us);
+    if(opts.vehicles.them && typeof opts.vehicles.them==='object') setVehicleFor('them', opts.vehicles.them);
+  }
+  setSeed(opts.seed);
+  matchControl.phase='PREP'; matchControl.prepRemaining=60; matchControl.matchTimer=120;
+  matchControl.paused=false; matchControl.restartPenalties.us=0; matchControl.restartPenalties.them=0;
+  US.x=0.95; US.y=0.3; US.th=-Math.PI/2;   // 黄区中部(正对南台边): 车头朝南, 车尾朝北
+                                            // = 垂直对准 y=0.7 台边——2026-08-14 规则:
+                                            // 登台必须屁股正对边缘垂直上(斜骑台角不允许)
+  THEM.x=2.85; THEM.y=3.5; THEM.th=Math.PI/2;  // 蓝区对称: 车尾朝南垂直对准 y=3.1 台边
+  buffs[0].x=1.35; buffs[0].y=1.35; buffs[1].x=2.5; buffs[1].y=2.6;
+  deb.x=1.6; deb.y=2.4;
+  for(const r of robots){
+    r.v=r.w=0; r.vx=0; r.vy=0;   // 2026-08-14: 加速度限制下 vx/vy 是累加状态, 必须重置(否则残留速度破坏确定性)
+    const st=r.fsm;
+    st.state=S.WAIT; st.armed=false; st.manual=false; st.timer=120; st.simT=0;
+    st.scores.us=0; st.scores.them=0;
+    st.bonusUs=0; st.bonusThem=0;
+    st.inactiveT=0; st.inactiveWarned=false;
+    st.rec={ phase:'spin', t:0, count:0, fallDir:0 };
+    st.scan={ dir:1, phase:'scan', target:null, t:0, side:1 };
+    st.mount={ phase:'posture', t:0, faces:0, rushSeen:false, climbed:false, backoffT:0, fwdAltAligned:false };
+    st.doneReason='';
+    r.wasOn=false; r.dropPending=false;
+  }
+  matchControl.matchTimer=120;
+  for(const o of blocks){
+    o.vx=o.vy=0; o.wasOn=onPlatform(o.x,o.y); o.out=false;
+    o.contactThisStep=[]; o.lastContactRole=null;
+  }
+  matchScore.phase='both_off'; matchScore.t=0;
+  logEvents.length = 0;
+  log('[fsm] 重置完成 → WAIT_START, 发令(arm) 或 手动/外部策略模式');
+  if(opts.scene) scenePreset(opts.scene);
+  respawnBlock(buffs[0]); respawnBlock(buffs[1]); respawnBlock(deb);
+}
+function setParams(obj){ Object.assign(params, obj); }
+function setVehicleFor(role, patch){
+  const r = role==='them' ? THEM : US;
+  r.vehicle = normalizeVehicle(patch, r.vehicle);
+  r.r = r.vehicle.collisionRadius;
+  return cloneVehicle(r.vehicle);
+}
+function getVehicleFor(role){
+  return cloneVehicle((role==='them' ? THEM : US).vehicle);
+}
+function setPoseFor(r, x, y, th){ r.x=clamp(x,0.05,3.75); r.y=clamp(y,0.05,3.75); r.th=norm(th||0); r.v=r.w=0; r.vx=0; r.vy=0; }
+function setPose(x,y,th){ setPoseFor(US, x, y, th); }
+function setObject(kind, idx, x, y){
+  let o = kind==='opp' ? THEM : kind==='debuff' ? deb : buffs[idx||0];
+  if(!o) return false;
+  o.x=clamp(x,0.05,3.75); o.y=clamp(y,0.05,3.75); o.vx=o.vy=0;
+  return true;
+}
+function scenePreset(name){
+  if(name==='center'){ setPoseFor(US,CENTER,1.9,0); log('[fsm] 场景: 车上台中心'); }
+  else if(name==='edge'){ setPoseFor(US,0.7,1.9,Math.PI); log('[fsm] 场景: 车放台边黑带(车头朝外, 可演示危机门控)'); }
+  else if(name==='walkway'){ setPoseFor(US,1.9,0.35,-Math.PI/2); log('[fsm] 场景: 车放走道(登台演示)'); }
+  else if(name==='hang'){ setPoseFor(US,0.84,1.9,Math.PI); log('[fsm] 场景: 车悬空边缘(前红外悬空)'); }
+  else if(name==='opp_on'){ setPoseFor(THEM,2.55,1.9,Math.PI); log('[fsm] 场景: 对手放上台中央偏右'); }
+  else if(name==='opp_start'){ setPoseFor(THEM,3.55,3.6,-2.2); log('[fsm] 场景: 对手回出发区'); }
+  else return false;
+  return true;
+}
+function getState(){
+  const rState = r => ({
+    x:+r.x.toFixed(4), y:+r.y.toFixed(4), th:+r.th.toFixed(4), v:+r.v.toFixed(4), w:+r.w.toFixed(4),
+    vehicle:cloneVehicle(r.vehicle),
+    onPlatform:onStage(r), hang:hangOn(r),
+    state:r.fsm.state, action:r.fsm.action,
+    mountPhase:r.fsm.mount.phase, recPhase:r.fsm.rec.phase, recCount:r.fsm.rec.count,
+    inactiveT:+r.fsm.inactiveT.toFixed(2), inactiveWarned:r.fsm.inactiveWarned,
+    armed:r.fsm.armed, manual:r.fsm.manual, timer:+r.fsm.timer.toFixed(2), simT:+r.fsm.simT.toFixed(3),
+  });
+  const sensOf = r => { const s={}; for(const k in r.sens) s[k]=+r.sens[k].toFixed(3); return s; };
+  return {
+    simT:+US.fsm.simT.toFixed(3), timer:+US.fsm.timer.toFixed(2),
+    match:{ phase:matchControl.phase, paused:matchControl.paused,
+      prepRemaining:+matchControl.prepRemaining.toFixed(2),
+      timer:+matchControl.matchTimer.toFixed(2),
+      restartPenalties:{...matchControl.restartPenalties} },
+    scores:{ us: scoreBoard.us, them: scoreBoard.them },
+    robots:{
+      us: rState(US),
+      them: rState(THEM),
+    },
+    sensors:{ us: sensOf(US), them: sensOf(THEM) },
+    objects:{
+      buffs: buffs.map(b=>({ x:+b.x.toFixed(4), y:+b.y.toFixed(4), onPlatform:onPlatform(b.x,b.y), out:!!b.out })),
+      debuff:{ x:+deb.x.toFixed(4), y:+deb.y.toFixed(4), onPlatform:onPlatform(deb.x,deb.y), out:!!deb.out },
+    },
+    done:US.fsm.state===S.DONE && THEM.fsm.state===S.DONE,
+    doneReason:US.fsm.doneReason || THEM.fsm.doneReason,
+    logTail:getLog().slice(-40),
+  };
+}
+
+/* ===== CORE-END ============================================================= */
+if (typeof module !== 'undefined' && module.exports){
+  module.exports = {
+    params, fs, fs2, bot, opp, US, THEM, robots, scoreBoard, buffs, deb, blocks, objs, SENS, SENS2, logEvents,
+    resetAll, arm, armFor, startManual, stepSim, stepSimExt, getState, getLog,
+    matchControl, beginPreparation, pauseMatch, resumeMatch, restartFor,
+    setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset,
+    onPlatform, onStage, hangOn, fullOn, fieldGray, distToNearestEdge,
+    log, logFor, setSeed, enterSearchFor, toDoneFor, driveToward, rotateTo,
+  };
+}
+</script>
+
+<script>
+"use strict";
+/* ===== GUI (仅浏览器): 画布/交互/面板 ===== */
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+cv.width = 800 * DPR; cv.height = 800 * DPR;
+cv.style.width = '800px'; cv.style.height = '800px';
+ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+const PPM = 200;              // px per meter
+const MARGIN = 20;            // 场地外留边(px)
+const X = x => MARGIN + x*PPM;
+const Y = y => MARGIN + (FIELD - y)*PPM;
+
+// ---------- 日志 DOM ----------
+const logBox = document.getElementById('log');
+onLog = (e) => {
+  const d = document.createElement('div');
+  d.innerHTML = `<span class="t">[t=${e.t}s]</span> <span class="${e.cls}">${e.msg}</span>`;
+  logBox.appendChild(d);
+  while(logBox.children.length > 130) logBox.removeChild(logBox.firstChild);
+  logBox.scrollTop = logBox.scrollHeight;
+};
+
+// ---------- 绘制 ----------
+// 出发区是规则场地的一部分，不依赖机器人当前位置绘制；用独立的边框、标签和
+// 指向擂台的箭头强化可见性，避免深色走道或缩放后只剩一小块底色。
+function drawStartZone(z){
+  const left = X(z.x), top = Y(z.y + z.h);
+  const width = z.w * PPM, height = z.h * PPM;
+  const cx = X(z.x + z.w/2), cy = Y(z.y + z.h/2);
+  ctx.save();
+
+  // 彩色底 + 白色外框 + 虚线内框：即使车停在区内，边界仍清楚。
+  ctx.fillStyle = z.fill;
+  ctx.fillRect(left, top, width, height);
+  ctx.strokeStyle = z.edge;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(left, top, width, height);
+  ctx.setLineDash([7, 4]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(left + 5, top + 5, width - 10, height - 10);
+  ctx.setLineDash([]);
+
+  // 标签加描边，防止黄区黑字或蓝区白字被机器人/网格遮住。
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 13px sans-serif';
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = z.textHalo;
+  ctx.strokeText(z.label, cx, cy + 2);
+  ctx.fillStyle = z.text;
+  ctx.fillText(z.label, cx, cy + 2);
+
+  // 方向箭头：箭头尖端指向对应的擂台边，直观表达发车方向。
+  const ax = cx;
+  const ay1 = Y(z.arrowFromY), ay2 = Y(z.arrowToY);
+  ctx.strokeStyle = z.arrow;
+  ctx.fillStyle = z.arrow;
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(ax, ay1); ctx.lineTo(ax, ay2); ctx.stroke();
+  const sign = ay2 >= ay1 ? 1 : -1;
+  ctx.beginPath();
+  ctx.moveTo(ax, ay2);
+  ctx.lineTo(ax - 7, ay2 - sign * 11);
+  ctx.lineTo(ax + 7, ay2 - sign * 11);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+function draw(){
+  ctx.clearRect(0,0,800,800);
+  ctx.fillStyle='#0c0e10'; ctx.fillRect(0,0,800,800);   // 场外(50cm 底台, 最暗)
+  // 走道地面 (规则: 黑色, 宽 70cm)
+  ctx.fillStyle='#1d2126'; ctx.fillRect(X(0),Y(FIELD),FIELD*PPM,FIELD*PPM);
+  ctx.strokeStyle='rgba(255,255,255,0.05)'; ctx.lineWidth=1;
+  for(let i=0;i<=19;i++){ const p=X(i*0.2); ctx.beginPath(); ctx.moveTo(p,Y(FIELD)); ctx.lineTo(p,Y(0)); ctx.stroke(); }
+  // 出发区 (正黄/正蓝 50×40cm, 距擂台边缘 20cm, 正对台边):
+  //   黄区 x∈[0.7,1.2] y∈[0.1,0.5] / 蓝区 x∈[2.6,3.1] y∈[3.3,3.7]
+  drawStartZone({
+    x:0.7, y:0.1, w:0.5, h:0.4,
+    fill:'rgba(255,210,0,0.94)', edge:'#fff3a1', text:'#171717', textHalo:'rgba(255,255,255,0.85)',
+    label:'黄区 · 我方', arrow:'#171717', arrowFromY:0.16, arrowToY:0.64,
+  });
+  drawStartZone({
+    x:2.6, y:3.3, w:0.5, h:0.4,
+    fill:'rgba(0,112,255,0.94)', edge:'#b8d8ff', text:'#fff', textHalo:'rgba(0,23,64,0.9)',
+    label:'蓝区 · 对手', arrow:'#fff', arrowFromY:3.64, arrowToY:3.16,
+  });
+  // 围栏 (规则: 黑色高20cm; 黑底上画亮灰外沿描边保证可见)
+  ctx.strokeStyle='#0e0f11'; ctx.lineWidth=8;
+  ctx.strokeRect(X(0)-5,Y(0)-5,FIELD*PPM+10,FIELD*PPM+10);
+  ctx.strokeStyle='rgba(255,255,255,0.16)'; ctx.lineWidth=1.5;
+  ctx.strokeRect(X(0)-9,Y(0)-9,FIELD*PPM+18,FIELD*PPM+18);
+  ctx.strokeStyle='rgba(255,255,255,0.07)'; ctx.lineWidth=1;
+  ctx.strokeRect(X(0)-4,Y(0)-4,FIELD*PPM+8,FIELD*PPM+8);
+  ctx.fillStyle='rgba(255,255,255,0.35)'; ctx.font='10px sans-serif';
+  ctx.fillText('围栏 高20cm(黑)', X(3.8)-100, Y(3.8)-11);
+  // 擂台
+  const grad = ctx.createRadialGradient(X(CENTER),Y(CENTER),10, X(CENTER),Y(CENTER),HALF*1.42*PPM);
+  grad.addColorStop(0,'#ffffff'); grad.addColorStop(0.5,'#f3f1ea'); grad.addColorStop(1,'#3a3a3a');
+  ctx.fillStyle=grad; ctx.fillRect(X(EL),Y(ER),2*HALF*PPM,2*HALF*PPM);
+  ctx.strokeStyle='#26262a'; ctx.lineWidth=3; ctx.strokeRect(X(EL),Y(ER),2*HALF*PPM,2*HALF*PPM);
+  // 中央红区 + 武
+  ctx.fillStyle='rgba(190,40,40,0.85)'; ctx.fillRect(X(CENTER)-0.3*PPM,Y(CENTER)-0.3*PPM,0.6*PPM,0.6*PPM);
+  ctx.fillStyle='#fff'; ctx.font='bold 60px "KaiTi","STKaiti",serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('武', X(CENTER), Y(CENTER)+4);
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.fillStyle='rgba(255,255,255,0.4)'; ctx.font='10px sans-serif';
+  ctx.fillText('擂台 2.4×2.4m · 高6cm · 黑边白心渐变', X(0.72), Y(3.05)+14);
+  ctx.fillText('走道 70cm 黑色', X(0.08), Y(3.7)+14);
+
+  // 传感器可视化 (当前选中的车)
+  drawSensors(sensTarget);
+  // 能量块
+  drawBlock(deb, '#e04848', '−');
+  for(const b of buffs) drawBlock(b, '#37c26a', '+');
+  // 双车
+  drawBot(US);
+  drawBot(THEM);
+  // 悬空警告
+  for(const r of robots){
+    if(hangOn(r) && r.fsm.state!==S.DONE){
+      ctx.fillStyle='#ff5b5b'; ctx.font='bold 12px sans-serif';
+      ctx.fillText('⚠ 前红外悬空(边缘)', X(r.x)-55, Y(r.y)-40);
+    }
+  }
+}
+function drawSensors(r){
+  const c=r, sens=r.sens;
+  const cone=(ox,oy,ang,half,range,color,al,hit)=>{
+    ctx.beginPath();
+    ctx.moveTo(X(ox),Y(oy));
+    ctx.arc(X(ox),Y(oy),range*PPM, -ang-half, -ang+half);
+    ctx.closePath();
+    ctx.fillStyle=color; ctx.globalAlpha=hit?al+0.14:al; ctx.fill(); ctx.globalAlpha=1;
+    if(hit){ ctx.strokeStyle=color; ctx.globalAlpha=0.6; ctx.lineWidth=1.5; ctx.stroke(); ctx.globalAlpha=1; }
+  };
+  const trig=k=> sens[k]>params.IR_TRIGGER;
+  cone(c.x,c.y,c.th-Math.PI/4,0.55,1.6,'#35d07f',0.05,trig('dLF'));
+  cone(c.x,c.y,c.th+Math.PI/4,0.55,1.6,'#35d07f',0.05,trig('dRF'));
+  cone(c.x,c.y,c.th+3*Math.PI/4,0.55,1.6,'#35d07f',0.05,trig('dLB'));
+  cone(c.x,c.y,c.th-3*Math.PI/4,0.55,1.6,'#35d07f',0.05,trig('dRB'));
+  cone(c.x,c.y,c.th,0.4,2.2,'#4da3ff',0.05,trig('f'));
+  cone(c.x,c.y,c.th+Math.PI,0.7,1.3,'#b07bff',0.05,trig('r'));
+  cone(frontPt(c,0.14).x,frontPt(c,0.14).y,c.th,0.30,0.9,'#ff9f43',0.07,trig('sFL'));
+  cone(frontPt(c,0.14).x,frontPt(c,0.14).y,c.th,0.30,0.9,'#ff9f43',0.07,trig('sFR'));
+  // 灰度采样点
+  const off=0.11;
+  const dot=(a,col)=>{ const p={x:c.x+Math.cos(c.th+a)*off,y:c.y+Math.sin(c.th+a)*off}; ctx.beginPath(); ctx.arc(X(p.x),Y(p.y),4,0,7); ctx.fillStyle=col; ctx.fill(); };
+  const gcol=v=> v>params.ON_STAGE_THRESHOLD?'#3ddc84':(v>params.EDGE_THRESHOLD?'#ffd166':(v>params.FALL_THRESHOLD?'#ff9f43':'#ff5b5b'));
+  dot(0,gcol(sens.gF)); dot(Math.PI,gcol(sens.gB)); dot(Math.PI/2,gcol(sens.gL)); dot(-Math.PI/2,gcol(sens.gR));
+  ctx.fillStyle=sens.uL>0.5?'#ff5b5b':'#666'; ctx.fillRect(X(frontPt(c,0.14).x)-3, Y(frontPt(c,0.14).y)-3, 6,6);
+  ctx.fillStyle=sens.uR>0.5?'#ff5b5b':'#666'; ctx.fillRect(X(frontPt(c,0.14).x)+3, Y(frontPt(c,0.14).y)-3, 6,6);
+}
+function drawBlock(o,color,glyph){
+  const s=o.r*2*PPM;
+  ctx.save();
+  ctx.shadowColor=color; ctx.shadowBlur=10;
+  ctx.fillStyle=color; ctx.fillRect(X(o.x)-s/2,Y(o.y)-s/2,s,s);
+  ctx.shadowBlur=0;
+  ctx.strokeStyle='rgba(0,0,0,0.35)'; ctx.lineWidth=2; ctx.strokeRect(X(o.x)-s/2,Y(o.y)-s/2,s,s);
+  ctx.fillStyle='#fff'; ctx.font='bold 16px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(glyph, X(o.x), Y(o.y)+1);
+  ctx.restore();
+  ctx.fillStyle='#111'; ctx.font='10px sans-serif';
+  ctx.fillText(o.name, X(o.x)-s/2, Y(o.y)-s/2-4);
+}
+function drawBot(r){
+  const c=r;
+  ctx.save();
+  ctx.beginPath(); ctx.ellipse(X(c.x),Y(c.y),14,14,0,0,7); ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fill();
+  ctx.translate(X(c.x),Y(c.y)); ctx.rotate(-c.th);
+  // 轮子
+  ctx.fillStyle='#222'; ctx.fillRect(-17,-10,8,20); ctx.fillRect(9,-10,8,20);
+  // 车身
+  ctx.beginPath(); ctx.arc(0,0,14,0,7); ctx.fillStyle=r.color; ctx.fill();
+  ctx.strokeStyle='#aeb6bf'; ctx.lineWidth=1.5; ctx.stroke();
+  // 车头三角
+  ctx.beginPath(); ctx.moveTo(16,0); ctx.lineTo(6,-8); ctx.lineTo(6,8); ctx.closePath();
+  ctx.fillStyle=r.headColor; ctx.fill();
+  // 铲子
+  ctx.fillStyle='#8f9aa6'; ctx.fillRect(8,-11,9,22);
+  ctx.strokeStyle='#5d6873'; ctx.strokeRect(8,-11,9,22);
+  ctx.restore();
+  ctx.beginPath(); ctx.moveTo(X(c.x),Y(c.y));
+  ctx.lineTo(X(c.x)+Math.cos(c.th)*30, Y(c.y)-Math.sin(c.th)*30);
+  ctx.strokeStyle=r.headColor; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font='10px sans-serif';
+  ctx.fillText(r.name, X(c.x)-14, Y(c.y)+32);
+}
+
+// ---------- UI ----------
+const stateColor = {
+  'WAIT_START':'var(--st-wait)', 'MOUNT_RING':'var(--st-mount)', 'SEARCH':'var(--st-search)',
+  'ATTACK':'var(--st-attack)', 'SCORE_BLOCK':'var(--st-score)', 'RECOVER':'var(--st-recover)',
+  'FINISHED':'var(--st-done)', 'MANUAL':'var(--st-search)',
+};
+const badge=document.getElementById('stateBadge');
+const themBadge=document.getElementById('themBadge');
+const actTxt=document.getElementById('actionText');
+const subTxt=document.getElementById('subText');
+const themSub=document.getElementById('themSub');
+const scUs=document.getElementById('scoreUs'), scTh=document.getElementById('scoreThem');
+const clock=document.getElementById('clock');
+function subOf(r){
+  let s='';
+  if(r.fsm.state===S.MOUNT) s=`登台阶段: ${r.fsm.mount.phase}`;
+  if(r.fsm.state===S.RECOVER) s=`恢复阶段: ${r.fsm.rec.phase} (第${r.fsm.rec.count}次)`;
+  if(r.fsm.state===S.SEARCH && r.fsm.scan.phase!=='scan') s=`扫描阶段: ${r.fsm.scan.phase}`;
+  return s;
+}
+function updateStateUI(){
+  badge.textContent=US.fsm.state;
+  badge.style.background=stateColor[US.fsm.state]||'#666';
+  badge.style.color=US.fsm.state==='SEARCH'?'#0a0f14':'#fff';
+  themBadge.textContent=THEM.fsm.state;
+  themBadge.style.background=stateColor[THEM.fsm.state]||'#666';
+  themBadge.style.color=THEM.fsm.state==='SEARCH'?'#0a0f14':'#fff';
+  actTxt.textContent=US.fsm.action;
+  subTxt.textContent=subOf(US);
+  themSub.textContent=subOf(THEM);
+  scUs.textContent=scoreBoard.us; scTh.textContent=scoreBoard.them;
+  const m=Math.floor(US.fsm.timer/60), s=Math.floor(US.fsm.timer%60);
+  clock.textContent=`${m}:${String(s).padStart(2,'0')}`;
+}
+
+// 传感器面板 (可切换我方/对手)
+const SENSOR_DEFS=[
+  ['gF','灰度·前'],['gB','灰度·后'],['gL','灰度·左'],['gR','灰度·右'],
+  ['uL','铲下·L'],['uR','铲下·R'],['sFL','铲前·L'],['sFR','铲前·R'],
+  ['dLF','对角·左前'],['dRF','对角·右前'],['dLB','对角·左后'],['dRB','对角·右后'],
+  ['f','正前·远'],['r','后向'],
+];
+const senBox=document.getElementById('sensors');
+for(const [k,nm] of SENSOR_DEFS){
+  const d=document.createElement('div'); d.className='sen';
+  d.innerHTML=`<span class="nm">${nm}</span><span class="val" id="sv_${k}">0</span><span class="bar"><i id="sb_${k}"></i></span>`;
+  senBox.appendChild(d);
+}
+let sensTarget = US;
+document.getElementById('sensSel').addEventListener('change', e=>{
+  sensTarget = e.target.value==='them' ? THEM : US;
+});
+function updateSensorUI(){
+  const sens = sensTarget.sens;
+  for(const [k] of SENSOR_DEFS){
+    const v=sens[k], isG=k.startsWith('g');
+    const el=document.getElementById('sv_'+k), bar=document.getElementById('sb_'+k);
+    let col;
+    if(isG){
+      col = v>params.ON_STAGE_THRESHOLD? '#3ddc84' : v>params.EDGE_THRESHOLD? '#ffd166' : v>params.FALL_THRESHOLD? '#ff9f43' : '#ff5b5b';
+      el.textContent = Math.round(v);
+      bar.style.width = (v/10)+'%';
+    } else {
+      const trig = v>params.IR_TRIGGER;
+      col = trig? '#3ddc84' : v>0.12? '#ffd166' : '#5a6472';
+      el.textContent = v.toFixed(2);
+      bar.style.width = (v*100)+'%';
+    }
+    el.style.color=col; bar.style.background=col;
+  }
+}
+
+// 参数面板
+const paramDefs=[
+  ['EDGE_THRESHOLD','EDGE_THRESHOLD(边缘灰度)',50,900,1],
+  ['FALL_THRESHOLD','FALL_THRESHOLD(掉台判定)',50,900,1],
+  ['ON_STAGE_THRESHOLD','ON_STAGE_THRESHOLD(登台判定)',100,1000,1],
+  ['grayNoise','灰度噪声 ±',0,200,1],
+  ['irNoise','红外噪声 ±',0,0.2,0.01],
+  ['IR_TRIGGER','红外触发阈值',0.1,0.9,0.01],
+  ['MOUNT_SPEED','登台速度(780/800)',400,1200,10],
+  ['classifyRate','视觉识别成功率 %',50,100,1],
+  ['RECOVER_LIMIT','恢复次数上限',1,5,1],
+];
+const sliders=document.getElementById('sliders');
+for(const [k,lab,min,max,step] of paramDefs){
+  const l=document.createElement('label');
+  l.innerHTML=`${lab} <input type="range" id="p_${k}" min="${min}" max="${max}" step="${step}" value="${params[k]}"><span id="v_${k}">${params[k]}</span>`;
+  sliders.appendChild(l);
+  l.querySelector('input').addEventListener('input',e=>{
+    params[k]=+e.target.value;
+    document.getElementById('v_'+k).textContent=params[k];
+  });
+}
+
+// ---------- 控制 ----------
+document.getElementById('btnArm').addEventListener('click', arm);
+document.getElementById('btnReset').addEventListener('click', ()=>{ logBox.innerHTML=''; resetAll(); });
+document.getElementById('btnRotL').addEventListener('click', ()=>{ US.th=norm(US.th+0.26); });
+document.getElementById('btnRotR').addEventListener('click', ()=>{ US.th=norm(US.th-0.26); });
+document.getElementById('speedGrp').addEventListener('click', e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  params.simSpeed=+b.dataset.sp;
+  document.querySelectorAll('#speedGrp button').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+});
+document.addEventListener('keydown', e=>{
+  if(e.key==='Enter') arm();
+  if(e.key==='r'||e.key==='R'){ logBox.innerHTML=''; resetAll(); }
+});
+document.getElementById('scCenter').onclick = ()=> scenePreset('center');
+document.getElementById('scEdge').onclick = ()=> scenePreset('edge');
+document.getElementById('scFloor').onclick = ()=> scenePreset('walkway');
+document.getElementById('scHang').onclick = ()=> scenePreset('hang');
+document.getElementById('scOppOn').onclick = ()=> scenePreset('opp_on');
+document.getElementById('scOppGo').onclick = ()=> scenePreset('opp_start');
+
+// ---------- 拖拽交互 ----------
+let drag=null;
+function hitTest(px,py){
+  if(dist(US,{x:px,y:py}) < 0.28) return US;
+  if(dist(THEM,{x:px,y:py}) < 0.28) return THEM;
+  for(const o of blocks) if(dist(o,{x:px,y:py}) < o.r+0.05) return o;
+  return null;
+}
+cv.addEventListener('pointerdown', e=>{
+  const r=cv.getBoundingClientRect();
+  const wx=(e.clientX-r.left)/PPM, wy=(FIELD-(e.clientY-r.top))/PPM;
+  const t=hitTest(wx,wy);
+  if(t){ drag={ obj:t, dx:wx-t.x, dy:wy-t.y }; t.dragLock=true; cv.setPointerCapture(e.pointerId); cv.style.cursor='grabbing'; }
+});
+cv.addEventListener('pointermove', e=>{
+  const r=cv.getBoundingClientRect();
+  const wx=(e.clientX-r.left)/PPM, wy=(FIELD-(e.clientY-r.top))/PPM;
+  if(drag){
+    const t=drag.obj;
+    t.x=clamp(wx-drag.dx,0.05,3.75); t.y=clamp(wy-drag.dy,0.05,3.75);
+    t.vx=t.vy=0;
+    if(t===US||t===THEM){ t.th=norm(t.th); t.v=t.w=0; }
+  } else {
+    cv.style.cursor = hitTest(wx,wy)? 'grab':'default';
+  }
+});
+cv.addEventListener('pointerup', ()=>{ if(drag && drag.obj){ drag.obj.dragLock=false; } drag=null; cv.style.cursor='default'; });
+cv.addEventListener('wheel', e=>{
+  const r=cv.getBoundingClientRect();
+  const wx=(e.clientX-r.left)/PPM, wy=(FIELD-(e.clientY-r.top))/PPM;
+  const t=hitTest(wx,wy);
+  if(t===US||t===THEM){
+    e.preventDefault();
+    t.th = norm(t.th + (e.deltaY>0? 0.1 : -0.1));
+  }
+},{passive:false});
+
+// ---------- 导入小车程序 + 远程对战 (GUI 直连本地 server) ----------
+const API_BASE = 'http://127.0.0.1:8932';
+let remote = { mode: false, timer: null, lastUpload: null, lastLogLen: 0, lastOutLen: 0 };
+const remoteStatus = document.getElementById('remoteStatus');
+const remoteOut = document.getElementById('remoteOut');
+const remoteOutWrap = document.getElementById('remoteOutWrap');
+const api = (p, body) => fetch(API_BASE + p, body ? {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+} : undefined).then(r => r.json()).catch(e => ({ error: String(e && e.message || e) }));
+
+// 加载程序注册表填充下拉(我方/对手)
+async function refreshSelects(){
+  const reg = await api('/registry');
+  if (reg.error) return;
+  const opts = ['fsm'];
+  for (const k in reg){ if (!k.startsWith('_')) opts.push('@' + k); }
+  for (const id of ['selUs', 'selThem']){
+    const sel = document.getElementById(id);
+    const prev = sel.value;
+    sel.innerHTML = opts.map(o => `<option value="${o}">${o}</option>`).join('');
+    if (prev && opts.includes(prev)) sel.value = prev;
+    else if (id === 'selUs') sel.value = '@example';
+  }
+}
+refreshSelects();
+
+document.getElementById('btnImport').addEventListener('click', () => document.getElementById('importPy').click());
+// 文件夹导入 (实车代码全栈, 引用路径不复制)
+document.getElementById('btnImportDir').addEventListener('click', () => {
+  const row = document.getElementById('dirImportRow');
+  row.style.display = row.style.display === 'none' ? 'flex' : 'none';
+});
+document.getElementById('btnDirGo').addEventListener('click', async () => {
+  const dirPath = document.getElementById('dirPath');
+  const dirEntry = document.getElementById('dirEntry');
+  const dirName = document.getElementById('dirName');
+  const st = document.getElementById('dirStatus');
+  const dir = dirPath.value.trim();
+  if (!dir){ st.textContent = '请填文件夹路径'; return; }
+  st.textContent = '导入中…';
+  st.style.color = 'var(--muted)';
+  const r = await api('/import-dir', {
+    name: dirName.value.trim() || undefined,
+    dir,
+    entry: dirEntry.value.trim() || undefined,
+  });
+  if (r.ok){
+    st.textContent = `OK → @${r.name}`;
+    st.style.color = '#3ddc84';
+    log(`[远程] 文件夹导入: ${dir} → @${r.name} (入口 ${r.entry})`, 'score');
+    await refreshSelects();
+    document.getElementById('selUs').value = '@' + r.name;
+  } else {
+    st.textContent = '失败: ' + (r.error || '');
+    st.style.color = '#ff6b6b';
+    log('[远程] 文件夹导入失败: ' + (r.error || ''), 'warn');
+  }
+});
+document.getElementById('importPy').addEventListener('change', async e => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  const code = await f.text();
+  const r = await api('/upload', { filename: f.name, code });
+  if (r.ok){
+    remote.lastUpload = r.name;
+    remoteStatus.textContent = `已导入 @${r.name}`;
+    remoteStatus.style.color = '#3ddc84';
+    log(`[远程] 已上传 ${f.name} → @${r.name}, 下拉里选择后点"远程对战"`, 'score');
+    await refreshSelects();
+    document.getElementById('selUs').value = '@' + r.name;
+  } else {
+    remoteStatus.textContent = '上传失败: ' + (r.error || '');
+    log('[远程] 上传失败: ' + (r.error || ''), 'warn');
+  }
+  e.target.value = '';
+});
+document.getElementById('btnRemoteStart').addEventListener('click', async () => {
+  if (remote.mode) return;
+  const us = document.getElementById('selUs').value || '@example';
+  const them = document.getElementById('selThem').value || 'fsm';
+  const r = await api('/battle/start', { us, them, seed: 42, maxSteps: 2400 });
+  if (!r.ok){ remoteStatus.textContent = '启动失败: ' + (r.error || ''); log('[远程] ' + (r.error || ''), 'warn'); return; }
+  remote.mode = true;
+  remote.lastLogLen = logEvents.length;
+  remote.lastOutLen = 0;
+  remoteOutWrap.style.display = 'block';
+  remoteOut.innerHTML = '';
+  remoteStatus.textContent = `对战进行中 ${r.us} vs ${r.them}`;
+  remoteStatus.style.color = '#ffd166';
+  log(`[远程] 对战开始: ${r.us} vs ${r.them} (轮询渲染中)`);
+  remote.timer = setInterval(pollRemote, 200);
+});
+document.getElementById('btnRemoteStop').addEventListener('click', async () => {
+  await api('/battle/stop');
+  if (remote.timer) clearInterval(remote.timer);
+  remote.timer = null;
+  remote.mode = false;
+  remoteStatus.textContent = '已停止 (本地模式)';
+  log('[远程] 已停止, 回到本地模式', 'warn');
+});
+function pollRemote(){
+  Promise.all([api('/state'), api('/battle/status')]).then(([st, stt]) => {
+    if (!st || !st.robots) return;
+    // 用服务器状态覆盖双车(远程渲染)
+    US.x = st.robots.us.x; US.y = st.robots.us.y; US.th = st.robots.us.th;
+    US.fsm.state = st.robots.us.state; US.fsm.action = st.robots.us.action;
+    THEM.x = st.robots.them.x; THEM.y = st.robots.them.y; THEM.th = st.robots.them.th;
+    THEM.fsm.state = st.robots.them.state; THEM.fsm.action = st.robots.them.action;
+    US.fsm.scores.us = st.scores.us; THEM.fsm.scores.us = st.scores.them;
+    US.fsm.timer = st.timer;
+    if (stt){
+      // 日志增量显示(服务器 logTail → 主日志)
+      for (const e of stt.logTail || []){
+        if (logEvents.length && logEvents[logEvents.length-1].t === e.t && logEvents[logEvents.length-1].msg === e.msg) continue;
+        logEvents.push(e);
+        if (onLog) onLog(e);
+      }
+      // 输出面板: 子进程输出增量
+      const out = stt.output || [];
+      for (let i = remote.lastOutLen; i < out.length; i++){
+        const d = document.createElement('div');
+        d.textContent = out[i];
+        remoteOut.appendChild(d);
+      }
+      remoteOut.scrollTop = remoteOut.scrollHeight;
+      remote.lastOutLen = out.length;
+      if (stt.done && remote.mode){
+        remote.mode = false;
+        if (remote.timer) clearInterval(remote.timer);
+        remote.timer = null;
+        remoteStatus.textContent = `对战结束 ${stt.scores.us}:${stt.scores.them} (${stt.doneReason || '完赛'})`;
+        remoteStatus.style.color = '#4da3ff';
+      }
+    }
+  }).catch(() => {});
+}
+
+// ---------- 主循环 ----------
+let last = performance.now();
+function loop(now){
+  const dt = Math.min((now-last)/1000, 0.05) * params.simSpeed;
+  last = now;
+  if (!remote.mode) stepSim(dt);       // 远程对战: 状态由服务器轮询驱动
+  draw();
+  updateSensorUI();
+  updateStateUI();
+  requestAnimationFrame(loop);
+}
+
+// ---------- 启动 ----------
+resetAll();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

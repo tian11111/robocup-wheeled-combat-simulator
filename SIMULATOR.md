@@ -1,0 +1,199 @@
+# 2026 武术擂台·轮式格斗机器人 决策逻辑仿真器
+
+**3D 主入口：Three.js + 可选 Rapier 3D 碰撞层。** 规则判定仍由确定性比赛核心负责，物理/标定需实车验证。规则参考 RoboCup 2026 轮式格斗：
+场地 3.8×3.8m（走道 70cm 黑色、围栏高 20cm 黑色、底台 50cm、出发区正黄/正蓝 50×40cm 距台边 20cm），中央擂台 2.4×2.4m 高 6cm
+（黑边白心渐变 + 中央红区"武"），2 增益块(+3) + 1 减益块(推下给对方 +6)，比赛 2 分钟。
+
+## 文件
+
+| 文件 | 说明 |
+|---|---|
+| `wushu_ring_sim_3d.html` | **唯一用户界面**：Three.js 3D 场地、Rapier 碰撞桥、裁判面板和策略热插拔 |
+| `wushu_ring_sim_3d.template.html` | 3D 模板，含 `/*__CORE__*/` 占位符与 GameEngine 分层入口 |
+| `wushu_ring_sim.html` | 旧无 DOM 核心兼容源（仅供 `sim_lib.js`/回归测试提取 CORE，不再作为网页入口） |
+| `build_3d.js` | `node build_3d.js` — 从兼容核心源提取 CORE 注入 3D 模板 |
+| `game_engine.js` | 比赛编排层：Referee + SensorAPI + RobotAPI + PhysicsAdapter |
+| `referee_system.js` | 裁判门面：计时、暂停/继续、调试/重启判罚、比分/事件读取 |
+| `sensor_api.js` | 稳定的机器人观测接口 `observe(core, role)` |
+| `robot_api.js` | JS 策略接口：`update(sensors) → {leftSpeed,rightSpeed}` 或 `{v,w}` |
+| `physics_adapter.js` | Rapier 3D 台阶碰撞桥（优先 `lib/rapier3d-compat.min.js`，再尝试 CDN）；加载失败时回退到确定性登台判定 |
+| `robots/yellow_bot.js` | 我方 YellowBot.js 热插拔模板（默认关闭，交回内置 FSM） |
+| `robots/blue_bot.js` | 对手 BlueBot.js 热插拔模板（默认关闭，交回内置 FSM） |
+| `sim_lib.js` | 公共库：核心加载 + 子进程策略 + 对战运行器 |
+| `sim_server.js` | 无头 HTTP API（供 AI Agent 链接）+ `/battle/run` 子进程对战 |
+| `sim_battle.js` | CLI 对战（`node sim_battle.js --us "python robot_adapter.py example_robot.py" --them fsm`） |
+| `sim_env.py` | Python 客户端（gym 风格，仅标准库） |
+| `robot_adapter.py` | 小车程序适配器：`python robot_adapter.py your_program.py` |
+| `example_robot.py` | 示例小车决策程序（`decide(obs)` 参考写法） |
+| `sim_selftest.js` | 状态机、规则边界与裁判阶段自测（25 场景） |
+
+## 核心设计
+
+- **3D Game Engine 分层**：Three.js 只负责显示；GameEngine 编排规则核心、RefereeSystem、SensorAPI、RobotAPI 和 PhysicsAdapter。Rapier 可用时创建地面、6cm 擂台顶面/台阶和两台车的运动学碰撞体；未加载时使用同一套确定性的“垂直法向冲台”判定，保证离线/无头测试不漂移。
+- **裁判状态流转**：`PREP(最多60s) → READY → RUNNING ↔ PAUSED → FINISHED`。`arm()` 可在准备阶段提前发令；3D 控制面板支持暂停、继续、调试判罚(+3给对方)、重启判罚(+4给对方)。
+- **策略热插拔**：编辑 `robots/yellow_bot.js` / `robots/blue_bot.js`，将 controller 的 `active` 改为 `true`，在 `update(sensors, context)` 返回左右轮速即可接管对应一方；返回 `null` 则继续使用内置 FSM。
+
+- **双车同算法**：我方(US)与对手(THEM)是完全同构的车，各自 14 路传感器 + 同一套 FSM
+  （WAIT_START → MOUNT_RING(姿态确认→倒车登台 780/800→失败前冲找墙→换面→正冲备选) →
+  SEARCH(对角IR→转向→视觉分类 buff=SCORE_BLOCK / debuff=绕行 / 未知+前向持续=ATTACK) →
+  ATTACK / SCORE_BLOCK / RECOVER(掉台→屁股朝擂台→贴边回中→超限 FINISHED) → FINISHED），
+  危机门控（on_stage + 前红外悬空 + 运动 → 急刹进 RECOVER），SEARCH 扫描时前端压黑带朝外
+  会先"扫描避边"倒车回台（用 EDGE_THRESHOLD）。
+- **任意一侧可换成外部控制器**：内置 FSM / HTTP 手动策略 / 你自己的小车程序（子进程）。
+- **确定性**：`resetAll({seed})` 后噪声/识别/能量块摆放全部可复现，便于参数迭代。
+- **车辆 profile 独立**：US/THEM 各自保存一份车辆参数，不再假定所有队伍都是同一尺寸、质量或速度。GUI 可直接编辑/复制/导入 JSON；HTTP、CLI 和 `resetAll` 也可传入同一 profile。
+
+### 自定义小车参数
+
+车辆参数单位统一为 SI 制：长度/宽度/高度/footprint 为 m，速度为 m/s，转速为 rad/s，质量为 kg。
+`frontExtent`/`rearExtent`/`sideExtent` 是从车中心到实际最外缘的 footprint（应包含铲子和外挂），用于台沿连续碰撞；
+`collisionRadius` 用于车-车、车-能量块的保守分离；`mass` 与 `pushFactor` 影响推挤结果。
+
+```json
+{
+  "us": {
+    "id": "yellow-32",
+    "length": 0.32, "width": 0.24, "height": 0.10,
+    "frontExtent": 0.20, "rearExtent": 0.16, "sideExtent": 0.13,
+    "shovelLength": 0.04, "shovelWidth": 0.22,
+    "collisionRadius": 0.18,
+    "maxSpeed": 1.20, "maxTurnRate": 4.5, "accelK": 12,
+    "mass": 1.3, "pushFactor": 1.1
+  },
+  "them": { "id": "blue-default" }
+}
+```
+
+未填写的字段沿用当前 profile；数值会按核心安全范围钳制。`resetAll({vehicles:{us:{...},them:{...}}})`、
+`POST /reset`、`POST /battle/run` 和 CLI `--vehicles` 都接受这个结构。
+
+### 参数有效性说明（扫参前必读）
+
+只有以下参数**真正影响 FSM 决策**：
+
+| 参数 | 作用 |
+|---|---|
+| `EDGE_THRESHOLD` | SEARCH 扫描避边（压黑带朝外 → 倒车回台）；默认 400 |
+| `IR_TRIGGER` | 红外触发阈值（目标发现/铲前登台信号） |
+| `MOUNT_SPEED` | 倒车登台速度（显示 780/800） |
+| `RECOVER_LIMIT` | 恢复次数上限（超限 FINISHED） |
+| `classifyRate` | 视觉分类成功率（模拟，实车视觉接入前） |
+| `grayNoise` / `irNoise` | 传感器噪声（影响鲁棒性评估） |
+
+`FALL_THRESHOLD` 会参与 CORE 登台阶段的 `climbed` 信号判定；`ON_STAGE_THRESHOLD` 只用于 GUI
+颜色显示。扫参时不要把 `ON_STAGE_THRESHOLD` 放进搜索空间。
+
+当前登台物理采用本车工程约束：车尾先对准台沿法向，以足够法向速度倒车上台；斜撞、斜穿台角和低速顶台均被台壁阻挡。
+台沿检测使用车辆 footprint，车身/铲子刚接触边缘就会被阻挡，避免“车中心未越沿但车头已经穿模”。更换底盘时应重新填写 footprint 和速度参数。
+能量块和车-车碰撞还增加了线段扫掠检测，避免高速度或较大 `dt` 时一帧跨过目标而穿透；这仍是确定性简化碰撞，不替代真机动力学标定。
+
+规则计分层已覆盖：双方同帧掉台不计分、另一方已在台下时掉台不计分、读秒按双方台上/台下状态切换重新计时、能量块按最后接触者计分并在下台后本场报废、连续静止超过 10 秒触发消极比赛 +1。
+
+# 快速开始
+
+```bash
+# GUI（唯一入口）
+start wushu_ring_sim_3d.html       # 3D（需要 lib/three.min.js，已随项目提供；Rapier 在线可选）
+
+# 无头 API（AI Agent 用）
+node sim_server.js                 # http://127.0.0.1:8932
+
+# 对战 CLI
+node sim_battle.js --seed 42                                   # FSM vs FSM
+node sim_battle.js --us "python robot_adapter.py example_robot.py" --them fsm --seed 7
+node sim_battle.js --vehicles vehicles.json --us @example --them fsm --seed 42
+
+# Python 客户端
+"C:/Users/Neco/AppData/Local/Programs/Python/Python312/python.exe" sim_env.py          # 跑一集
+"C:/Users/Neco/AppData/Local/Programs/Python/Python312/python.exe" sim_env.py --sweep  # 扫参
+```
+
+3D 视角操作：左键拖拽空白=旋转视角（点车身/方块=拖拽移动）、右键=平移、滚轮=缩放、双击=复位视角。黄/蓝出发区按规则坐标绘制为独立彩色平面，并带边框、标签和指向擂台的箭头。
+拖动车身或能量块时保持鼠标按下位置与对象中心的相对偏移，单纯点击不会使对象瞬移。
+
+## HTTP API（sim_server.js）
+
+| 端点 | 请求体 | 说明 |
+|---|---|---|
+| `POST /reset` | `{seed, params, scene, vehicles, manual}` | 重置并进入 `PREP`（seed 固定可复现）；`vehicles` 为 `{us:{...},them:{...}}` |
+| `POST /arm` | — | 发令（双车 FSM 开跑） |
+| `POST /step` | `{dt, action:{v,w}}` | 单步（action 控制我方，对手 FSM） |
+| `POST /step2` | `{dt, us:{v,w}, them:{v,w}}` | 分别控制两车（null=该车 FSM） |
+| `POST /params` | `{EDGE_THRESHOLD:300, ...}` | 实时改参数 |
+| `GET /vehicle?role=us` | — | 读取一台车当前 profile |
+| `POST /vehicle` | `{role:'us', vehicle:{length:0.32, width:0.24, maxSpeed:1.2}}` | 修改单台车 profile，立即影响碰撞/运动 |
+| `POST /scene` | `{preset} / {robot, opp, buffs, debuff}` | 摆场景（等价拖拽） |
+| `POST /battle/run` | `{us, them, seed, params, vehicles, dt, maxSteps, actionTimeout, traceEvery}` | 跑一整场；`vehicles` 为双车 profile；us/them 为 `'fsm'` 或子进程命令；返回含轨迹 `trace`（双车位姿采样，可分析/回放） |
+| `GET /state` | — | 全量状态（双车传感器/FSM/比分/日志） |
+| `GET /log` | — | 事件日志 |
+| `GET /referee/state` | — | 裁判阶段、准备/正赛剩余时间、重启判罚 |
+| `POST /referee/pause` | `{reason?}` | 暂停正赛 |
+| `POST /referee/resume` | — | 继续正赛 |
+| `POST /referee/restart` | `{role:'us'|'them', kind:'debug'|'restart'}` | 调试+3/重启+4，分数给对方 |
+
+返回的 `state` 关键字段：`robots.us/them`（x,y,th,v,w,vehicle,onPlatform,hang,state,action,armed,manual,timer）、
+`sensors.us/them`（14 路）、`scores{us,them}`、`done/doneReason`。
+`/step` 额外返回 `reward`（本步得分增量）与 `done`，可直接做 gym 式循环。
+
+## 子进程桥（跑你自己的小车程序）
+
+**GUI 一键导入（最省事）**：打开 3D 页 → 点"📤 导入小车程序"选你的 .py（含 `decide(obs)`，可用 `--new` 生成模板）→ **"我方"和"对手"下拉里都能选**（fsm / @example / @realcar / 你上传的）→ 点"▶ 远程对战"→ **双车在 3D 场景中实时对战**，比分/日志同步，"小车程序输出面板"显示双方子进程输出，自动结束或点"⏹ 停止"。（需先 `node sim_server.js` 起本地 API；页面 file:// 双击打开即可，自动连 `http://127.0.0.1:8932`。远程对战为快速仿真，约 10x 速。）
+
+**命令行三步接入**：
+
+```bash
+# ① 生成模板（带 decide(obs) 框架和 obs 结构注释）
+"C:/Users/Neco/AppData/Local/Programs/Python/Python312/python.exe" robot_adapter.py --new my_robot
+# ② 编辑 my_robot.py 里的 decide(obs)；可选: 在 sim_robots.json 注册, 用 @名字 引用
+# ③ 跑对战
+node sim_battle.js --us @my_robot --them fsm --seed 42      # 注册表方式
+node sim_battle.js --list                                   # 查看注册表
+node sim_battle.js --us "python robot_adapter.py my_robot.py" --them fsm   # 完整命令方式
+node sim_battle.js --vehicles vehicles.json --us @my_robot --them fsm      # 带双车 profile
+```
+
+**已有注册表程序**：`@example`（示例策略：登台/推增益块/绕减益块/近身撞对手）、`@realcar`（实车代码全栈——SimDriver 桥零改动接入 main.py + strategy/fsm.py）。
+
+协议：仿真器每步向子进程 stdin 写一行 JSON 观测，子进程 stdout 回一行 `{"v":..,"w":..}`（超时 300ms 按零动作）。**stdout 只允许动作 JSON**，日志走 stderr。`obs.robot.vehicle` 是当前一方的 profile，策略可据此按车宽/最高速度自适应。
+
+obs 结构：
+
+```json
+{"t":12.3,"role":"us","timer":107.7,"scores":{"us":3,"them":0},
+ "robot":{"x":1.9,"y":1.9,"th":0.5,"v":0.9,"w":0.1,"onPlatform":true,"hang":false,"state":"SEARCH","action":"旋转扫描"},
+ "sensors":{"gF":940,"gB":920,"gL":300,"gR":310,"uL":1,"uR":1,"sFL":0.9,"sFR":0.8,
+            "dLF":0.1,"dRF":0.72,"dLB":0.0,"dRB":0.3,"f":0.98,"r":0.0},
+ "opponent":{"x":2.6,"y":2.0,"th":-2.2,"onPlatform":true,"state":"SCORE_BLOCK"},
+ "objects":{"buffs":[{"x":1.4,"y":1.3,"onPlatform":true}],"debuff":{"x":2.2,"y":2.5,"onPlatform":true}}}
+```
+
+传感器 14 路：`gF/gB/gL/gR` 灰度(0-1000，台上白≈1000/黑带≈300/走道=0，含噪声)；
+`uL/uR` 铲下红外(0/1)；`sFL/sFR` 铲前红外；`dLF/dRF/dLB/dRB` 对角红外(左前/右前/左后/右后)；
+`f` 正前远红外；`r` 后向红外。红外为 0~1 连续值，触发阈值 `IR_TRIGGER`(默认 0.35)。
+
+## AI Agent 迭代工作流
+
+1. 启动 `node sim_server.js`；
+2. 用 `sim_env.py` 或 curl 跑基线（固定 seed 多集求均值）；
+3. 改参数（`/params` 实时生效）或写自己的 `decide(obs)` 程序；
+4. 批量跑 `/battle/run` 对比比分，日志 `[我方]/[对手]` 分色可读；
+5. 需要可视化时打开 `wushu_ring_sim_3d.html`，在 3D 场景中看实时行为和裁判阶段。
+
+```python
+# sim_env.py 迭代示例
+env = SimEnv()
+env.reset(seed=42, params={"EDGE_THRESHOLD": 250})
+env.arm()
+for _ in range(2400):
+    obs, reward, done, info = env.step()
+    if done: break
+print(env.state()["scores"])
+```
+
+## 注意事项
+
+- 改兼容核心源 `wushu_ring_sim.html` 的 CORE 块后，运行 `node build_3d.js` 同步唯一 3D 页面；
+  无头 server/battle 每次启动时自动读取最新 CORE。
+- 视觉（buff/debuff 分类）目前用 `classifyRate` 概率模拟；实车视觉（YOLO 等）由用户另行配置，
+  决策接口不变。
+- Rapier 桥使用运动学车体与实体 6cm 台阶，核心仍以“屁股正对台沿 + 法向速度”作为登台规则门槛；因此它是决策逻辑/碰撞一致性辅助，不承诺与真车逐帧动力学保真。

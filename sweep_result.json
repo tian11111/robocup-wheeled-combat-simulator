@@ -1,0 +1,151 @@
+{
+ "seeds": [
+  100,
+  101,
+  102
+ ],
+ "us": "fsm",
+ "them": "fsm",
+ "results": [
+  {
+   "params": {
+    "EDGE_THRESHOLD": 404.0,
+    "IR_TRIGGER": 0.23,
+    "MOUNT_SPEED": 736.0,
+    "RECOVER_LIMIT": 4.0
+   },
+   "mean_net": 12.67,
+   "per_seed": [
+    6,
+    32,
+    0
+   ]
+  },
+  {
+   "params": {
+    "EDGE_THRESHOLD": 423.0,
+    "IR_TRIGGER": 0.21,
+    "MOUNT_SPEED": 884.0,
+    "RECOVER_LIMIT": 3.0
+   },
+   "mean_net": 12.0,
+   "per_seed": [
+    0,
+    21,
+    15
+   ]
+  },
+  {
+   "params": {
+    "EDGE_THRESHOLD": 283.0,
+    "IR_TRIGGER": 0.53,
+    "MOUNT_SPEED": 780.0,
+    "RECOVER_LIMIT": 4.0
+   },
+   "mean_net": 7.67,
+   "per_seed": [
+    -6,
+    24,
+    5
+   ]
+  },
+  {
+   "params": {
+    "EDGE_THRESHOLD": 281.0,
+    "IR_TRIGGER": 0.29,
+    "MOUNT_SPEED": 840.0,
+    "RECOVER_LIMIT": 4.0
+   },
+   "mean_net": 7.33,
+   "per_seed": [
+    -17,
+    11,
+    28
+   ]
+  },
+  {
+   "params": {
+    "EDGE_THRESHOLD": 286.0,
+    "IR_TRIGGER": 0.4,
+    "MOUNT_SPEED": 805.0,
+    "RECOVER_LIMIT": 5.0
+   },
+   "mean_net": 2.0,
+   "per_seed": [
+    18,
+    -12,
+    0
+   ]
+  },
+  {
+   "params": {
+    "EDGE_THRESHOLD": 544.0,
+    "IR_TRIGGER": 0.57,
+    "MOUNT_SPEED": 922.0,
+    "RECOVER_LIMIT": 5.0
+   },
+   "mean_net": -2.0,
+   "per_seed": [
+    6,
+    3,
+    -15
+   ]
+  },
+  {
+   "params": {
+    "EDGE_THRESHOLD": 475.0,
+    "IR_TRIGGER": 0.43,
+    "MOUNT_SPEED": 696.0,
+    "RECOVER_LIMIT": 4.0
+   },
+   "mean_net": -3.33,
+   "per_seed": [
+    0,
+    -10,
+    0
+   ]
+  },
+  {
+   "params": {
+    "EDGE_THRESHOLD": 456.0,
+    "IR_TRIGGER": 0.47,
+    "MOUNT_SPEED": 684.0,
+    "RECOVER_LIMIT": 3.0
+   },
+   "mean_net": -3.33,
+   "per_seed": [
+    3,
+    0,
+    -13
+   ]
+  },
+  {
+   "params": {
+    "EDGE_THRESHOLD": 485.0,
+    "IR_TRIGGER": 0.42,
+    "MOUNT_SPEED": 892.0,
+    "RECOVER_LIMIT": 4.0
+   },
+   "mean_net": -13.67,
+   "per_seed": [
+    -10,
+    -4,
+    -27
+   ]
+  },
+  {
+   "params": {
+    "EDGE_THRESHOLD": 338.0,
+    "IR_TRIGGER": 0.38,
+    "MOUNT_SPEED": 951.0,
+    "RECOVER_LIMIT": 4.0
+   },
+   "mean_net": -14.0,
+   "per_seed": [
+    -3,
+    -31,
+    -8
+   ]
+  }
+ ]
+}

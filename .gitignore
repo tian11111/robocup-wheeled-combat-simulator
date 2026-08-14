@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.log
+_*.log
+.pytest_cache/
+.mypy_cache/
+.venv/
+node_modules/
+*.tmp
+*.bak
+*.local.json

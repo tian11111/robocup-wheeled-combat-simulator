@@ -1,0 +1,31 @@
+{
+  "_comment": "小车程序注册表 — sim_battle.js / sim_server.js 支持用 @名字 引用下面的 cmd。用法: node sim_battle.js --us @example --them fsm",
+  "example": {
+    "cmd": "python robot_adapter.py example_robot.py",
+    "desc": "示例决策程序(参考实现): 登台/推增益块/绕减益块/近身撞对手"
+  },
+  "realcar": {
+    "cmd": "python robot_adapter.py D:\\project\\robocup\\robocup-2026-wheeled-combat\\tools\\sim_robot_main.py",
+    "desc": "文件夹导入: D:\\project\\robocup\\robocup-2026-wheeled-combat (入口 sim_robot_main.py)"
+  },
+  "my_car": {
+    "cmd": "python robot_adapter.py robots/my_car.py",
+    "desc": "上传的小车程序"
+  },
+  "main": {
+    "cmd": "python robot_adapter.py robots/main.py",
+    "desc": "上传的小车程序"
+  },
+  "mycar_dir": {
+    "cmd": "python robot_adapter.py D:\\project\\robocup\\robocup-2026-wheeled-combat\\tools\\sim_robot_main.py",
+    "desc": "文件夹导入: D:\\project\\robocup\\robocup-2026-wheeled-combat (入口 sim_robot_main.py)"
+  },
+  "patrol": {
+    "cmd": "python robot_adapter.py D:/project/robocup/robocup-2026-wheeled-combat/tools/sim_patrol.py",
+    "desc": "巡台+锁敌推块(test_push_block 逻辑接入仿真): ring 巡台→红外锁敌→视觉分类→推buff/绕debuff(需 scene=center 车在台上)"
+  },
+  "robocup-2026-wheeled-combat": {
+    "cmd": "python robot_adapter.py D:\\project\\robocup\\robocup-2026-wheeled-combat\\tools\\sim_patrol.py",
+    "desc": "文件夹导入: D:\\project\\robocup\\robocup-2026-wheeled-combat (入口 sim_patrol.py)"
+  }
+}
