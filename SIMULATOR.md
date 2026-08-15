@@ -18,7 +18,7 @@
 | `robot_api.js` | JS 策略接口：`update(sensors) → {leftSpeed,rightSpeed}` 或 `{v,w}` |
 | `physics_adapter.js` | Rapier 3D 台阶碰撞桥（优先本地 ESM WASM、再尝试 CDN）；加载失败时回退到确定性登台判定 |
 | `visual_effects.js` | 渲染增强：ACES、软阴影、程序化 PBR 法线/粗糙度贴图、AO/接触阴影、发光、状态灯、尘雾和轮胎痕迹 |
-| `visual_hud.js` | 3D 头顶 HUD、2.6 秒轨迹渐隐、线/角速度矢量、鸟瞰/跟车/台沿镜头、传感器扫描波纹 |
+| `visual_hud.js` | 3D 头顶 HUD、2.8 秒轨迹渐隐、线/角速度矢量、鸟瞰/跟车/台沿镜头、传感器扫描波纹 |
 | `lib/rapier.es.js` | `@dimforge/rapier3d-compat@0.14.0` 浏览器 ESM 构建（内嵌编译 WASM，供静态托管离线加载） |
 | `robots/yellow_bot.js` | 我方 YellowBot.js 热插拔模板（默认关闭，交回内置 FSM） |
 | `robots/blue_bot.js` | 对手 BlueBot.js 热插拔模板（默认关闭，交回内置 FSM） |
@@ -144,7 +144,9 @@ node sim_battle.js --vehicles vehicles.json --us @example --them fsm --seed 42
 "C:/Users/Neco/AppData/Local/Programs/Python/Python312/python.exe" sim_env.py --sweep  # 扫参
 ```
 
-3D 视角操作：左键拖拽空白=旋转视角（点车身/方块=拖拽移动）、右键=平移、滚轮=缩放、双击=复位视角。黄/蓝出发区按规则坐标绘制为独立彩色平面，并带边框、标签和指向擂台的箭头。
+3D 视角操作：左键拖拽空白=旋转视角（点车身/方块=拖拽移动）、右键=平移、滚轮=缩放、双击=复位视角。左上角“自由 / 鸟瞰 / 跟车 / 台沿特写”按钮会切换预设镜头；按钮区域与画布拖拽事件隔离，点击不会被切回自由视角。镜头控制器使用 Three.js 世界坐标，跟车和台沿焦点会随车辆实时更新。
+
+左上角“显示”栏可独立开关车顶 HUD、2.8 秒轨迹、速度/角速度矢量、传感器扫描波纹/锥线和碰撞光斑；右侧“传感器线”按钮与“扫描”开关同步。擂台顶面纹理按方形距离从四个外角纯黑渐变到中心纯白，中央红色“武”区作为覆盖层保留。台下车辆的显示网格会按自定义 footprint 停在台沿外侧，避免高速帧间移动时视觉穿过 6cm 台阶；这只是显示层修正，不改变 CORE 规则位置或判分。
 拖动车身或能量块时保持鼠标按下位置与对象中心的相对偏移，单纯点击不会使对象瞬移。
 
 ## HTTP API（sim_server.js）
