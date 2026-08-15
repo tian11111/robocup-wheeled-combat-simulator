@@ -8,12 +8,16 @@ const TPL = 'wushu_ring_sim_3d.template.html';
 const OUT = 'wushu_ring_sim_3d.html';
 
 const src = fs.readFileSync(SRC, 'utf8');
-const m = src.match(/<script>([\s\S]*?)<\/script>/);
-if (!m || !m[1].includes('CORE-BEGIN')) {
-  console.error(`[build_3d] 错误: ${SRC} 中未找到 CORE 块(兼容核心源的第一个 <script> 需包含 CORE-BEGIN 标记)`);
+const begin = src.indexOf('CORE-BEGIN');
+const end = begin < 0 ? -1 : src.indexOf('CORE-END', begin);
+const scriptOpen = begin < 0 ? -1 : src.lastIndexOf('<script', begin);
+const scriptBodyStart = scriptOpen < 0 ? -1 : src.indexOf('>', scriptOpen) + 1;
+const scriptClose = end < 0 ? -1 : src.indexOf('</script>', end);
+if (begin < 0 || end < begin || scriptOpen < 0 || scriptBodyStart <= scriptOpen || scriptClose < end) {
+  console.error(`[build_3d] 错误: ${SRC} 中未找到完整 CORE-BEGIN / CORE-END 脚本块`);
   process.exit(1);
 }
-const core = m[1];
+const core = src.slice(scriptBodyStart, scriptClose);
 const tpl = fs.readFileSync(TPL, 'utf8');
 if (!tpl.includes('/*__CORE__*/')) {
   console.error(`[build_3d] 错误: ${TPL} 缺少 /*__CORE__*/ 占位符`);

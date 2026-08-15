@@ -21,9 +21,9 @@
 
 | 约束 | 说明 |
 |---|---|
-| **stdout 纯净** | 子进程 stdout **只允许动作 JSON 行** `{"v":..,"w":..}`。实车 `FSM._log` 用 `print("[fsm]...")` 会污染协议 → `sim_robot_main` 已装 `_StdoutProxy` 把 `[fsm]` 行重定向到 stderr。**新代码禁止往 stdout 打印非 JSON** |
-| 输入 obs | 每帧一行 JSON：`{t, role, timer, scores, robot{...}, sensors{兼容别名}, rawSensors{真实通道}, sensorLayout{类型/布局}, opponent, objects}`（见 SIMULATOR.md） |
-| 超时 | 单步响应超时 300ms 按零动作处理（sim_lib `actionTimeout`） |
+| **stdout 纯净** | 子进程 stdout **只允许动作 JSON 行** `{"v":有限数,"w":有限数,"requestId":...}`；不含有限 `v/w` 的 JSON（如 `{"status":"ok"}`）也会被丢弃。实车 `FSM._log` 用 `print("[fsm]...")` 会污染协议 → `sim_robot_main` 已装 `_StdoutProxy` 把 `[fsm]` 行重定向到 stderr。**新代码禁止往 stdout 打印非 JSON** |
+| 输入 obs | 每帧一行 JSON：`{requestId,t, role, timer, scores, robot{...}, sensors{兼容别名}, rawSensors{真实通道}, sensorLayout{类型/布局}, opponent, objects}`（见 SIMULATOR.md） |
+| 超时与迟到动作 | 单步响应超时 300ms 按零动作处理（sim_lib `actionTimeout`）。`robot_adapter.py` 自动回显 `requestId`，迟到动作按 ID 丢弃，绝不能被后续观测帧误用；旧程序未回显 ID 时桥会临时安全停车，直到其迟到动作被隔离丢弃。 |
 | 线程模型 | 实车 FSM 在子进程内独立线程跑 `fsm.run()`；`decide(obs)` 由桥主线程逐帧调用：更新传感器快照 → 回读电机指令 |
 | **发令时序** | `sim_robot_main` **模块加载时即 `fsm.arm()`**（run() 线程第一轮必消费信号）。禁止在 decide 里 arm——曾因线程启动与 arm 的竞态导致 WAIT_START 卡死 |
 | 进程退出 | 子进程正常退出（模块无主循环）≠ 故障；`sim_robot_main` 必须经 `robot_adapter.py` 运行（它持有 stdin 循环） |
@@ -40,6 +40,8 @@
 
 评测任务使用单例比赛核心，同一服务同一时间只允许一个任务运行，以保证每个 seed 的状态隔离和确定性。
 候选代码直传和 `/import-dir` 仅限本机可信调用，不得把该执行接口裸露到公网。
+
+后台 `/battle/start` 运行时也独占该核心：`/step`、`/step2`、`/params`、`/scene`、`/vehicle`、裁判通用写接口会返回 `409`，避免第三方请求串改比赛。启动响应带一次会话 `controlToken`；仅持令牌的 `POST /battle/control` 可执行 `arm/pause/resume/restart/scene/params`，供远程 3D 页面控制当前比赛。
 
 ## 3. 传感器量纲映射契约（SimDriver）
 
@@ -142,7 +144,7 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 
 | 约束 | 说明 |
 |---|---|
-| 必跑回归 | `node sim_selftest.js`（**26 个确定性场景 1-26**，必须全绿）+ `node sim_dragtest.js`（拖拽语义 8 项）；AI 接口改动另跑 `node sim_ai_selftest.js` |
+| 必跑回归 | `node sim_selftest.js`（**27 个确定性场景 1-27**，必须全绿）+ `node sim_dragtest.js`（拖拽语义 11 项）；AI 接口改动另跑 `node sim_lib_selftest.js` 与 `node sim_ai_selftest.js` |
 | 确定性 | `resetAll({seed})` 后噪声/识别/能量块摆放可复现（mulberry32）；评估用固定种子集 |
 | 桥验证 | 实车侧改动后：`node sim_battle.js --us "python robot_adapter.py D:/.../tools/sim_robot_main.py" --them fsm --seed 42` 跑通一场 |
 | 语法 | 实车侧代码保持 Python 3.7 兼容（树莓派系统 python3） |
@@ -158,7 +160,7 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 
 ## 9. 环境约束
 
-- Git Bash 里 `python` 不在 PATH → 用完整路径 `C:/Users/Neco/AppData/Local/Programs/Python/Python312/python.exe`（sim_lib 自动解析）
+- Python 可通过 PATH 的 `python/python3/py` 启动；若需指定解释器，设置 `SIM_PYTHON`（其次读取 `PYTHON`），例如 `SIM_PYTHON=C:/Python312/python.exe`。不再依赖任何个人电脑绝对路径。
 - 无头 API 默认端口 8932（`SIM_PORT` 可改）；静态文件服务器 8931 指向 robot-simulator/
 - 端口被占：`powershell -Command "Get-NetTCPConnection -LocalPort N -State Listen | %{Stop-Process -Id $_.OwningProcess -Force}"`
 

@@ -18,27 +18,57 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { create: createGameEngine } = require('./game_engine');
 
+function extractCoreScript(html, source='wushu_ring_sim.html'){
+  const begin = html.indexOf('CORE-BEGIN');
+  const end = begin < 0 ? -1 : html.indexOf('CORE-END', begin);
+  const scriptOpen = begin < 0 ? -1 : html.lastIndexOf('<script', begin);
+  const scriptBodyStart = scriptOpen < 0 ? -1 : html.indexOf('>', scriptOpen) + 1;
+  const scriptClose = end < 0 ? -1 : html.indexOf('</script>', end);
+  if (begin < 0 || end < begin || scriptOpen < 0 || scriptBodyStart <= scriptOpen || scriptClose < end){
+    throw new Error(`${source} 中未找到完整 CORE-BEGIN / CORE-END 脚本块`);
+  }
+  return html.slice(scriptBodyStart, scriptClose);
+}
 function loadCore(dir){
-  const html = fs.readFileSync(path.join(dir, 'wushu_ring_sim.html'), 'utf8');
-  const m = html.match(/<script>([\s\S]*?)<\/script>/);
-  if (!m || !m[1].includes('CORE-BEGIN')) throw new Error('wushu_ring_sim.html 中未找到 CORE 块');
+  const file = path.join(dir, 'wushu_ring_sim.html');
+  const html = fs.readFileSync(file, 'utf8');
+  const source = extractCoreScript(html, file);
   const moduleShim = { exports: {} };
-  new Function('module', m[1])(moduleShim);
+  new Function('module', source)(moduleShim);
   return moduleShim.exports;
 }
 
 // ---------- 子进程策略 ----------
-const PY_CANDIDATES = [
-  'python', 'python3', 'py',
-  'C:/Users/Neco/AppData/Local/Programs/Python/Python312/python.exe',
-  'C:/Users/Neco/AppData/Local/Programs/Python/Python314/python.exe',
-];
+function splitCommand(command){
+  const out = [], text = String(command || '');
+  let token = '', quote = '';
+  const push = () => { if (token) { out.push(token); token = ''; } };
+  for (let i = 0; i < text.length; i++){
+    const ch = text[i];
+    if (quote){
+      // Windows 路径的反斜杠是路径分隔符，只有双引号内的 \" / \\ 需要转义。
+      if (ch === '\\' && quote === '"' && (text[i + 1] === '"' || text[i + 1] === '\\')){
+        token += text[++i];
+      } else if (ch === quote) quote = '';
+      else token += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'"){ quote = ch; continue; }
+    if (/\s/.test(ch)){ push(); continue; }
+    token += ch;
+  }
+  if (quote) throw new Error('子进程命令包含未闭合的引号');
+  push();
+  if (!out.length) throw new Error('子进程命令为空');
+  return out;
+}
 function resolveCmd(cmd){
-  const parts = cmd.trim().split(/\s+/);
+  const parts = splitCommand(cmd);
   let exe = parts[0];
   if (exe === 'python' || exe === 'python3' || exe === 'py'){
-    const found = PY_CANDIDATES.find(p => p !== exe && fs.existsSync(p));
-    if (found) exe = found;
+    // 跨平台显式覆盖优先；没有配置时交给系统 PATH / Windows py launcher 解析。
+    const configured = String(process.env.SIM_PYTHON || process.env.PYTHON || '').trim();
+    if (configured) exe = configured;
   }
   return [exe, ...parts.slice(1)];
 }
@@ -53,7 +83,20 @@ function spawnPolicy(cmd, role, onLog){
     onLog(`[${role}子进程] 启动失败: ${e.message}`);
     return null;
   }
-  const policy = { queued: [], waiters: [], alive: true };
+  const policy = {
+    pending: new Map(), alive: true, nextRequestId: 0,
+    supportsRequestId: null, legacyQuarantine: null, invalidOutputCount: 0,
+  };
+  const warnProtocol = message => {
+    if (policy.invalidOutputCount++ < 4) onLog(`[${role}子进程] 协议警告: ${message}`);
+  };
+  const settle = (request, action) => {
+    if (!request || request.done) return;
+    request.done = true;
+    clearTimeout(request.timer);
+    policy.pending.delete(request.id);
+    request.resolve(action);
+  };
   let buf = '';
   child.stdout.on('data', d => {
     buf += d.toString();
@@ -63,32 +106,74 @@ function spawnPolicy(cmd, role, onLog){
       if (!line) continue;
       let act = null;
       try { act = JSON.parse(line); } catch (e) { continue; }
-      if (policy.waiters.length) policy.waiters.shift()(act);
-      else policy.queued.push(act);
+      if (!act || Array.isArray(act) || typeof act !== 'object' ||
+          !Object.prototype.hasOwnProperty.call(act, 'v') || !Object.prototype.hasOwnProperty.call(act, 'w') ||
+          !Number.isFinite(act.v) || !Number.isFinite(act.w)){
+        warnProtocol('stdout JSON 必须包含有限数字 v 和 w，已丢弃');
+        continue;
+      }
+      const hasRequestId = act.requestId !== undefined && act.requestId !== null;
+      if (hasRequestId){
+        policy.supportsRequestId = true;
+        const id = String(act.requestId);
+        const request = policy.pending.get(id);
+        if (request) settle(request, { v:act.v, w:act.w });
+        else {
+          if (policy.legacyQuarantine && policy.legacyQuarantine.id === id) policy.legacyQuarantine = null;
+          warnProtocol(`收到过期或未知 requestId=${id} 的动作，已丢弃`);
+        }
+        continue;
+      }
+      // 已识别为新协议后，未带 requestId 的动作只能是杂乱输出，不能重新回退到旧协议。
+      if (policy.supportsRequestId === true){
+        warnProtocol('缺少 requestId 的动作，已丢弃');
+        continue;
+      }
+      policy.supportsRequestId = false;
+      if (policy.legacyQuarantine){
+        policy.legacyQuarantine = null;
+        warnProtocol('丢弃超时请求的迟到旧协议动作，已恢复同步');
+        continue;
+      }
+      const request = policy.pending.values().next().value;
+      if (request) settle(request, { v:act.v, w:act.w });
+      else warnProtocol('没有等待请求的旧协议动作，已丢弃');
     }
   });
   child.stderr.on('data', d => {
     const s = d.toString().trim();
     if (s) onLog(`[${role}子进程 stderr] ${s.slice(0, 160)}`);
   });
-  child.on('exit', code => { policy.alive = false; onLog(`[${role}子进程] 退出 code=${code}`); });
-  child.on('error', e => { policy.alive = false; onLog(`[${role}子进程] 错误: ${e.message}`); });
+  const closePending = () => {
+    policy.legacyQuarantine = null;
+    for (const request of [...policy.pending.values()]) settle(request, null);
+  };
+  child.on('exit', code => { policy.alive = false; closePending(); onLog(`[${role}子进程] 退出 code=${code}`); });
+  child.on('error', e => { policy.alive = false; closePending(); onLog(`[${role}子进程] 错误: ${e.message}`); });
   policy.child = child;
   policy.ask = (obs, timeoutMs) => new Promise(resolve => {
     if (!policy.alive) return resolve(null);
-    if (policy.queued.length) return resolve(policy.queued.shift());
-    let done = false;
-    const finish = a => { if (!done){ done = true; resolve(a); } };
-    const t = setTimeout(() => finish(null), timeoutMs || 300);
-    policy.waiters.push(a => { clearTimeout(t); finish(a); });
-    try { child.stdin.write(JSON.stringify(obs) + '\n'); }
-    catch (e) { clearTimeout(t); finish(null); }
+    // 对没有 requestId 回包能力的旧程序，超时后先隔离下一帧输入，直到迟到
+    // 回包被丢弃；宁可安全停车，也绝不把旧帧动作错配给新观测。
+    if (policy.legacyQuarantine) return resolve(null);
+    const id = String(++policy.nextRequestId);
+    const request = { id, resolve, timer:null, done:false };
+    policy.pending.set(id, request);
+    request.timer = setTimeout(() => {
+      if (!policy.pending.has(id)) return;
+      policy.pending.delete(id);
+      request.done = true;
+      if (policy.supportsRequestId !== true) policy.legacyQuarantine = { id };
+      resolve(null);
+    }, timeoutMs || 300);
+    try { child.stdin.write(JSON.stringify({ ...obs, requestId:id }) + '\n'); }
+    catch (e) { settle(request, null); }
   });
   policy.kill = () => {
     // 取消时立刻释放正在等待子进程动作的 Promise；否则远程“停止”只能
     // 等待 actionTimeout，连续两台车的等待会让下一场启动看似卡死。
     policy.alive = false;
-    while (policy.waiters.length) policy.waiters.shift()(null);
+    closePending();
     try { child.kill(); } catch (e) {}
   };
   return policy;
@@ -146,7 +231,7 @@ function resolveController(spec){
 //         actionTimeout, traceEvery, realtime, shouldAbort, onLog, onProgress }
 async function runBattle(opts){
   const api = opts.api;
-  const { resetAll, arm, stepSimExt, getState, getLog, US, THEM } = api;
+  const { resetAll, arm, stepSimExt, getState, getLog, US, THEM, onStage } = api;
   const onLog = opts.onLog || (() => {});
   const dt = opts.dt || 0.05;
   const maxSteps = opts.maxSteps || 2400;
@@ -172,10 +257,11 @@ async function runBattle(opts){
   };
   function observeMilestones(st){
     for (const role of ['us', 'them']){
-      const r = st.robots[role];
-      if (r.onPlatform && !seen[role].mounted){
+      const r = st ? st.robots[role] : (role === 'us' ? US : THEM);
+      const mounted = st ? r.onPlatform : onStage(r);
+      if (mounted && !seen[role].mounted){
         seen[role].mounted = true;
-        seen[role].mountTime = +st.simT.toFixed(2);
+        seen[role].mountTime = +(st ? st.simT : r.fsm.simT).toFixed(2);
       }
     }
   }
@@ -190,6 +276,7 @@ async function runBattle(opts){
   rec(initialState);
 
   let steps = 0;
+  const progressEvery = opts.onProgress ? Math.max(1, Math.ceil(maxSteps / 10)) : 0;
   for (let i = 0; i < maxSteps; i++){
     if (shouldAbort()) { onLog('[sim] 对战被手动停止'); break; }
     const st = getState();
@@ -204,7 +291,8 @@ async function runBattle(opts){
       them: themPol ? normAct(at, st.robots.them.vehicle) : null,
     });
     steps = i + 1;
-    observeMilestones(getState());
+    // 登台指标只读核心机器人对象，不为每一帧额外创建全量状态快照。
+    observeMilestones();
     // 1:1 真实时间节流 (2026-08-12): 实车 FSM 线程按真实时间 50Hz 节流决策，
     // realtime=true 时每帧真实时间 ≥ dt，保证登台时序与实车线程一致；
     // AI 批量搜索可用 realtime=false 跳过等待，保持决策输入/输出协议不变。
@@ -213,8 +301,13 @@ async function runBattle(opts){
       const need = dt * 1000 - elapsed;
       if (need > 0) await new Promise(r => setTimeout(r, need));
     }
-    if (steps % traceEvery === 0) rec(getState());
-    if (opts.onProgress && steps % Math.ceil(maxSteps / 10) === 0) opts.onProgress(steps, getState());
+    const needsTrace = steps % traceEvery === 0;
+    const needsProgress = progressEvery && steps % progressEvery === 0;
+    if (needsTrace || needsProgress){
+      const sampled = getState();
+      if (needsTrace) rec(sampled);
+      if (needsProgress) opts.onProgress(steps, sampled);
+    }
   }
   stopPolicies();
 
@@ -235,4 +328,4 @@ async function runBattle(opts){
   };
 }
 
-module.exports = { loadCore, createGameEngine, runBattle, mkObs, resolveCmd, resolveController, loadRegistry };
+module.exports = { loadCore, extractCoreScript, createGameEngine, runBattle, mkObs, resolveCmd, resolveController, loadRegistry, spawnPolicy, splitCommand };

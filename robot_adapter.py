@@ -18,6 +18,7 @@ obs 结构 (dict):
 也可以继承 RobotAdapter 覆写 decide 后直接跑。
 """
 import json
+import math
 import sys
 
 
@@ -34,13 +35,21 @@ class RobotAdapter:
             line = line.strip()
             if not line:
                 continue
+            request_id = None
             try:
                 obs = json.loads(line)
+                request_id = obs.get("requestId")
                 act = self.decide(obs) or {}
-                out = {"v": float(act.get("v", 0)), "w": float(act.get("w", 0))}
+                v = float(act.get("v", 0))
+                w = float(act.get("w", 0))
+                out = {"v": v if math.isfinite(v) else 0.0, "w": w if math.isfinite(w) else 0.0}
             except Exception as e:
                 out = {"v": 0, "w": 0}
                 sys.stderr.write(f"adapter error: {e}\n")
+            # Existing decide(obs) functions remain unchanged. The adapter returns the
+            # request id so the Node bridge can discard late actions without frame drift.
+            if isinstance(request_id, (str, int)) and not isinstance(request_id, bool):
+                out["requestId"] = request_id
             print(json.dumps(out), flush=True)
 
 

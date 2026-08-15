@@ -15,9 +15,10 @@
  *   POST  /params         → 改参数(实时生效)
  *   GET   /vehicle?role=us|them → 读取一台车的 profile
  *   POST  /vehicle        → {role, vehicle:{...}}  修改一台车的 profile
- *   POST  /scene          → 摆场景: {preset} 或 {robot:{x,y,th}, opp:{x,y}, buffs, debuff}
+ *   POST  /scene          → 摆场景: {preset} 或 {us:{x,y,th}, them:{x,y,th}, vehicles?, buffs, debuff}
  *   POST  /battle/run     → {us?:'fsm'|命令, them?:'fsm'|命令, vehicles?, seed?, dt?, maxSteps?}
  *                            跑一整场(可子进程), 返回比分/状态/日志
+ *   POST  /battle/control → 后台对战会话专用控制（需 /battle/start 返回的令牌）
  *   GET   /api/v1/health → 服务状态、核心 hash、评测占用
  *   GET   /api/v1/schema → AI 动作/观测/评测协议
  *   POST  /api/v1/evaluations → 异步多 seed 评测(默认快速模式)
@@ -34,7 +35,7 @@ const { loadCore, runBattle } = require('./sim_lib');
 
 const PORT = parseInt(process.argv[2] || process.env.SIM_PORT || '8932', 10);
 const api = loadCore(__dirname);
-const { resetAll, arm, startManual, stepSim, stepSimExt, getState, getLog, setParams, setVehicleFor, getVehicleFor, setPose, setObject, scenePreset, params, scoreBoard,
+const { resetAll, arm, startManual, stepSim, stepSimExt, getState, getLog, setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset, params, scoreBoard, US, THEM,
   beginPreparation, pauseMatch, resumeMatch, restartFor } = api;
 const SERVER_STARTED_AT = new Date().toISOString();
 const CORE_HASH = crypto.createHash('sha256')
@@ -54,7 +55,8 @@ function snapshotReward(){
 const ROBOTS_DIR = path.join(__dirname, 'robots');
 const REGISTRY_FILE = path.join(__dirname, 'sim_robots.json');
 if (!fs.existsSync(ROBOTS_DIR)) fs.mkdirSync(ROBOTS_DIR);
-let battleSession = { running: false, abort: false, stop: null, startedAt: 0, result: null, error: null, usName: '', themName: '', output: [] };
+let battleSession = { running: false, abort: false, stop: null, controlToken: '', startedAt: 0, result: null, error: null, usName: '', themName: '', output: [] };
+let foregroundBattleRunning = false;
 
 // ---------- AI 批量评测任务 ----------
 // 核心是单例，因此本机服务同一时刻只运行一个评测任务；任务本身异步执行，
@@ -237,6 +239,46 @@ function battleStatus(state){
   };
 }
 
+function coreBusyReason(){
+  if (evaluationBusy()) return '评测任务运行中，单例核心不能接受外部状态修改';
+  if (battleSession.running) return '远程对战运行中，请使用 /battle/control 或先 /battle/stop';
+  if (foregroundBattleRunning) return '单场对战运行中，单例核心不能接受外部状态修改';
+  return '';
+}
+function rejectWhenCoreBusy(res){
+  const error = coreBusyReason();
+  if (!error) return false;
+  json(res, 409, { error });
+  return true;
+}
+function finitePosePart(value, fallback){
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+function applyPose(role, pose, legacyHeading){
+  if (!pose || typeof pose !== 'object' || Array.isArray(pose)) return;
+  const robot = role === 'them' ? THEM : US;
+  const x = finitePosePart(pose.x, robot.x);
+  const y = finitePosePart(pose.y, robot.y);
+  const th = finitePosePart(pose.th, legacyHeading === undefined ? robot.th : legacyHeading);
+  setPoseFor(robot, x, y, th);
+}
+function applyScenePayload(body){
+  const b = body && typeof body === 'object' ? body : {};
+  if (b.preset) scenePreset(b.preset);
+  if (b.vehicles && typeof b.vehicles === 'object'){
+    if (b.vehicles.us && typeof b.vehicles.us === 'object') setVehicleFor('us', b.vehicles.us);
+    if (b.vehicles.them && typeof b.vehicles.them === 'object') setVehicleFor('them', b.vehicles.them);
+  }
+  // 新接口: us/them 允许双车独立摆位和朝向；保留 robot/opp 兼容旧客户端。
+  if (b.us) applyPose('us', b.us);
+  else if (b.robot) applyPose('us', b.robot, 0);
+  if (b.them) applyPose('them', b.them);
+  else if (b.opp) applyPose('them', b.opp);
+  if (Array.isArray(b.buffs)) b.buffs.forEach((p, i) => setObject('buff', i, p.x, p.y));
+  if (b.debuff) setObject('debuff', 0, b.debuff.x, b.debuff.y);
+}
+
 // ---------- HTTP ----------
 function json(res, code, obj){
   const body = JSON.stringify(obj);
@@ -271,7 +313,7 @@ const server = http.createServer(async (req, res) => {
         version: '2026',
         apiVersion: 'v1',
         core: '3D GameEngine; rules CORE compatibility source',
-        endpoints: ['GET /health', 'GET /schema', 'POST /reset', 'POST /arm', 'POST /step', 'POST /step2', 'POST /params', 'GET /vehicle', 'POST /vehicle', 'POST /scene', 'POST /battle/run', 'POST /battle/start', 'POST /battle/stop', 'GET /battle/status', 'POST /api/v1/evaluations', 'GET /api/v1/evaluations/:id', 'DELETE /api/v1/evaluations/:id', 'GET /state', 'GET /log', 'GET /referee/state', 'POST /referee/pause', 'POST /referee/resume', 'POST /referee/restart'],
+        endpoints: ['GET /health', 'GET /schema', 'POST /reset', 'POST /arm', 'POST /step', 'POST /step2', 'POST /params', 'GET /vehicle', 'POST /vehicle', 'POST /scene', 'POST /battle/run', 'POST /battle/start', 'POST /battle/control', 'POST /battle/stop', 'GET /battle/status', 'POST /api/v1/evaluations', 'GET /api/v1/evaluations/:id', 'DELETE /api/v1/evaluations/:id', 'GET /state', 'GET /log', 'GET /referee/state', 'POST /referee/pause', 'POST /referee/resume', 'POST /referee/restart'],
         state: getState().robots.us.state,
       });
     }
@@ -286,6 +328,7 @@ const server = http.createServer(async (req, res) => {
         uptimeSec: Math.round(process.uptime()),
         state: getState().robots.us.state,
         evaluationBusy: evaluationBusy(),
+        coreBusy: !!coreBusyReason(),
         endpoints: {
           schema: '/api/v1/schema',
           evaluate: '/api/v1/evaluations',
@@ -331,8 +374,7 @@ const server = http.createServer(async (req, res) => {
       });
     }
     if (req.method === 'POST' && (u.pathname === '/api/v1/evaluations' || u.pathname === '/batch/start')) {
-      if (evaluationBusy()) return json(res, 409, { error: '已有评测任务运行中；单例核心不支持并行评测' });
-      if (battleSession.running) return json(res, 409, { error: '已有远程对战运行中，请先停止 /battle/stop' });
+      if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
       const material = materializeCandidate(b);
       const seeds = normalizeSeeds(b.seeds);
@@ -394,7 +436,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 202, { ok: true, id, status: 'cancelling' });
     }
     if (req.method === 'POST' && u.pathname === '/reset') {
-      if (evaluationBusy()) return json(res, 409, { error: '评测任务运行中，不能重置单例比赛核心' });
+      if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
       resetAll({ seed: b.seed ?? params.seed, params: b.params, scene: b.scene, vehicles: b.vehicles });
       if (b.manual) startManual();
@@ -402,10 +444,12 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, state: getState() });
     }
     if (req.method === 'POST' && u.pathname === '/arm') {
+      if (rejectWhenCoreBusy(res)) return;
       arm();
       return json(res, 200, { ok: true, state: getState() });
     }
     if (req.method === 'POST' && u.pathname === '/step') {
+      if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
       const dt = typeof b.dt === 'number' ? b.dt : 0.05;
       stepSim(dt, b.action);
@@ -413,6 +457,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { state: st, reward: snapshotReward(), done: st.done, doneReason: st.doneReason, step: b });
     }
     if (req.method === 'POST' && u.pathname === '/step2') {
+      if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
       const dt = typeof b.dt === 'number' ? b.dt : 0.05;
       stepSimExt(dt, { us: b.us || null, them: b.them || null });
@@ -420,6 +465,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { state: st, reward: snapshotReward(), done: st.done, doneReason: st.doneReason });
     }
     if (req.method === 'POST' && u.pathname === '/params') {
+      if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
       setParams(b);
       return json(res, 200, { ok: true, params });
@@ -430,6 +476,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, role, vehicle: getVehicleFor(role) });
     }
     if (req.method === 'POST' && u.pathname === '/vehicle') {
+      if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
       const role = b.role || 'us';
       if (role !== 'us' && role !== 'them') return json(res, 400, { error: "role 必须是 'us' 或 'them'" });
@@ -441,29 +488,31 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, role, vehicle: applied, state: getState() });
     }
     if (req.method === 'POST' && u.pathname === '/scene') {
+      if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
-      if (b.preset) scenePreset(b.preset);
-      if (b.robot) setPose(b.robot.x, b.robot.y, b.robot.th ?? 0);
-      if (b.opp) setObject('opp', 0, b.opp.x, b.opp.y);
-      if (Array.isArray(b.buffs)) b.buffs.forEach((p, i) => setObject('buff', i, p.x, p.y));
-      if (b.debuff) setObject('debuff', 0, b.debuff.x, b.debuff.y);
+      applyScenePayload(b);
       return json(res, 200, { ok: true, state: getState() });
     }
     if (req.method === 'POST' && u.pathname === '/battle/run') {
-      if (evaluationBusy()) return json(res, 409, { error: '评测任务运行中，请等待完成或取消后再运行单场对战' });
+      if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
-      const r = await runBattle({
-        api,
-        seed: b.seed,
-        params: b.params,
-        scene: b.scene,          // 预设场景(如 {preset:'center'} 车放台上中心)
-        vehicles: b.vehicles,
-        dt: b.dt, maxSteps: b.maxSteps,
-        us: b.us ?? 'fsm', them: b.them ?? 'fsm',
-        actionTimeout: b.actionTimeout,
-        traceEvery: b.traceEvery,
-      });
-      return json(res, 200, r);
+      foregroundBattleRunning = true;
+      try {
+        const r = await runBattle({
+          api,
+          seed: b.seed,
+          params: b.params,
+          scene: b.scene,          // 预设场景(如 {preset:'center'} 车放台上中心)
+          vehicles: b.vehicles,
+          dt: b.dt, maxSteps: b.maxSteps,
+          us: b.us ?? 'fsm', them: b.them ?? 'fsm',
+          actionTimeout: b.actionTimeout,
+          traceEvery: b.traceEvery,
+        });
+        return json(res, 200, r);
+      } finally {
+        foregroundBattleRunning = false;
+      }
     }
     // 上传小车程序 (GUI 导入): 保存到 robots/ 并注册到 sim_robots.json
     if (req.method === 'POST' && u.pathname === '/upload') {
@@ -480,7 +529,7 @@ const server = http.createServer(async (req, res) => {
     // 所以入口文件 import 同级模块/子包(actuator/ strategy/ ...)都能找到。
     if (req.method === 'POST' && u.pathname === '/import-dir') {
       const b = await readBody(req);
-      if (!b.dir) return json(res, 400, { error: 'dir 必填, 如 D:\\project\\robocup\\robocup-2026-wheeled-combat' });
+      if (!b.dir) return json(res, 400, { error: 'dir 必填，请提供本地代码文件夹路径' });
       // 路径清洗: 去首尾引号/空格; Git Bash 风格 /d/xxx → D:\xxx; 反斜杠统一
       let dir = String(b.dir).trim().replace(/^["']+|["']+$/g, '');
       if (/^\/[a-zA-Z]\//.test(dir)) dir = dir[1].toUpperCase() + ':' + dir.slice(2);
@@ -522,12 +571,11 @@ const server = http.createServer(async (req, res) => {
     // 后台对战: 启动 (GUI 远程对战用, 期间 /state 轮询实时渲染)
     if (req.method === 'POST' && u.pathname === '/battle/start') {
       const b = await readBody(req);
-      if (evaluationBusy()) return json(res, 409, { error: '评测任务运行中，请等待完成或取消后再启动远程对战' });
-      if (battleSession.running) return json(res, 409, { error: '已有对战进行中, 先 /battle/stop' });
+      if (rejectWhenCoreBusy(res)) return;
       resetAll({ seed: b.seed, params: b.params, vehicles: b.vehicles });
       scoreBase = { us: scoreBoard.us, them: scoreBoard.them };
       battleSession = {
-        running: true, abort: false, stop: null, startedAt: Date.now(), result: null, error: null,
+        running: true, abort: false, stop: null, controlToken: crypto.randomBytes(24).toString('hex'), startedAt: Date.now(), result: null, error: null,
         usName: b.us || 'fsm', themName: b.them || 'fsm', output: [],
       };
       runBattle({
@@ -538,6 +586,7 @@ const server = http.createServer(async (req, res) => {
         us: b.us ?? 'fsm', them: b.them ?? 'fsm',
         actionTimeout: b.actionTimeout,
         traceEvery: b.traceEvery,
+        realtime: b.realtime,
         shouldAbort: () => battleSession.abort,
         onPolicies: controls => { battleSession.stop = controls.stop; },
         onLog: m => {
@@ -548,12 +597,42 @@ const server = http.createServer(async (req, res) => {
         battleSession.result = r;
         battleSession.running = false;
         battleSession.stop = null;
+        battleSession.controlToken = '';
       }).catch(e => {
         battleSession.error = String(e && e.message || e);
         battleSession.running = false;
         battleSession.stop = null;
+        battleSession.controlToken = '';
       });
-      return json(res, 200, { ok: true, started: true, us: battleSession.usName, them: battleSession.themName });
+      return json(res, 200, { ok: true, started: true, us: battleSession.usName, them: battleSession.themName, controlToken: battleSession.controlToken });
+    }
+    // 后台对战占用同一个 CORE。只有握有启动响应令牌的页面能在比赛中调裁判、场景和参数，
+    // 既避免外部请求串改物理状态，也保留远程 GUI 所需的比赛内控制。
+    if (req.method === 'POST' && u.pathname === '/battle/control') {
+      const b = await readBody(req);
+      if (!battleSession.running) return json(res, 409, { error: '没有进行中的远程对战' });
+      if (typeof b.token !== 'string' || b.token !== battleSession.controlToken){
+        return json(res, 403, { error: '远程对战控制令牌无效' });
+      }
+      const command = b.command;
+      if (command === 'arm') arm();
+      else if (command === 'pause') pauseMatch(b.reason || 'remote-ui');
+      else if (command === 'resume') resumeMatch();
+      else if (command === 'restart') {
+        const role = b.role === 'them' ? 'them' : 'us';
+        const kind = b.kind === 'restart' ? 'restart' : 'debug';
+        restartFor(role, kind);
+      } else if (command === 'scene') {
+        applyScenePayload(b.scene);
+      } else if (command === 'params') {
+        if (!b.params || typeof b.params !== 'object' || Array.isArray(b.params)){
+          return json(res, 400, { error: 'params 必须是对象' });
+        }
+        setParams(b.params);
+      } else {
+        return json(res, 400, { error: '不支持的 battle/control command' });
+      }
+      return json(res, 200, { ok: true, command, state: getState() });
     }
     if (req.method === 'POST' && u.pathname === '/battle/stop') {
       battleSession.abort = true;
@@ -571,15 +650,18 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { match:st.match, scores:st.scores, done:st.done, doneReason:st.doneReason });
     }
     if (req.method === 'POST' && u.pathname === '/referee/pause') {
+      if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
       pauseMatch(b.reason);
       return json(res, 200, { ok:true, match:getState().match });
     }
     if (req.method === 'POST' && u.pathname === '/referee/resume') {
+      if (rejectWhenCoreBusy(res)) return;
       resumeMatch();
       return json(res, 200, { ok:true, match:getState().match });
     }
     if (req.method === 'POST' && u.pathname === '/referee/restart') {
+      if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
       const points = restartFor(b.role || 'us', b.kind || 'debug');
       return json(res, 200, { ok:true, points, state:getState() });

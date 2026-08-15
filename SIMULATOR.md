@@ -26,10 +26,11 @@
 | `sim_server.js` | 无头 HTTP API（供 AI Agent 链接）+ `/battle/run` 子进程对战 |
 | `sim_battle.js` | CLI 对战（`node sim_battle.js --us "python robot_adapter.py example_robot.py" --them fsm`） |
 | `sim_env.py` | Python 客户端（gym 风格，仅标准库） |
-| `sim_ai_selftest.js` | 本机 AI API 冒烟测试（health/schema/多 seed 评测） |
+| `sim_ai_selftest.js` | 本机 AI API 冒烟测试（含后台对战互斥与会话控制） |
+| `sim_lib_selftest.js` | CORE 提取、带空格路径命令解析、子进程迟到动作隔离回归 |
 | `robot_adapter.py` | 小车程序适配器：`python robot_adapter.py your_program.py` |
 | `example_robot.py` | 示例小车决策程序（`decide(obs)` 参考写法） |
-| `sim_selftest.js` | 状态机、规则边界与裁判阶段自测（26 场景） |
+| `sim_selftest.js` | 状态机、规则边界与裁判阶段自测（27 场景） |
 
 ## 核心设计
 
@@ -162,6 +163,7 @@ node static_server.js 8931         # 推荐本地托管（ESM/WASM 在 file:// �
 # 无头 API（AI Agent 用）
 node sim_server.js                 # http://127.0.0.1:8932
 node sim_ai_selftest.js             # 检查本机 AI API
+node sim_lib_selftest.js            # 检查 CORE 提取与子进程协议桥
 
 # 对战 CLI
 node sim_battle.js --seed 42                                   # FSM vs FSM
@@ -239,8 +241,11 @@ curl http://127.0.0.1:8932/api/v1/evaluations/<id>
 | `POST /params` | `{EDGE_THRESHOLD:300, ...}` | 实时改参数 |
 | `GET /vehicle?role=us` | — | 读取一台车当前 profile |
 | `POST /vehicle` | `{role:'us', vehicle:{length:0.32, width:0.24, maxSpeed:1.2}}` | 修改单台车 profile，立即影响碰撞/运动 |
-| `POST /scene` | `{preset} / {robot, opp, buffs, debuff}` | 摆场景（等价拖拽） |
+| `POST /scene` | `{preset} / {us:{x,y,th}, them:{x,y,th}, vehicles?, buffs, debuff}` | 摆场景；`robot/opp` 旧字段仍兼容，`vehicles` 可同时更新双车 profile |
 | `POST /battle/run` | `{us, them, seed, params, vehicles, dt, maxSteps, actionTimeout, traceEvery}` | 跑一整场；`vehicles` 为双车 profile；us/them 为 `'fsm'` 或子进程命令；返回含轨迹 `trace`（双车位姿采样，可分析/回放） |
+| `POST /battle/start` | `{us, them, seed?, params?, vehicles?, dt?, maxSteps?, realtime?}` | 启动后台远程对战，返回 `controlToken`；默认实时 20Hz |
+| `POST /battle/control` | `{token, command, ...}` | 持 `/battle/start` 返回的令牌控制进行中的后台对战；`command` 为 `arm/pause/resume/restart/scene/params` |
+| `POST /battle/stop` | — | 请求停止后台对战并终止其策略子进程 |
 | `POST /api/v1/evaluations` | `{us, them, candidate?, seeds[], params?, vehicles?, scene?, includeTrace?, realtime?}` | 异步多 seed 评测，返回 `id`；候选可直接提交 Python `code` |
 | `GET /api/v1/evaluations/:id` | — | 查询评测进度、逐 seed 结果和汇总指标 |
 | `DELETE /api/v1/evaluations/:id` | — | 请求取消正在运行的评测 |
@@ -255,6 +260,8 @@ curl http://127.0.0.1:8932/api/v1/evaluations/<id>
 `sensors.us/them`（旧逻辑别名）、`rawSensors.us/them`（profile 的真实动态通道）、
 `sensorLayout.us/them`（通道类型/位置/朝向）、`scores{us,them}`、`done/doneReason`。
 `/step` 额外返回 `reward`（本步得分增量）与 `done`，可直接做 gym 式循环。
+
+比赛核心是单例。批量评测、`/battle/run` 或后台 `/battle/start` 占用期间，通用状态修改接口会返回 `409`；后台远程局必须改用带 `controlToken` 的 `/battle/control`。这样可防止 AI、浏览器和人工调试请求互相串改同一局物理状态。
 
 ## 子进程桥（跑你自己的小车程序）
 
@@ -275,7 +282,9 @@ node sim_battle.js --vehicles vehicles.json --us @my_robot --them fsm      # 带
 
 **已有注册表程序**：`@example`（示例策略：登台/推增益块/绕减益块/近身撞对手）、`@realcar`（实车代码全栈——SimDriver 桥零改动接入 main.py + strategy/fsm.py）。
 
-协议：仿真器每步向子进程 stdin 写一行 JSON 观测，子进程 stdout 回一行 `{"v":..,"w":..}`（超时 300ms 按零动作）。**stdout 只允许动作 JSON**，日志走 stderr。`obs.robot.vehicle` 是当前一方的 profile，策略可据此按车宽/最高速度自适应。
+协议：仿真器每步向子进程 stdin 写一行含 `requestId` 的 JSON 观测，`robot_adapter.py` 会自动把该 ID 回显为 stdout 动作 `{"v":..,"w":..,"requestId":..}`（超时 300ms 按零动作）。**stdout 只允许带有限数字 `v/w` 的动作 JSON**，日志走 stderr；迟到动作按 ID 丢弃，避免帧错位。已有 `decide(obs)` 函数无需改签名。`obs.robot.vehicle` 是当前一方的 profile，策略可据此按车宽/最高速度自适应。
+
+解释器优先从 PATH 解析 `python/python3/py`；未在 PATH 时可设置 `SIM_PYTHON`（其次读取 `PYTHON`），例如 `set SIM_PYTHON=C:\\Python312\\python.exe` 后照常使用 `python robot_adapter.py ...`。
 
 obs 结构：
 

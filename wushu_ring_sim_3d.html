@@ -297,8 +297,8 @@
       <span id="remoteStatus" style="color:var(--muted); font-size:11px;"></span>
     </div>
     <div id="dirImportRow" style="display:none; margin-top:6px; gap:6px; align-items:center; font-size:11px;">
-      <input id="dirPath" placeholder="文件夹路径, 如 D:\project\robocup\robocup-2026-wheeled-combat" style="width:330px; padding:3px 6px; background:#14181e; border:1px solid var(--line); border-radius:4px; color:#ddd;">
-      <input id="dirEntry" placeholder="入口(留空自动: tools/sim_robot_main.py→main.py)" style="width:230px; padding:3px 6px; background:#14181e; border:1px solid var(--line); border-radius:4px; color:#ddd;">
+      <input id="dirPath" placeholder="本地代码文件夹路径" style="width:330px; padding:3px 6px; background:#14181e; border:1px solid var(--line); border-radius:4px; color:#ddd;">
+      <input id="dirEntry" placeholder="入口文件（可留空自动探测）" style="width:230px; padding:3px 6px; background:#14181e; border:1px solid var(--line); border-radius:4px; color:#ddd;">
       <input id="dirName" placeholder="名字(留空=目录名)" style="width:120px; padding:3px 6px; background:#14181e; border:1px solid var(--line); border-radius:4px; color:#ddd;">
       <button id="btnDirGo">导入</button>
       <span id="dirStatus" style="color:var(--muted);"></span>
@@ -2996,7 +2996,7 @@ for(const [k,lab,min,max,step] of paramDefs){
   l.querySelector('input').addEventListener('input',e=>{
     params[k]=+e.target.value;
     document.getElementById('v_'+k).textContent=params[k];
-    if(remote && remote.mode) api('/params',{[k]:params[k]});
+    if(remote && remote.mode) queueRemoteParams({[k]:params[k]});
   });
 }
 
@@ -3186,14 +3186,15 @@ renderVehicleFields();
 
 // ---------- 控制 ----------
 // 本地预览与远程对战有两个独立核心；远程模式下所有比赛控制必须发往 server。
-function controlMatch(remotePath, body, localAction){
+function controlMatch(command, body, localAction){
   if(!remote || !remote.mode) return localAction();
-  api(remotePath, body).then(result=>{
+  if(!remote.controlToken){ log('[远程控制] 当前对战没有有效控制令牌','warn'); return; }
+  api('/battle/control',{token:remote.controlToken,command,...(body||{})}).then(result=>{
     if(result && result.error) log('[远程控制] '+result.error,'warn');
     else pollRemote();
   });
 }
-document.getElementById('btnArm').addEventListener('click', ()=>controlMatch('/arm',undefined,arm));
+document.getElementById('btnArm').addEventListener('click', ()=>controlMatch('arm',undefined,arm));
 function clearVisualHistory(){
   replayHistory.length=0; replayCursor=-1; visualClock=0; replayScrub.value=0; replayScrub.max=0; replayLabel.textContent='实时';
   visualStageMemory.us=null; visualStageMemory.them=null;
@@ -3206,15 +3207,15 @@ document.getElementById('btnReset').addEventListener('click', ()=>{
   if(remote && remote.mode) return resetRemoteMatch();
   logBox.innerHTML=''; resetAll(); clearVisualHistory(); setViewMode('free');
 });
-document.getElementById('btnPause').addEventListener('click', ()=>controlMatch('/referee/pause',{reason:'UI'},()=>gameEngine.referee.pause('UI')));
-document.getElementById('btnResume').addEventListener('click', ()=>controlMatch('/referee/resume',{},()=>gameEngine.referee.resume()));
+document.getElementById('btnPause').addEventListener('click', ()=>controlMatch('pause',{reason:'UI'},()=>gameEngine.referee.pause('UI')));
+document.getElementById('btnResume').addEventListener('click', ()=>controlMatch('resume',{},()=>gameEngine.referee.resume()));
 document.getElementById('btnDebug').addEventListener('click', ()=>{
   const role=document.getElementById('refRole').value;
-  controlMatch('/referee/restart',{role,kind:'debug'},()=>gameEngine.referee.restart(role,'debug'));
+  controlMatch('restart',{role,kind:'debug'},()=>gameEngine.referee.restart(role,'debug'));
 });
 document.getElementById('btnRestart').addEventListener('click', ()=>{
   const role=document.getElementById('refRole').value;
-  controlMatch('/referee/restart',{role,kind:'restart'},()=>gameEngine.referee.restart(role,'restart'));
+  controlMatch('restart',{role,kind:'restart'},()=>gameEngine.referee.restart(role,'restart'));
 });
 document.getElementById('btnRotL').addEventListener('click', ()=>{ bot.th=norm(bot.th+0.26); });
 document.getElementById('btnRotR').addEventListener('click', ()=>{ bot.th=norm(bot.th-0.26); });
@@ -3228,7 +3229,7 @@ document.addEventListener('keydown', e=>{
   if(e.key==='Enter') arm();
   if(e.key==='r'||e.key==='R'){ logBox.innerHTML=''; resetAll(); clearVisualHistory(); setViewMode('free'); }
 });
-function applyScene(preset){ controlMatch('/scene',{preset},()=>scenePreset(preset)); }
+function applyScene(preset){ controlMatch('scene',{scene:{preset}},()=>scenePreset(preset)); }
 document.getElementById('scCenter').onclick = ()=> applyScene('center');
 document.getElementById('scEdge').onclick = ()=> applyScene('edge');
 document.getElementById('scFloor').onclick = ()=> applyScene('walkway');
@@ -3261,13 +3262,33 @@ const API_BASE = (() => {
   const configured = window.SIM_API_BASE || query || 'http://127.0.0.1:8932';
   return String(configured).replace(/\/$/, '');
 })();
-let remote = { mode: false, timer: null, lastUpload: null, lastLogLen: 0, lastOutLen: 0, pollInFlight: false, startInFlight: false, match: null };
+let remote = { mode: false, timer: null, controlToken: null, lastUpload: null, lastLogLen: 0, lastOutLen: 0, pollInFlight: false, startInFlight: false, match: null };
 const remoteStatus = document.getElementById('remoteStatus');
 const remoteOut = document.getElementById('remoteOut');
 const remoteOutWrap = document.getElementById('remoteOutWrap');
 const api = (p, body) => fetch(API_BASE + p, body ? {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
 } : undefined).then(r => r.json()).catch(e => ({ error: String(e && e.message || e) }));
+let remoteParamTimer = null;
+let remotePendingParams = null;
+function clearQueuedRemoteParams(){
+  if(remoteParamTimer) clearTimeout(remoteParamTimer);
+  remoteParamTimer=null; remotePendingParams=null;
+}
+function queueRemoteParams(change){
+  if(!remote || !remote.mode || !remote.controlToken) return;
+  remotePendingParams={...(remotePendingParams||{}),...change};
+  if(remoteParamTimer) return;
+  // 滑条 input 在拖动时每帧触发；合并为最多约 8Hz 的会话控制请求，避免抢占渲染与服务端状态快照。
+  remoteParamTimer=setTimeout(async()=>{
+    const pending=remotePendingParams;
+    remoteParamTimer=null; remotePendingParams=null;
+    if(!remote.mode || !remote.controlToken || !pending) return;
+    const result=await api('/battle/control',{token:remote.controlToken,command:'params',params:pending});
+    if(result && result.error) log('[远程控制] '+result.error,'warn');
+    else pollRemote();
+  },120);
+}
 
 // 加载程序注册表填充下拉(我方/对手)
 async function refreshSelects(){
@@ -3378,7 +3399,7 @@ async function waitForRemoteStop(timeoutMs=5000){
 }
 async function startRemoteBattle(payload){
   let result = await api('/battle/start', payload);
-  if (result.ok || !/已有对战进行中/.test(result.error || '')) return result;
+  if (result.ok || !/(已有对战进行中|远程对战运行中)/.test(result.error || '')) return result;
 
   remoteStatus.textContent = '正在停止上一场对战…';
   remoteStatus.style.color = '#ffd166';
@@ -3394,7 +3415,7 @@ async function resetRemoteMatch(){
   if(!stopped.stopped){ remoteStatus.textContent='重置失败: '+(stopped.error||'对战未停止'); return; }
   const r=await api('/reset',{vehicles:{us:getVehicleFor('us'),them:getVehicleFor('them')}});
   if(!r.ok){ remoteStatus.textContent='重置失败: '+(r.error||''); return; }
-  remote.mode=false; remote.match=null;
+  remote.mode=false; remote.match=null; remote.controlToken=null; clearQueuedRemoteParams();
   if(remote.timer) clearInterval(remote.timer);
   remote.timer=null; logBox.innerHTML=''; clearVisualHistory(); setViewMode('free');
   remoteStatus.textContent='已重置 (本地预览)';
@@ -3418,6 +3439,7 @@ document.getElementById('btnRemoteStart').addEventListener('click', async () => 
     });
     if (!r.ok){ remoteStatus.textContent = '启动失败: ' + (r.error || ''); log('[远程] ' + (r.error || ''), 'warn'); return; }
     remote.mode = true;
+    remote.controlToken = r.controlToken || null;
     remote.lastLogLen = logEvents.length;
     remote.lastOutLen = 0;
     remoteOutWrap.style.display = 'block';
@@ -3431,10 +3453,16 @@ document.getElementById('btnRemoteStart').addEventListener('click', async () => 
   }
 });
 document.getElementById('btnRemoteStop').addEventListener('click', async () => {
+  remoteStatus.textContent = '正在停止远程对战…';
+  remoteStatus.style.color = '#ffd166';
   await api('/battle/stop');
+  const stopped=await waitForRemoteStop();
+  if(!stopped.stopped){ remoteStatus.textContent='停止失败: '+(stopped.error||'对战仍在停止'); return; }
   if (remote.timer) clearInterval(remote.timer);
   remote.timer = null;
   remote.mode = false;
+  remote.controlToken = null;
+  clearQueuedRemoteParams();
   remoteStatus.textContent = '已停止 (本地模式)';
   log('[远程] 已停止, 回到本地模式', 'warn');
 });
@@ -3480,6 +3508,8 @@ async function pollRemote(){
       remote.lastOutLen = out.length;
       if (stt.done && remote.mode){
         remote.mode = false;
+        remote.controlToken = null;
+        clearQueuedRemoteParams();
         if (remote.timer) clearInterval(remote.timer);
         remote.timer = null;
         remoteStatus.textContent = `对战结束 ${stt.scores.us}:${stt.scores.them} (${stt.doneReason || '完赛'})`;
