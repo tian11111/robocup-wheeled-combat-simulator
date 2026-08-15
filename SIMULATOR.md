@@ -1,6 +1,6 @@
 # 2026 武术擂台·轮式格斗机器人 决策逻辑仿真器
 
-**3D 主入口：Three.js + 可选 Rapier 3D 碰撞层。** 规则判定仍由确定性比赛核心负责，物理/标定需实车验证。规则参考 RoboCup 2026 轮式格斗：
+**3D 主入口：Three.js + Rapier3D WASM 碰撞层。** 仓库内已提供 `lib/rapier.es.js`，加载失败时仍有确定性规则回退；规则判定仍由核心负责，物理/标定需实车验证。规则参考 RoboCup 2026 轮式格斗：
 场地 3.8×3.8m（走道 70cm 黑色、围栏高 20cm 黑色、底台 50cm、出发区正黄/正蓝 50×40cm 距台边 20cm），中央擂台 2.4×2.4m 高 6cm
 （黑边白心渐变 + 中央红区"武"），2 增益块(+3) + 1 减益块(推下给对方 +6)，比赛 2 分钟。
 
@@ -16,7 +16,10 @@
 | `referee_system.js` | 裁判门面：计时、暂停/继续、调试/重启判罚、比分/事件读取 |
 | `sensor_api.js` | 稳定的机器人观测接口 `observe(core, role)`（含动态传感器 profile） |
 | `robot_api.js` | JS 策略接口：`update(sensors) → {leftSpeed,rightSpeed}` 或 `{v,w}` |
-| `physics_adapter.js` | Rapier 3D 台阶碰撞桥（优先 `lib/rapier3d-compat.min.js`，再尝试 CDN）；加载失败时回退到确定性登台判定 |
+| `physics_adapter.js` | Rapier 3D 台阶碰撞桥（优先本地 ESM WASM、再尝试 CDN）；加载失败时回退到确定性登台判定 |
+| `visual_effects.js` | 渲染增强：ACES、软阴影、程序化 PBR 法线/粗糙度贴图、AO/接触阴影、发光、状态灯、尘雾和轮胎痕迹 |
+| `visual_hud.js` | 3D 头顶 HUD、2.6 秒轨迹渐隐、线/角速度矢量、鸟瞰/跟车/台沿镜头、传感器扫描波纹 |
+| `lib/rapier.es.js` | `@dimforge/rapier3d-compat@0.14.0` 浏览器 ESM 构建（内嵌编译 WASM，供静态托管离线加载） |
 | `robots/yellow_bot.js` | 我方 YellowBot.js 热插拔模板（默认关闭，交回内置 FSM） |
 | `robots/blue_bot.js` | 对手 BlueBot.js 热插拔模板（默认关闭，交回内置 FSM） |
 | `sim_lib.js` | 公共库：核心加载 + 子进程策略 + 对战运行器 |
@@ -30,7 +33,9 @@
 
 ## 核心设计
 
-- **3D Game Engine 分层**：Three.js 只负责显示；GameEngine 编排规则核心、RefereeSystem、SensorAPI、RobotAPI 和 PhysicsAdapter。Rapier 可用时创建地面、6cm 擂台顶面/台阶和两台车的运动学碰撞体；未加载时使用同一套确定性的“垂直法向冲台”判定，保证离线/无头测试不漂移。
+- **3D Game Engine 分层**：Three.js 只负责显示；GameEngine 编排规则核心、RefereeSystem、SensorAPI、RobotAPI 和 PhysicsAdapter。Rapier 可用时创建地面、严格 6cm 擂台顶面/四面台阶立面、双车及能量块的运动学碰撞体，并通过碰撞事件队列暴露接触状态；未加载时使用同一套确定性的“垂直法向冲台”判定，保证离线/无头测试不漂移。
+- **3D 表现层**：`visual_effects.js` 通过内存 DataTexture 生成擂台白漆、黑色橡胶走道、装甲和铲斗的颜色/法线/粗糙度微纹理；renderer 使用 ACES Filmic + PCFSoft 阴影，台阶与车底使用 AO/接触阴影。Bloom 发现 EffectComposer 时自动启用，未提供后处理脚本时用 emissive/GlowSprite 安全降级。
+- **战术可视化**：`visual_hud.js` 在车顶显示状态、速度、角速度和灰度摘要；轨迹保留约 2.8 秒并渐隐；雷达锥线、传感器触发波纹、碰撞光斑、速度矢量和尘雾/轮胎痕迹均为显示层，不改变决策输入。左上角可切换自由、鸟瞰、跟车、台沿特写，底部回放条可将最近轨迹置于台沿镜头并临时 0.2x 慢放。
 - **裁判状态流转**：`PREP(最多60s) → READY → RUNNING ↔ PAUSED → FINISHED`。`arm()` 可在准备阶段提前发令；3D 控制面板支持暂停、继续、调试判罚(+3给对方)、重启判罚(+4给对方)。
 - **策略热插拔**：编辑 `robots/yellow_bot.js` / `robots/blue_bot.js`，将 controller 的 `active` 改为 `true`，在 `update(sensors, context)` 返回左右轮速即可接管对应一方；返回 `null` 则继续使用内置 FSM。
 
@@ -122,7 +127,8 @@
 
 ```bash
 # GUI（唯一入口）
-start wushu_ring_sim_3d.html       # 3D（需要 lib/three.min.js，已随项目提供；Rapier 在线可选）
+start wushu_ring_sim_3d.html       # 3D（需要 lib/three.min.js；Rapier WASM 已随仓库提供）
+node static_server.js 8931         # 推荐本地托管（ESM/WASM 在 file:// 下可能受浏览器策略限制）
 
 # 无头 API（AI Agent 用）
 node sim_server.js                 # http://127.0.0.1:8932
@@ -297,4 +303,5 @@ print(env.state()["scores"])
   无头 server/battle 每次启动时自动读取最新 CORE。
 - 视觉（buff/debuff 分类）目前用 `classifyRate` 概率模拟；实车视觉（YOLO 等）由用户另行配置，
   决策接口不变。
-- Rapier 桥使用运动学车体与实体 6cm 台阶，核心仍以“屁股正对台沿 + 法向速度”作为登台规则门槛；因此它是决策逻辑/碰撞一致性辅助，不承诺与真车逐帧动力学保真。
+- Rapier 桥优先动态导入本地 `lib/rapier.es.js`（`@dimforge/rapier3d-compat@0.14.0`，内嵌编译 WASM），再尝试 CDN/旧版 script；也可通过 `PhysicsAdapter.create({rapierModuleUrls,rapierUrls,wasmUrl})` 指定构建。`status()` 提供 `backend/loading/capabilities/geometry/contactPairs`，`getState()` 提供车体/能量块位姿和碰撞事件；主页面可调用 `syncRobot`、`syncBlock` 或 `syncState`。
+- Rapier 桥使用运动学车体与实体 6cm 台阶，核心仍以“屁股正对台沿 + 法向速度”作为登台规则门槛；车体 footprint、摩擦/恢复系数、质量和可用的 CCD 会传给碰撞层，但 Rapier 不回写 CORE 位置，推挤/计分仍由确定性核心负责。因此它是决策逻辑/碰撞一致性辅助，不承诺与真车逐帧动力学保真。
