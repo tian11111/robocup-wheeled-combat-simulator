@@ -133,3 +133,5 @@ Windows 上如果 `python` 不在 PATH，请使用你的 Python 解释器完整�
 - 修改规则核心 `wushu_ring_sim.html` 后，运行 `node sim_selftest.js`、`node sim_dragtest.js` 和 `node build_3d.js`。
 - 修改 3D UI 请编辑 `wushu_ring_sim_3d.template.html`，不要直接修改生成页面中的核心代码。
 - 同一台 `sim_server.js` 在任一时刻只运行一场远程对战或一个批量评估任务。
+
+在线体验：[https://tian11111.github.io/robocup-wheeled-combat-simulator/wushu_ring_sim_3d.html](https://tian11111.github.io/robocup-wheeled-combat-simulator/wushu_ring_sim_3d.html)
