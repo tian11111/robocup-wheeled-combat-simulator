@@ -23,9 +23,10 @@
 | `sim_server.js` | 无头 HTTP API（供 AI Agent 链接）+ `/battle/run` 子进程对战 |
 | `sim_battle.js` | CLI 对战（`node sim_battle.js --us "python robot_adapter.py example_robot.py" --them fsm`） |
 | `sim_env.py` | Python 客户端（gym 风格，仅标准库） |
+| `sim_ai_selftest.js` | 本机 AI API 冒烟测试（health/schema/多 seed 评测） |
 | `robot_adapter.py` | 小车程序适配器：`python robot_adapter.py your_program.py` |
 | `example_robot.py` | 示例小车决策程序（`decide(obs)` 参考写法） |
-| `sim_selftest.js` | 状态机、规则边界与裁判阶段自测（25 场景） |
+| `sim_selftest.js` | 状态机、规则边界与裁判阶段自测（26 场景） |
 
 ## 核心设计
 
@@ -125,6 +126,7 @@ start wushu_ring_sim_3d.html       # 3D（需要 lib/three.min.js，已随项目
 
 # 无头 API（AI Agent 用）
 node sim_server.js                 # http://127.0.0.1:8932
+node sim_ai_selftest.js             # 检查本机 AI API
 
 # 对战 CLI
 node sim_battle.js --seed 42                                   # FSM vs FSM
@@ -141,6 +143,56 @@ node sim_battle.js --vehicles vehicles.json --us @example --them fsm --seed 42
 
 ## HTTP API（sim_server.js）
 
+### AI/Codex 本机迭代接口
+
+网站页面只负责 3D 可视化，AI 应优先调用本机 `sim_server.js` 的 HTTP API。启动：
+
+```bash
+node sim_server.js 8932
+```
+
+GitHub 只托管 HTML/JS 和版本记录，不会运行 Node 仿真进程；页面默认连接
+`http://127.0.0.1:8932`。如果页面来自 GitHub Pages，可在地址后追加
+`?api=http://127.0.0.1:8932`，或先用 `node static_server.js` 在本机打开静态页面。
+
+机器可发现接口：
+
+```text
+GET /api/v1/health     服务状态、核心 hash、评测占用
+GET /api/v1/schema     动作/观测/批量评测协议
+```
+
+批量评测接口是异步的，避免外部 Python 策略的实时节流阻塞 HTTP 请求：
+
+```bash
+# 让已注册的 @my_robot 与内置 FSM 在固定 seed 集上评测
+curl -X POST http://127.0.0.1:8932/api/v1/evaluations \
+  -H "Content-Type: application/json" \
+  -d '{"us":"@my_robot","them":"fsm","seeds":[42,7,21,100,123],"includeTrace":true}'
+
+# 返回 id 后轮询
+curl http://127.0.0.1:8932/api/v1/evaluations/<id>
+```
+
+也可以直接提交候选 Python 代码（仅建议在本机使用）：
+
+```json
+{
+  "candidate": {
+    "name": "search_v2",
+    "role": "us",
+    "code": "def decide(obs):\\n    return {'v': 0.6, 'w': 0.0}\\n"
+  },
+  "them": "fsm",
+  "seeds": [42, 7, 21]
+}
+```
+
+评测默认使用 `realtime:false` 快速模式，适合 AI 搜索；需要验证实车线程时序的 `@realcar` 等控制器传
+`realtime:true`。评测结果包含每个 seed 的比分、净胜分、结束原因、登台指标和可选轨迹，汇总字段包括
+`meanNetScore`、`winRate`、`drawRate`、`mountRate`、`bestNetScore`、`worstNetScore`。
+当前核心为单例，因此同一服务同一时刻只运行一个批量评测任务；完成后再提交下一组候选。
+
 | 端点 | 请求体 | 说明 |
 |---|---|---|
 | `POST /reset` | `{seed, params, scene, vehicles, manual}` | 重置并进入 `PREP`（seed 固定可复现）；`vehicles` 为 `{us:{...},them:{...}}` |
@@ -152,6 +204,9 @@ node sim_battle.js --vehicles vehicles.json --us @example --them fsm --seed 42
 | `POST /vehicle` | `{role:'us', vehicle:{length:0.32, width:0.24, maxSpeed:1.2}}` | 修改单台车 profile，立即影响碰撞/运动 |
 | `POST /scene` | `{preset} / {robot, opp, buffs, debuff}` | 摆场景（等价拖拽） |
 | `POST /battle/run` | `{us, them, seed, params, vehicles, dt, maxSteps, actionTimeout, traceEvery}` | 跑一整场；`vehicles` 为双车 profile；us/them 为 `'fsm'` 或子进程命令；返回含轨迹 `trace`（双车位姿采样，可分析/回放） |
+| `POST /api/v1/evaluations` | `{us, them, candidate?, seeds[], params?, vehicles?, scene?, includeTrace?, realtime?}` | 异步多 seed 评测，返回 `id`；候选可直接提交 Python `code` |
+| `GET /api/v1/evaluations/:id` | — | 查询评测进度、逐 seed 结果和汇总指标 |
+| `DELETE /api/v1/evaluations/:id` | — | 请求取消正在运行的评测 |
 | `GET /state` | — | 全量状态（双车传感器/FSM/比分/日志） |
 | `GET /log` | — | 事件日志 |
 | `GET /referee/state` | — | 裁判阶段、准备/正赛剩余时间、重启判罚 |
@@ -207,10 +262,23 @@ obs 结构：
 ## AI Agent 迭代工作流
 
 1. 启动 `node sim_server.js`；
-2. 用 `sim_env.py` 或 curl 跑基线（固定 seed 多集求均值）；
-3. 改参数（`/params` 实时生效）或写自己的 `decide(obs)` 程序；
-4. 批量跑 `/battle/run` 对比比分，日志 `[我方]/[对手]` 分色可读；
-5. 需要可视化时打开 `wushu_ring_sim_3d.html`，在 3D 场景中看实时行为和裁判阶段。
+2. 先读 `/api/v1/health` 和 `/api/v1/schema`，记录 `coreHash` 与动作/观测契约；
+3. 用固定 seed 集提交 `/api/v1/evaluations` 跑基线；
+4. 修改 `decide(obs)` 或参数，再提交下一版候选，比较 `meanNetScore/winRate/mountRate`；
+5. 对最优 seed 使用 `includeTrace:true`，查看轨迹和 `logTail` 复现决策；
+6. 需要可视化时打开 `wushu_ring_sim_3d.html`，在 3D 场景中看实时行为和裁判阶段。
+
+Python 客户端也提供等价封装：
+
+```python
+from sim_env import SimEnv
+
+result = SimEnv().evaluate(
+    candidate={"name": "search_v2", "role": "us", "code": CODE},
+    them="fsm", seeds=[42, 7, 21, 100, 123], include_trace=True,
+)
+print(result["summary"])
+```
 
 ```python
 # sim_env.py 迭代示例

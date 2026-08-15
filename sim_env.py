@@ -48,6 +48,14 @@ class SimEnv:
         with urllib.request.urlopen(self.base + path, timeout=self.timeout) as r:
             return json.loads(r.read().decode("utf-8"))
 
+    def health(self):
+        """读取本机 API 健康状态、核心 hash 和当前评测占用情况。"""
+        return self._get("/api/v1/health")
+
+    def schema(self):
+        """读取 AI 动作/观测/批量评测协议说明。"""
+        return self._get("/api/v1/schema")
+
     # ---------- gym 风格接口 ----------
     def reset(self, seed=None, params=None, scene=None, manual=False, vehicles=None):
         """重置。seed 固定后整集可复现; scene 可用 'center'/'edge'/'walkway'/'hang' 等预设;
@@ -81,6 +89,55 @@ class SimEnv:
             "us": us, "them": them, "seed": seed, "params": params, "vehicles": vehicles,
             "dt": dt, "maxSteps": max_steps, "traceEvery": trace_every,
         })
+
+    def start_evaluation(self, us="fsm", them="fsm", seeds=None, params=None,
+                         vehicles=None, scene=None, dt=0.05, max_steps=2400,
+                         trace_every=20, action_timeout=300, include_trace=False,
+                         candidate=None, realtime=False):
+        """异步批量评测。返回 job 信息，随后用 wait_evaluation 轮询。
+
+        candidate 可传 {name, role, code}，代码会保存为本机临时候选并自动运行；
+        不传 candidate 时，us/them 可用 fsm、@注册名或 robot_adapter 命令。
+        realtime=False 适合 AI 批量搜索；实车线程桥需要显式传 realtime=True。
+        """
+        body = {
+            "us": us, "them": them, "seeds": seeds,
+            "params": params, "vehicles": vehicles, "scene": scene,
+            "dt": dt, "maxSteps": max_steps, "traceEvery": trace_every,
+            "actionTimeout": action_timeout, "includeTrace": include_trace,
+            "realtime": realtime,
+        }
+        if candidate is not None:
+            body["candidate"] = candidate
+        return self._post("/api/v1/evaluations", body)
+
+    def evaluation(self, job_id):
+        """读取一次异步评测任务状态。"""
+        return self._get("/api/v1/evaluations/" + str(job_id))
+
+    def cancel_evaluation(self, job_id):
+        """请求停止异步评测任务。"""
+        req = urllib.request.Request(
+            self.base + "/api/v1/evaluations/" + str(job_id),
+            method="DELETE")
+        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+
+    def wait_evaluation(self, job_id, poll=0.5, timeout=3600):
+        """等待评测完成并返回完整结果；超时只停止本地等待，不会自动取消任务。"""
+        deadline = time.time() + timeout
+        while True:
+            result = self.evaluation(job_id)
+            if result.get("status") in ("done", "error", "cancelled"):
+                return result
+            if time.time() >= deadline:
+                raise TimeoutError("评测任务等待超时: %s" % job_id)
+            time.sleep(poll)
+
+    def evaluate(self, **kwargs):
+        """启动并等待一次多 seed 评测，等价于 start_evaluation + wait_evaluation。"""
+        started = self.start_evaluation(**kwargs)
+        return self.wait_evaluation(started["id"])
 
     def set_params(self, **kwargs):
         """改参数, 实时生效。如 env.set_params(EDGE_THRESHOLD=300, classifyRate=85)"""

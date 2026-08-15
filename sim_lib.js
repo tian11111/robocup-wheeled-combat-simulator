@@ -46,7 +46,9 @@ function spawnPolicy(cmd, role, onLog){
   const [exe, ...args] = resolveCmd(cmd);
   let child;
   try {
-    child = spawn(exe, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    // 统一以仿真器目录为工作目录，AI 从任意路径启动 sim_server.js 时，
+    // `python robot_adapter.py robots/...` 仍能正确找到适配器和注册程序。
+    child = spawn(exe, args, { cwd: __dirname, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   } catch (e) {
     onLog(`[${role}子进程] 启动失败: ${e.message}`);
     return null;
@@ -135,7 +137,7 @@ function resolveController(spec){
 // ---------- 对战运行器 ----------
 // opts: { api, seed, params, scene, vehicles:{us:{...},them:{...}}, dt, maxSteps,
 //         us: 'fsm'|cmd|@name, them: 'fsm'|cmd|@name,
-//         actionTimeout, traceEvery, shouldAbort, onLog, onProgress }
+//         actionTimeout, traceEvery, realtime, shouldAbort, onLog, onProgress }
 async function runBattle(opts){
   const api = opts.api;
   const { resetAll, arm, stepSimExt, getState, getLog, US, THEM } = api;
@@ -143,6 +145,7 @@ async function runBattle(opts){
   const dt = opts.dt || 0.05;
   const maxSteps = opts.maxSteps || 2400;
   const traceEvery = opts.traceEvery || 20;
+  const realtime = opts.realtime !== false;
   const shouldAbort = opts.shouldAbort || (() => false);
 
   resetAll({ seed: opts.seed, params: opts.params, scene: opts.scene, vehicles: opts.vehicles });
@@ -153,13 +156,28 @@ async function runBattle(opts){
   arm();
 
   const trace = [];
+  const seen = {
+    us: { mounted: false, mountTime: null },
+    them: { mounted: false, mountTime: null },
+  };
+  function observeMilestones(st){
+    for (const role of ['us', 'them']){
+      const r = st.robots[role];
+      if (r.onPlatform && !seen[role].mounted){
+        seen[role].mounted = true;
+        seen[role].mountTime = +st.simT.toFixed(2);
+      }
+    }
+  }
   const rec = st => trace.push({
     t: +st.simT.toFixed(2),
     scores: st.scores,
-    us: { x: +st.robots.us.x.toFixed(3), y: +st.robots.us.y.toFixed(3), th: +st.robots.us.th.toFixed(3), state: st.robots.us.state },
-    them: { x: +st.robots.them.x.toFixed(3), y: +st.robots.them.y.toFixed(3), th: +st.robots.them.th.toFixed(3), state: st.robots.them.state },
+    us: { x: +st.robots.us.x.toFixed(3), y: +st.robots.us.y.toFixed(3), th: +st.robots.us.th.toFixed(3), state: st.robots.us.state, action: st.robots.us.action, onPlatform: !!st.robots.us.onPlatform, hang: !!st.robots.us.hang },
+    them: { x: +st.robots.them.x.toFixed(3), y: +st.robots.them.y.toFixed(3), th: +st.robots.them.th.toFixed(3), state: st.robots.them.state, action: st.robots.them.action, onPlatform: !!st.robots.them.onPlatform, hang: !!st.robots.them.hang },
   });
-  rec(getState());
+  const initialState = getState();
+  observeMilestones(initialState);
+  rec(initialState);
 
   let steps = 0;
   for (let i = 0; i < maxSteps; i++){
@@ -176,13 +194,15 @@ async function runBattle(opts){
       them: themPol ? normAct(at, st.robots.them.vehicle) : null,
     });
     steps = i + 1;
-    // 1:1 真实时间节流 (2026-08-12): 实车 FSM 线程按真实时间 50Hz 节流决策,
-    // 子进程响应毫秒级时本循环会仿真加速(5ms/帧 vs 仿真 0.05s/帧) →
-    // FSM 线程进度永远落后于仿真时间 → 登台时序错乱(align 不执行/倒车窗口丢失)。
-    // 每帧真实时间 ≥ dt 保证 1:1 (CONTRACT 第 4 节契约, 此前未实现)。
-    const elapsed = Date.now() - t0;
-    const need = dt * 1000 - elapsed;
-    if (need > 0) await new Promise(r => setTimeout(r, need));
+    observeMilestones(getState());
+    // 1:1 真实时间节流 (2026-08-12): 实车 FSM 线程按真实时间 50Hz 节流决策，
+    // realtime=true 时每帧真实时间 ≥ dt，保证登台时序与实车线程一致；
+    // AI 批量搜索可用 realtime=false 跳过等待，保持决策输入/输出协议不变。
+    if (realtime){
+      const elapsed = Date.now() - t0;
+      const need = dt * 1000 - elapsed;
+      if (need > 0) await new Promise(r => setTimeout(r, need));
+    }
     if (steps % traceEvery === 0) rec(getState());
     if (opts.onProgress && steps % Math.ceil(maxSteps / 10) === 0) opts.onProgress(steps, getState());
   }
@@ -197,6 +217,10 @@ async function runBattle(opts){
     robots: st.robots,
     done: st.done,
     doneReason: st.doneReason,
+    metrics: {
+      us: { mounted: seen.us.mounted, mountTime: seen.us.mountTime, finalOnPlatform: !!st.robots.us.onPlatform, finalHang: !!st.robots.us.hang },
+      them: { mounted: seen.them.mounted, mountTime: seen.them.mountTime, finalOnPlatform: !!st.robots.them.onPlatform, finalHang: !!st.robots.them.hang },
+    },
     trace,
     logTail: getLog().slice(-30),
   };

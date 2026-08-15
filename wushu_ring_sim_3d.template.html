@@ -1112,7 +1112,13 @@ document.getElementById('scOppOn').onclick = ()=> scenePreset('opp_on');
 document.getElementById('scOppGo').onclick = ()=> scenePreset('opp_start');
 
 // ---------- 导入小车程序 + 远程对战 (GUI 直连本地 server) ----------
-const API_BASE = 'http://127.0.0.1:8932';
+// 默认连接本机 API；GitHub Pages/静态托管时可用 ?api=http://127.0.0.1:8932
+// 或在页面外提前设置 window.SIM_API_BASE，避免把地址写死在构建产物里。
+const API_BASE = (() => {
+  const query = new URLSearchParams(location.search).get('api');
+  const configured = window.SIM_API_BASE || query || 'http://127.0.0.1:8932';
+  return String(configured).replace(/\/$/, '');
+})();
 let remote = { mode: false, timer: null, lastUpload: null, lastLogLen: 0, lastOutLen: 0 };
 const remoteStatus = document.getElementById('remoteStatus');
 const remoteOut = document.getElementById('remoteOut');

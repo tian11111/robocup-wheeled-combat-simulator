@@ -18,6 +18,10 @@
  *   POST  /scene          → 摆场景: {preset} 或 {robot:{x,y,th}, opp:{x,y}, buffs, debuff}
  *   POST  /battle/run     → {us?:'fsm'|命令, them?:'fsm'|命令, vehicles?, seed?, dt?, maxSteps?}
  *                            跑一整场(可子进程), 返回比分/状态/日志
+ *   GET   /api/v1/health → 服务状态、核心 hash、评测占用
+ *   GET   /api/v1/schema → AI 动作/观测/评测协议
+ *   POST  /api/v1/evaluations → 异步多 seed 评测(默认快速模式)
+ *   GET   /api/v1/evaluations/:id → 评测进度与汇总
  *   GET   /state          → 全量状态(双车传感器/FSM/比分/日志)
  *   GET   /log            → 事件日志
  * ============================================================ */
@@ -25,12 +29,17 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { loadCore, runBattle } = require('./sim_lib');
 
 const PORT = parseInt(process.argv[2] || process.env.SIM_PORT || '8932', 10);
 const api = loadCore(__dirname);
 const { resetAll, arm, startManual, stepSim, stepSimExt, getState, getLog, setParams, setVehicleFor, getVehicleFor, setPose, setObject, scenePreset, params, scoreBoard,
   beginPreparation, pauseMatch, resumeMatch, restartFor } = api;
+const SERVER_STARTED_AT = new Date().toISOString();
+const CORE_HASH = crypto.createHash('sha256')
+  .update(fs.readFileSync(path.join(__dirname, 'wushu_ring_sim.html'), 'utf8'))
+  .digest('hex').slice(0, 16);
 
 // ---------- 计分基准(每步返回奖励增量) ----------
 let scoreBase = { us: 0, them: 0 };
@@ -46,6 +55,161 @@ const ROBOTS_DIR = path.join(__dirname, 'robots');
 const REGISTRY_FILE = path.join(__dirname, 'sim_robots.json');
 if (!fs.existsSync(ROBOTS_DIR)) fs.mkdirSync(ROBOTS_DIR);
 let battleSession = { running: false, abort: false, startedAt: 0, result: null, error: null, usName: '', themName: '', output: [] };
+
+// ---------- AI 批量评测任务 ----------
+// 核心是单例，因此本机服务同一时刻只运行一个评测任务；任务本身异步执行，
+// 外部 Python 策略的 1:1 实时节流不会阻塞 HTTP 轮询。
+const EVAL_SEEDS = [42, 7, 21, 100, 123];
+const evaluations = new Map();
+let evaluationSeq = 0;
+const MAX_EVALUATIONS = 24;
+
+function safeName(value, fallback='candidate'){
+  const s = String(value || '').trim().replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+  return (s || fallback).slice(0, 48);
+}
+function codeHash(code){
+  return crypto.createHash('sha256').update(code, 'utf8').digest('hex').slice(0, 12);
+}
+function materializeCandidate(body){
+  const candidate = body && body.candidate && typeof body.candidate === 'object' ? body.candidate : null;
+  const code = candidate && typeof candidate.code === 'string' ? candidate.code : (typeof body.code === 'string' ? body.code : null);
+  if (code === null) return { us: body.us || 'fsm', them: body.them || 'fsm', candidate: null };
+  if (Buffer.byteLength(code, 'utf8') > 1024 * 1024) throw new Error('候选算法代码不能超过 1MB');
+  const role = (candidate && candidate.role) || body.role || 'us';
+  if (role !== 'us' && role !== 'them') throw new Error("candidate.role 必须是 'us' 或 'them'");
+  const stem = `ai_${safeName((candidate && (candidate.name || candidate.filename)) || body.name || 'candidate')}_${codeHash(code)}`;
+  const file = stem + '.py';
+  const filePath = path.join(ROBOTS_DIR, file);
+  fs.writeFileSync(filePath, code, 'utf8');
+  const command = `python robot_adapter.py robots/${file}`;
+  return {
+    us: role === 'us' ? command : (body.us || 'fsm'),
+    them: role === 'them' ? command : (body.them || 'fsm'),
+    candidate: { name: stem, role, file: `robots/${file}`, hash: codeHash(code) },
+  };
+}
+function evaluationBusy(){
+  return [...evaluations.values()].some(j => j.status === 'queued' || j.status === 'running');
+}
+function normalizeSeeds(value){
+  const raw = Array.isArray(value) && value.length ? value : EVAL_SEEDS;
+  const out = [];
+  for (const x of raw){
+    const n = Number(x);
+    if (!Number.isInteger(n) || n < 0 || n > 0x7fffffff) throw new Error('seeds 必须是非负整数数组');
+    if (!out.includes(n)) out.push(n);
+  }
+  if (!out.length) throw new Error('至少需要一个 seed');
+  if (out.length > 32) throw new Error('单次最多评测 32 个 seed');
+  return out;
+}
+function summarizeEvaluation(runs){
+  const okRuns = runs.filter(r => !r.error);
+  const count = okRuns.length;
+  const sum = key => okRuns.reduce((n, r) => n + Number(r[key] || 0), 0);
+  const netScores = okRuns.map(r => Number(r.netScore || 0));
+  const mean = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+  const wins = okRuns.filter(r => r.netScore > 0).length;
+  const draws = okRuns.filter(r => r.netScore === 0).length;
+  const mounts = okRuns.filter(r => r.metrics && r.metrics.us && r.metrics.us.mounted).length;
+  return {
+    count,
+    failed: runs.length - count,
+    meanNetScore: +mean(netScores).toFixed(3),
+    meanUsScore: +(sum('usScore') / (count || 1)).toFixed(3),
+    meanThemScore: +(sum('themScore') / (count || 1)).toFixed(3),
+    winRate: +(wins / (count || 1)).toFixed(3),
+    drawRate: +(draws / (count || 1)).toFixed(3),
+    mountRate: +(mounts / (count || 1)).toFixed(3),
+    bestNetScore: netScores.length ? Math.max(...netScores) : null,
+    worstNetScore: netScores.length ? Math.min(...netScores) : null,
+  };
+}
+function publicEvaluation(job){
+  return {
+    id: job.id,
+    status: job.status,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    candidate: job.candidate,
+    us: job.us,
+    them: job.them,
+    seeds: job.seeds,
+    progress: { completed: job.runs.length, total: job.seeds.length, currentSeed: job.currentSeed },
+    summary: job.summary,
+    runs: job.runs,
+    error: job.error,
+  };
+}
+function trimEvaluations(){
+  while (evaluations.size > MAX_EVALUATIONS){
+    const first = evaluations.keys().next().value;
+    if (!first) break;
+    const old = evaluations.get(first);
+    if (old.status === 'queued' || old.status === 'running') break;
+    evaluations.delete(first);
+  }
+}
+async function runEvaluation(job, opts){
+  job.status = 'running';
+  job.startedAt = new Date().toISOString();
+  try {
+    for (const seed of job.seeds){
+      if (job.cancelRequested) break;
+      job.currentSeed = seed;
+      const started = Date.now();
+      try {
+        const result = await runBattle({
+          api,
+          seed,
+          params: opts.params,
+          scene: opts.scene,
+          vehicles: opts.vehicles,
+          dt: opts.dt,
+          maxSteps: opts.maxSteps,
+          actionTimeout: opts.actionTimeout,
+          traceEvery: opts.traceEvery,
+          realtime: opts.realtime,
+          us: job.us,
+          them: job.them,
+          shouldAbort: () => !!job.cancelRequested,
+        });
+        const usScore = Number(result.scores && result.scores.us || 0);
+        const themScore = Number(result.scores && result.scores.them || 0);
+        const row = {
+          seed,
+          ok: true,
+          usScore,
+          themScore,
+          netScore: usScore - themScore,
+          simT: result.simT,
+          steps: result.steps,
+          done: result.done,
+          doneReason: result.doneReason,
+          metrics: result.metrics,
+          elapsedMs: Date.now() - started,
+          logTail: result.logTail,
+        };
+        if (opts.includeTrace) row.trace = result.trace;
+        job.runs.push(row);
+      } catch (e) {
+        job.runs.push({ seed, ok: false, error: String(e && e.message || e), elapsedMs: Date.now() - started });
+      }
+      job.summary = summarizeEvaluation(job.runs);
+    }
+    job.status = job.cancelRequested ? 'cancelled' : 'done';
+  } catch (e) {
+    job.status = 'error';
+    job.error = String(e && e.message || e);
+  } finally {
+    job.currentSeed = null;
+    job.finishedAt = new Date().toISOString();
+    job.summary = summarizeEvaluation(job.runs);
+    trimEvaluations();
+  }
+}
 
 function registryAdd(name, cmd, desc){
   let reg = {};
@@ -102,12 +266,132 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         name: 'wushu-ring-sim headless API (双车 + 子进程桥)',
         version: '2026',
+        apiVersion: 'v1',
         core: '3D GameEngine; rules CORE compatibility source',
-        endpoints: ['GET /', 'POST /reset', 'POST /arm', 'POST /step', 'POST /step2', 'POST /params', 'GET /vehicle', 'POST /vehicle', 'POST /scene', 'POST /battle/run', 'POST /battle/start', 'POST /battle/stop', 'GET /battle/status', 'GET /state', 'GET /log', 'GET /referee/state', 'POST /referee/pause', 'POST /referee/resume', 'POST /referee/restart'],
+        endpoints: ['GET /health', 'GET /schema', 'POST /reset', 'POST /arm', 'POST /step', 'POST /step2', 'POST /params', 'GET /vehicle', 'POST /vehicle', 'POST /scene', 'POST /battle/run', 'POST /battle/start', 'POST /battle/stop', 'GET /battle/status', 'POST /api/v1/evaluations', 'GET /api/v1/evaluations/:id', 'DELETE /api/v1/evaluations/:id', 'GET /state', 'GET /log', 'GET /referee/state', 'POST /referee/pause', 'POST /referee/resume', 'POST /referee/restart'],
         state: getState().robots.us.state,
       });
     }
+    if (req.method === 'GET' && (u.pathname === '/health' || u.pathname === '/api/v1/health')) {
+      return json(res, 200, {
+        ok: true,
+        name: 'wushu-ring-sim',
+        apiVersion: 'v1',
+        version: '2026',
+        coreHash: CORE_HASH,
+        startedAt: SERVER_STARTED_AT,
+        uptimeSec: Math.round(process.uptime()),
+        state: getState().robots.us.state,
+        evaluationBusy: evaluationBusy(),
+        endpoints: {
+          schema: '/api/v1/schema',
+          evaluate: '/api/v1/evaluations',
+          state: '/state',
+        },
+      });
+    }
+    if (req.method === 'GET' && (u.pathname === '/schema' || u.pathname === '/api/v1/schema')) {
+      return json(res, 200, {
+        apiVersion: 'v1',
+        coreHash: CORE_HASH,
+        deterministic: { seed: true, fixedSeedSet: EVAL_SEEDS },
+        action: {
+          type: 'object',
+          fields: {
+            v: { type: 'number', unit: 'm/s', range: [-3, 3] },
+            w: { type: 'number', unit: 'rad/s', range: [-12, 12] },
+          },
+        },
+        observation: {
+          state: '/state',
+          perRobot: ['x', 'y', 'th', 'v', 'w', 'vehicle', 'onPlatform', 'hang', 'state', 'action'],
+          sensors: ['sensors (legacy aliases)', 'rawSensors (real channels)', 'sensorLayout (type/position/orientation)'],
+          objects: ['buffs', 'debuff'],
+        },
+        evaluation: {
+          endpoint: '/api/v1/evaluations',
+          defaultSeeds: EVAL_SEEDS,
+          maxSeeds: 32,
+          request: {
+            us: 'fsm | @registryName | command',
+            them: 'fsm | @registryName | command',
+            candidate: '{name?, role?, code?}',
+            seeds: 'integer[]',
+            includeTrace: 'boolean',
+            realtime: 'boolean? (默认 false，实车线程联调时设 true)',
+            params: 'object?',
+            vehicles: '{us?,them?}',
+            scene: 'object?'
+          },
+          resultMetrics: ['meanNetScore', 'winRate', 'drawRate', 'mountRate', 'bestNetScore', 'worstNetScore'],
+        },
+      });
+    }
+    if (req.method === 'POST' && (u.pathname === '/api/v1/evaluations' || u.pathname === '/batch/start')) {
+      if (evaluationBusy()) return json(res, 409, { error: '已有评测任务运行中；单例核心不支持并行评测' });
+      if (battleSession.running) return json(res, 409, { error: '已有远程对战运行中，请先停止 /battle/stop' });
+      const b = await readBody(req);
+      const material = materializeCandidate(b);
+      const seeds = normalizeSeeds(b.seeds);
+      const id = `eval-${Date.now().toString(36)}-${(++evaluationSeq).toString(36)}`;
+      const job = {
+        id,
+        status: 'queued',
+        createdAt: new Date().toISOString(),
+        startedAt: null,
+        finishedAt: null,
+        cancelRequested: false,
+        currentSeed: null,
+        candidate: material.candidate,
+        us: material.us,
+        them: material.them,
+        seeds,
+        runs: [],
+        summary: summarizeEvaluation([]),
+        error: null,
+      };
+      evaluations.set(id, job);
+      trimEvaluations();
+      const opts = {
+        params: b.params,
+        scene: b.scene,
+        vehicles: b.vehicles,
+        dt: Number.isFinite(Number(b.dt)) ? Math.max(0.01, Math.min(0.2, Number(b.dt))) : 0.05,
+        maxSteps: Number.isFinite(Number(b.maxSteps)) ? Math.max(1, Math.min(20000, Math.floor(Number(b.maxSteps)))) : 2400,
+        traceEvery: Number.isFinite(Number(b.traceEvery)) ? Math.max(1, Math.min(1000, Math.floor(Number(b.traceEvery)))) : 20,
+        actionTimeout: Number.isFinite(Number(b.actionTimeout)) ? Math.max(10, Math.min(5000, Math.floor(Number(b.actionTimeout)))) : 300,
+        includeTrace: !!b.includeTrace,
+        // AI 批量搜索默认关闭真实时间节流；@realcar 等依赖线程时序的实车桥请显式传 true。
+        realtime: b.realtime === true,
+      };
+      setImmediate(() => runEvaluation(job, opts));
+      return json(res, 202, { ok: true, id, status: job.status, poll: `/api/v1/evaluations/${id}`, candidate: job.candidate, seeds });
+    }
+    const evalPathMatch = u.pathname.match(/^\/api\/v1\/evaluations\/([^/]+)$/);
+    if ((req.method === 'GET' || req.method === 'DELETE') && evalPathMatch){
+      const job = evaluations.get(evalPathMatch[1]);
+      if (!job) return json(res, 404, { error: '评测任务不存在', id: evalPathMatch[1] });
+      if (req.method === 'DELETE'){
+        if (job.status === 'queued' || job.status === 'running') job.cancelRequested = true;
+        return json(res, 202, { ok: true, id: job.id, status: job.status === 'done' ? job.status : 'cancelling' });
+      }
+      return json(res, 200, publicEvaluation(job));
+    }
+    if (req.method === 'GET' && u.pathname === '/batch/status'){
+      const id = u.searchParams.get('id');
+      const job = id && evaluations.get(id);
+      if (!job) return json(res, 404, { error: '请提供有效的 ?id=评测任务 ID' });
+      return json(res, 200, publicEvaluation(job));
+    }
+    if (req.method === 'POST' && u.pathname === '/batch/cancel'){
+      const id = u.searchParams.get('id');
+      const job = id && evaluations.get(id);
+      if (!job) return json(res, 404, { error: '请提供有效的 ?id=评测任务 ID' });
+      if (job.status === 'queued' || job.status === 'running') job.cancelRequested = true;
+      return json(res, 202, { ok: true, id, status: 'cancelling' });
+    }
     if (req.method === 'POST' && u.pathname === '/reset') {
+      if (evaluationBusy()) return json(res, 409, { error: '评测任务运行中，不能重置单例比赛核心' });
       const b = await readBody(req);
       resetAll({ seed: b.seed ?? params.seed, params: b.params, scene: b.scene, vehicles: b.vehicles });
       if (b.manual) startManual();
@@ -163,6 +447,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, state: getState() });
     }
     if (req.method === 'POST' && u.pathname === '/battle/run') {
+      if (evaluationBusy()) return json(res, 409, { error: '评测任务运行中，请等待完成或取消后再运行单场对战' });
       const b = await readBody(req);
       const r = await runBattle({
         api,
@@ -234,6 +519,7 @@ const server = http.createServer(async (req, res) => {
     // 后台对战: 启动 (GUI 远程对战用, 期间 /state 轮询实时渲染)
     if (req.method === 'POST' && u.pathname === '/battle/start') {
       const b = await readBody(req);
+      if (evaluationBusy()) return json(res, 409, { error: '评测任务运行中，请等待完成或取消后再启动远程对战' });
       if (battleSession.running) return json(res, 409, { error: '已有对战进行中, 先 /battle/stop' });
       resetAll({ seed: b.seed, params: b.params, vehicles: b.vehicles });
       scoreBase = { us: scoreBoard.us, them: scoreBoard.them };

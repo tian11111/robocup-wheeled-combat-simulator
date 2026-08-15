@@ -5,7 +5,7 @@ example_iterate.py — 用仿真器迭代决策参数的示例 (随机搜索 + �
 
 演示 AI Agent 在仿真上迭代算法的标准循环:
     1. 启动 sim_server.js (node sim_server.js)
-    2. 本脚本: 随机生成候选参数 → 固定多个种子各跑一集 → 统计平均净胜
+    2. 本脚本: 随机生成候选参数 → 通过异步 evaluations API 固定多个种子评测 → 统计平均净胜
     3. 输出候选排名 (JSON + 表格), 供人工/Agent 决定下一步调参方向
 
 运行:
@@ -21,7 +21,7 @@ from sim_env import SimEnv
 # 可调参数名 (与 config 对应)
 # 注意: 只有以下参数真正影响 FSM 决策:
 #   EDGE_THRESHOLD(扫描避边) / IR_TRIGGER(目标发现) / MOUNT_SPEED(登台速度) / RECOVER_LIMIT(恢复上限)
-# FALL_THRESHOLD / ON_STAGE_THRESHOLD 目前只影响日志与 GUI 显示, 调它们不会改变行为。
+# FALL_THRESHOLD 会影响登台 climbed 信号；ON_STAGE_THRESHOLD 仅用于 GUI 显示，默认不放入搜索空间。
 SEARCH_SPACE = {
     "EDGE_THRESHOLD": (250, 550),
     "IR_TRIGGER": (0.20, 0.60),
@@ -31,12 +31,13 @@ SEARCH_SPACE = {
 
 
 def evaluate(env, params, seeds, us="fsm", them="fsm", max_steps=2400):
-    """固定种子集合评估一组参数, 返回平均净胜分(每集一次 /battle/run, 批量跑)。"""
-    diffs = []
-    for seed in seeds:
-        r = env.run_battle(us=us, them=them, seed=seed, params=params, max_steps=max_steps)
-        diffs.append(r["scores"]["us"] - r["scores"]["them"])
-    return sum(diffs) / len(diffs), diffs
+    """固定种子集合评估一组参数，走异步批量 API，返回平均净胜分和逐 seed 净胜分。"""
+    result = env.evaluate(
+        us=us, them=them, seeds=seeds, params=params,
+        max_steps=max_steps, include_trace=False,
+    )
+    diffs = [r["netScore"] for r in result["runs"] if r.get("ok", True)]
+    return result["summary"]["meanNetScore"], diffs
 
 
 def random_candidate(rng):

@@ -28,6 +28,19 @@
 | **发令时序** | `sim_robot_main` **模块加载时即 `fsm.arm()`**（run() 线程第一轮必消费信号）。禁止在 decide 里 arm——曾因线程启动与 arm 的竞态导致 WAIT_START 卡死 |
 | 进程退出 | 子进程正常退出（模块无主循环）≠ 故障；`sim_robot_main` 必须经 `robot_adapter.py` 运行（它持有 stdin 循环） |
 
+### 2.1 AI/Codex 本机评测契约
+
+网页是 3D 可视化层，AI 迭代通过本机 `sim_server.js` 的 HTTP API 完成。GitHub 仓库或 Pages
+只托管静态文件，不运行 Node 仿真进程；页面可用 `?api=http://127.0.0.1:8932` 指定本机 API。
+
+`GET /api/v1/health` 返回服务版本与 `coreHash`；`GET /api/v1/schema` 返回动作/观测和评测协议。
+`POST /api/v1/evaluations` 接收候选控制器、固定 seed 集、参数和车辆 profile，返回异步任务 ID；
+`GET /api/v1/evaluations/:id` 返回进度、逐 seed 结果和汇总指标，`DELETE` 请求取消任务。
+评测默认 `realtime:false` 以便快速搜索；需要验证实车线程时序的控制器必须显式传 `realtime:true`。
+
+评测任务使用单例比赛核心，同一服务同一时间只允许一个任务运行，以保证每个 seed 的状态隔离和确定性。
+候选代码直传和 `/import-dir` 仅限本机可信调用，不得把该执行接口裸露到公网。
+
 ## 3. 传感器量纲映射契约（SimDriver）
 
 仿真 obs → 实车 ADC/IO 原始值（与 config.py 阈值语义对齐）：
@@ -54,7 +67,7 @@
 |---|---|
 | move_cmd(left,right) → 动作 | `v=(l+r)/2×1.2/256`，`w=(r-l)×2.5/512`（全速 ±256≈±1.2m/s；标定可调，常量在 sim_driver.py 顶部） |
 | **move_cmd=设置速度并保持** | 2026-08-12 移除原 0.15s 指令过期机制——实车 actuator 时序动作（reverse_mount 倒车登台）只发一次指令后 sleep 轮询灰度，过期机制把"保持"变"停车" → 仿真里车不动登台卡死。竞态由"decide 只读不清零"解决（FSM 线程需要停车时显式 move_cmd(0,0)） |
-| 动作时序 | 实车 actuator 用 `time.sleep` 拆片（真实时间）；仿真 dt=0.05 时 1:1 等价。**runBattle 每帧真实时间节流 ≥dt（2026-08-12 实现）**——实车 FSM 线程按真实时间 50Hz 节流，子进程响应毫秒级时仿真会加速（5ms/帧 vs 仿真 0.05s/帧）→ FSM 决策永远落后于仿真时间 → 登台时序错乱（align 不执行/倒车窗口丢失）。**禁止在仿真里加速/减速子进程侧的时间基准** |
+| 动作时序 | 实车 actuator 用 `time.sleep` 拆片（真实时间）；仿真 dt=0.05 时 1:1 等价。`runBattle`/评测传 `realtime:true` 时每帧真实时间节流 ≥dt，保证实车 FSM 线程同步；AI 批量搜索默认 `realtime:false` 以快速评估，不能用该模式验证实车线程时序 |
 
 仿真 HTTP/子进程/浏览器策略的 `v,w` 与左右轮速还会按当前车辆 profile 的 `maxSpeed/maxTurnRate` 限幅；实车 `move_cmd` 的 ADC 映射常量仍以实车标定为准。
 
@@ -126,7 +139,7 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 
 | 约束 | 说明 |
 |---|---|
-| 必跑回归 | `node sim_selftest.js`（**26 个确定性场景 1-26**，必须全绿）+ `node sim_dragtest.js`（拖拽语义 8 项） |
+| 必跑回归 | `node sim_selftest.js`（**26 个确定性场景 1-26**，必须全绿）+ `node sim_dragtest.js`（拖拽语义 8 项）；AI 接口改动另跑 `node sim_ai_selftest.js` |
 | 确定性 | `resetAll({seed})` 后噪声/识别/能量块摆放可复现（mulberry32）；评估用固定种子集 |
 | 桥验证 | 实车侧改动后：`node sim_battle.js --us "python robot_adapter.py D:/.../tools/sim_robot_main.py" --them fsm --seed 42` 跑通一场 |
 | 语法 | 实车侧代码保持 Python 3.7 兼容（树莓派系统 python3） |
@@ -137,7 +150,7 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 - **确定性门槛**：同 seed + 同参数 → 完全一致（场景 10 固化；任何改动不得破坏）
 - **登台门槛**：5 seed 中实车 FSM（@mycar_dir）全部"曾上台"（trace 判定）
 - **比分口径**：不设单场硬标准（策略层随机波动），用**多次运行统计**（≥5 seed 的平均净胜/胜率）对比改动前后
-- **决策等价**：同 obs → 同动作（子进程协议确定性；1:1 节流保证 FSM 线程与仿真同步）
+- **决策等价**：同 obs → 同动作（子进程协议确定性；实车线程联调使用 `realtime:true` 保证同步）
 - **物理保真边界**：以第 3/6/7 节差异表为准（传感器量程/视觉 stub/台阶近似）——真机标定后逐项复核替换；**仿真器不承诺与真机逐帧一致**，只承诺"决策输入语义对齐"
 
 ## 9. 环境约束
@@ -154,7 +167,7 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 - [x] **规则级计分边界**（2026-08-14）：双方同帧掉台不得分；另一方已在台下时掉台不得分；读秒按双方台上/台下状态切换重新计时；能量块按最后接触者计分、同时接触不计分、下台后本场报废；连续静止超过 10 秒触发消极比赛 +1。selftest 场景 17-19 固化。
 - [x] **SimDriver 五处修复**（2026-08-12）：①铲前极性（active_high）②走道灰度 600→1260 ③adc 初始安全值 ④IO 通道（后向=IO5/正前=IO4）⑤move_cmd 移除过期（保持语义）；另后向红外量程截断 0.3m、铲前地面反射（走道恒反射）
 - [ ] **实车 FSM 完整登台未通（2026-08-12 诊断）**：危机已修 + 姿态确认三条件桩测全过（on_stage/rear_obstacle/front_edge_ahead），reverse_mount 能执行（runup 300→倒车-780），但 FSM 线程在 runup 与 find_wall 间反复（栈 dump 证实），倒车阶段灰度判定窗口与仿真时序未对齐。**剩余疑点**：FSM 线程 runup 后阶段间 abort_check 行为 / 倒车灰度判定时序。**下一轮方向**：sim_robot_main 打印 FSM 决策点 + USE_MOUNT_DETECTION 灰度窗口调试
-- [x] **runBattle 1:1 真实时间节流**（2026-08-12）：每帧真实时间 ≥ dt——实车 FSM 线程按真实时间 50Hz 节流决策，仿真加速（子进程响应毫秒级）会让 FSM 永远落后 → 登台时序错乱。**此修复后登台链路打通且 100% 稳定（3/3 seed 登台）**：align_reverse ✓ → reverse_mount → True（耗时 2.47s）→ 车登台。⚠️ 服务器改动 sim_lib.js 后**必须重启**（本坑踩过：旧进程无节流全失败）
+- [x] **runBattle 真实时间节流可切换**（2026-08-12/2026-08-15）：`realtime:true` 时每帧真实时间 ≥ dt，保证实车 FSM 线程同步；AI 批量评测默认 `realtime:false` 加速搜索。实车联调改动 `sim_lib.js` 后**必须重启**服务器
 - [x] **视觉 stub（SimVision）**（2026-08-12）：sim_robot_main 注入 SimVision——用 obs.objects 几何判定"车头前方 ±0.6rad 内最近块"构造 TargetSample（center_x=正前无偏差、distance=1200/距离 框高代理）→ 实车 FSM SEARCH 可推块。**完整闭环验证**（seed 42）：`姿态确认+倒车登台成功 → SEARCH` → `search → score_block` → us 推增益块得 3 分 → 循环推块。**残余波动**：多 seed 推块得分 0-6 分（红外转向/视觉角度/对手干扰的策略层波动，真机同源）
 - [ ] **battle 偶发卡 WAIT_START**：疑似 run() 线程与管道交互的调度问题；已用"模块加载即 arm"缓解，但 3 seed 中出现过 FSM 日志停在"climbed→正向登台"（mount_ring 动作未返回）。**根治方向：验证 time.sleep 在子进程环境的行为；必要时改同步驱动模型**
 - [x] **3D 擂台下方视觉偏暗**：已修——裙边改为与擂台同高的实心底座（完全覆盖擂台底，消除低视角无光缝隙），并加微弱 emissive
