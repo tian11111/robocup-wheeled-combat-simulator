@@ -12,7 +12,8 @@
     --st-attack:#ff5b5b; --st-score:#3ddc84; --st-recover:#b07bff; --st-done:#5a6472;
   }
   *{box-sizing:border-box; margin:0; padding:0;}
-  html,body{background:var(--bg); color:var(--txt); font-family:"Microsoft YaHei","PingFang SC",sans-serif; font-size:13px;}
+  html,body{height:100%; background:var(--bg); color:var(--txt); font-family:"Microsoft YaHei","PingFang SC",sans-serif; font-size:13px; overflow:hidden;}
+  body{display:flex; flex-direction:column; min-height:100vh;}
   header{
     display:flex; align-items:center; gap:14px; padding:10px 16px;
     background:linear-gradient(180deg,#202834,#1a2028); border-bottom:1px solid var(--line);
@@ -27,10 +28,10 @@
     padding:3px 8px; border-radius:4px; white-space:nowrap;
   }
   header .ver{margin-left:auto; color:var(--muted); font-size:11px; white-space:nowrap;}
-  .main{display:flex; gap:12px; padding:12px; align-items:flex-start;}
-  .left{flex:0 0 auto;}
+  .main{display:grid; grid-template-columns:minmax(480px,1.18fr) minmax(460px,.82fr); gap:12px; padding:12px; flex:1 1 auto; min-height:0; overflow:hidden;}
+  .left{min-width:0; min-height:0; display:flex; flex-direction:column;}
   #cv{
-    width:800px; height:800px; background:#2a3038; border:1px solid var(--line);
+    width:100%; height:auto; flex:1 1 auto; min-height:0; background:#2a3038; border:1px solid var(--line);
     border-radius:6px; overflow:hidden; position:relative; cursor:grab;
   }
   #cv canvas{display:block;}
@@ -38,34 +39,42 @@
     display:none; position:absolute; inset:0; color:#ff9f9f; font-size:14px;
     background:rgba(20,23,28,.92); padding:30px; line-height:1.9; z-index:9;
   }
-  .hint{color:var(--muted); font-size:11px; margin-top:6px; line-height:1.7;}
-  .right{flex:1 1 300px; display:flex; flex-direction:column; gap:10px; min-width:280px;}
-  .panel{background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px 12px;}
+  .hint{color:var(--muted); font-size:10.5px; margin-top:6px; line-height:1.55; flex:0 0 auto;}
+  .right{min-width:0; min-height:0; overflow:hidden; display:grid; grid-template-rows:125px minmax(120px,1fr) minmax(130px,1fr) minmax(220px,1.35fr); gap:10px;}
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:9px 11px; min-height:0;}
   .panel h3{font-size:12px; color:var(--muted); margin-bottom:6px; letter-spacing:1px; font-weight:normal;}
-  .st-row{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;}
-  .st-row .lab{color:var(--muted); width:64px;}
-  #stateBadge{font-size:16px; font-weight:bold; padding:2px 10px; border-radius:4px; letter-spacing:1px;}
-  #actionText{font-size:14px; font-weight:bold; color:#fff;}
-  #subText{color:var(--muted); font-size:12px;}
-  .scores{display:flex; gap:14px; margin-top:6px; color:var(--txt); font-size:13px; flex-wrap:wrap;}
-  .scores b{font-size:16px; color:#fff;}
-  .fsm-chain{color:var(--muted); font-size:10.5px; margin-top:6px; letter-spacing:.3px; line-height:1.8;}
+  .status-panel{display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); column-gap:12px; row-gap:4px; align-content:start; overflow:hidden;}
+  .status-panel .st-row{display:flex; align-items:center; gap:6px; flex-wrap:nowrap; min-width:0; margin:0;}
+  .status-panel .st-row:nth-child(3), .status-panel .scores, .status-panel .fsm-chain{grid-column:1 / -1;}
+  .st-row .lab{color:var(--muted); width:52px; flex:0 0 auto; font-size:11px;}
+  #stateBadge,#themBadge{font-size:12px; line-height:1.15; font-weight:bold; padding:3px 6px; border-radius:4px; letter-spacing:.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  #actionText{font-size:12px; font-weight:bold; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  #subText,#themSub{color:var(--muted); font-size:10.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .scores{display:flex; gap:12px; margin-top:0; color:var(--txt); font-size:11.5px; flex-wrap:wrap;}
+  .scores b{font-size:14px; color:#fff;}
+  .fsm-chain{color:var(--muted); font-size:9.5px; margin-top:0; letter-spacing:.15px; line-height:1.35; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .log-panel,.sensor-panel{display:flex; flex-direction:column; overflow:hidden;}
   #log{
-    height:190px; overflow-y:auto; font-family:Consolas,monospace; font-size:11.5px; line-height:1.75;
+    flex:1 1 auto; min-height:0; overflow-y:auto; font-family:Consolas,monospace; font-size:11px; line-height:1.65;
     background:#14181e; border:1px solid var(--line); border-radius:4px; padding:6px 8px;
   }
   #log .t{color:#5a6472;}
   #log .fsm{color:#7fd4ff;}
   #log .score{color:#ffd166;}
   #log .warn{color:#ff9f9f;}
-  #sensors{display:grid; grid-template-columns:1fr 1fr; gap:3px 10px;}
+  #sensors{display:grid; grid-template-columns:1fr 1fr; gap:2px 10px; overflow-y:auto; min-height:0;}
   .sen{display:flex; align-items:center; gap:6px; font-size:11.5px; padding:1px 0;}
   .sen .nm{color:var(--muted); width:74px; flex:0 0 auto;}
   .sen .val{font-family:Consolas,monospace; min-width:44px; text-align:right;}
   .sen .bar{flex:1; height:6px; background:#14181e; border-radius:3px; overflow:hidden;}
   .sen .bar i{display:block; height:100%; border-radius:3px; transition:background .1s;}
-  .bottom{display:flex; gap:12px; padding:0 12px 14px; flex-wrap:wrap;}
-  .bottom .panel{flex:1 1 320px;}
+  .right-tools{min-height:0; display:flex; flex-direction:column; overflow:hidden;}
+  .tool-tabs{display:flex; gap:4px; flex:0 0 auto; padding:4px; background:#171c22; border:1px solid var(--line); border-bottom:0; border-radius:5px 5px 0 0;}
+  .tool-tab{padding:5px 10px; color:var(--muted); background:transparent; border-color:transparent; font-size:11px;}
+  .tool-tab.active{color:#fff; background:#2d6fae; border-color:#4da3ff;}
+  .tool-pane{display:none; min-height:0; overflow:auto; border:1px solid var(--line); border-radius:0 0 5px 5px;}
+  .tool-pane.active{display:flex; flex:1 1 auto; flex-direction:column;}
+  .tool-panel{min-height:100%; border:0; border-radius:0; overflow:auto;}
   .sliders{display:grid; grid-template-columns:repeat(auto-fill,minmax(215px,1fr)); gap:6px 14px;}
   .sliders label{display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--muted); white-space:nowrap;}
   .sliders input[type=range]{flex:1; min-width:60px; accent-color:var(--acc);}
@@ -105,6 +114,17 @@
   .sep{width:1px; height:20px; background:var(--line);}
   .scene-btns{margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;}
   .scene-btns .cap{color:var(--muted); font-size:11px; margin-right:2px;}
+  @media (max-width:1150px){
+    html,body{overflow:auto;}
+    .main{grid-template-columns:1fr; overflow:visible;}
+    #cv{height:min(72vw,66vh); min-height:420px;}
+    .right{overflow:visible; grid-template-rows:auto auto auto auto;}
+  }
+  @media (max-height:680px) and (min-width:1151px){
+    .right{grid-template-rows:112px minmax(105px,1fr) minmax(115px,1fr) minmax(190px,1.25fr);}
+    .status-panel{row-gap:2px;}
+    .fsm-chain{display:none;}
+  }
 </style>
 </head>
 <body>
@@ -127,7 +147,7 @@
   </div>
 
   <div class="right">
-    <div class="panel">
+    <div class="panel status-panel">
       <div class="st-row"><span class="lab">我方状态</span><span id="stateBadge">WAIT_START</span><span id="subText"></span></div>
       <div class="st-row"><span class="lab">对手状态</span><span id="themBadge">WAIT_START</span><span id="themSub"></span></div>
       <div class="st-row"><span class="lab">当前动作</span><span id="actionText">等待发令</span></div>
@@ -140,27 +160,26 @@
       <div class="fsm-chain">双车同算法: WAIT_START → MOUNT_RING(姿态确认→倒车登台→失败前冲找墙→换面→正冲备选) → SEARCH(对角IR→转向→视觉分类) → ATTACK / SCORE_BLOCK / 绕行 → RECOVER(屁股朝擂台→登台→贴边回中→计数超限) → FINISHED</div>
     </div>
 
-    <div class="panel">
+    <div class="panel log-panel">
       <h3>事件日志 [fsm]</h3>
       <div id="log"></div>
     </div>
 
-    <div class="panel">
+    <div class="panel sensor-panel">
       <h3 style="display:flex; align-items:center; gap:8px;">传感器（按车辆 profile 动态）
         <select id="sensSel"><option value="us">我方</option><option value="them">对手</option></select>
         <span id="sensorMeta" class="cap"></span>
       </h3>
       <div id="sensors"></div>
     </div>
-  </div>
-</div>
-
-<div class="bottom">
-  <div class="panel">
-    <h3>参数 (实时生效)</h3>
-    <div class="sliders" id="sliders"></div>
-  </div>
-  <div class="panel">
+    <div class="right-tools">
+      <div class="tool-tabs" role="tablist" aria-label="设置面板">
+        <button class="tool-tab active" data-pane="settingsVehicle" type="button">车辆 / 传感器</button>
+        <button class="tool-tab" data-pane="settingsMatch" type="button">比赛控制</button>
+        <button class="tool-tab" data-pane="settingsParams" type="button">参数调节</button>
+      </div>
+      <div class="tool-pane active" id="settingsVehicle">
+       <div class="panel tool-panel">
     <h3>自定义小车参数（每辆车独立）</h3>
     <div class="ctrl-row" style="margin-top:0;">
       <span class="cap">编辑对象</span>
@@ -195,8 +214,10 @@
       <input id="vehicleImportFile" type="file" accept=".json,application/json" style="display:none">
       <span class="hint" style="margin:0;">尺寸/碰撞单位 m；速度 m/s；转速 rad/s；修改后立即影响碰撞和运动。</span>
     </div>
-  </div>
-  <div class="panel">
+       </div>
+      </div>
+      <div class="tool-pane" id="settingsMatch">
+       <div class="panel tool-panel">
     <h3>控制 / 场景</h3>
     <div class="ctrl-row">
       <button class="primary" id="btnArm">▶ 发令 (arm)</button>
@@ -249,6 +270,15 @@
     <div id="remoteOutWrap" style="margin-top:8px; display:none;">
       <div style="color:var(--muted); font-size:11px; margin-bottom:4px;">小车程序输出面板 (子进程 stdout/stderr/事件)</div>
       <div id="remoteOut" style="height:110px; overflow-y:auto; font-family:Consolas,monospace; font-size:11px; line-height:1.7; background:#14181e; border:1px solid var(--line); border-radius:4px; padding:6px 8px; color:#9fd0ff;"></div>
+    </div>
+       </div>
+      </div>
+      <div class="tool-pane" id="settingsParams">
+       <div class="panel tool-panel">
+        <h3>参数 (实时生效)</h3>
+        <div class="sliders" id="sliders"></div>
+       </div>
+      </div>
     </div>
   </div>
 </div>
@@ -868,6 +898,17 @@ for(const [k,lab,min,max,step] of paramDefs){
   l.querySelector('input').addEventListener('input',e=>{
     params[k]=+e.target.value;
     document.getElementById('v_'+k).textContent=params[k];
+  });
+}
+
+// ---------- 右侧设置标签 ----------
+const toolTabs=document.querySelectorAll('.tool-tab');
+const toolPanes=document.querySelectorAll('.tool-pane');
+for(const tab of toolTabs){
+  tab.addEventListener('click',()=>{
+    const paneId=tab.dataset.pane;
+    for(const t of toolTabs) t.classList.toggle('active',t===tab);
+    for(const pane of toolPanes) pane.classList.toggle('active',pane.id===paneId);
   });
 }
 
