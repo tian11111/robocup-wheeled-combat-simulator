@@ -336,5 +336,45 @@ console.log('== 场景 25: 高速线段扫掠避免穿过能量块 ==');
   T.setVehicleFor('us', before);
 }
 
+console.log('== 场景 26: 每车独立传感器数量/类型/布局 ==');
+{
+  resetScene(41);
+  const before=T.getVehicleFor('us');
+  const profile={
+    id:'custom-11', label:'本车 11 路',
+    channels:[
+      {id:'gray_front',type:'gray',forward:0.11,lateral:0},
+      {id:'gray_rear',type:'gray',forward:-0.11,lateral:0,angle:Math.PI},
+      {id:'gray_left',type:'gray',forward:0,lateral:0.11,angle:Math.PI/2},
+      {id:'gray_right',type:'gray',forward:0,lateral:-0.11,angle:-Math.PI/2},
+      {id:'diag_left_front',type:'digital',angle:-Math.PI/4,range:1.6,fov:0.55},
+      {id:'diag_left_rear',type:'digital',angle:3*Math.PI/4,range:1.6,fov:0.55},
+      {id:'diag_right_front',type:'digital',angle:Math.PI/4,range:1.6,fov:0.55},
+      {id:'diag_right_rear',type:'digital',angle:-3*Math.PI/4,range:1.6,fov:0.55},
+      {id:'shovel_under_left',type:'ir_ground',forward:0.14,lateral:0.06},
+      {id:'shovel_under_right',type:'ir_ground',forward:0.14,lateral:-0.06},
+      {id:'shovel_front',type:'ir_edge',forward:0.16,range:0.9,fov:0.30},
+    ],
+    logical:{
+      gF:'gray_front',gB:'gray_rear',gL:'gray_left',gR:'gray_right',
+      uL:'shovel_under_left',uR:'shovel_under_right',sFL:'shovel_front',sFR:'shovel_front',
+      dLF:'diag_left_front',dRF:'diag_right_front',dLB:'diag_left_rear',dRB:'diag_right_rear',
+      f:{channels:['diag_left_front','diag_right_front'],reducer:'max',virtual:true},r:null,
+    },
+  };
+  T.setVehicleFor('us',{sensors:profile});
+  T.arm(); T.stepSim(0.05);
+  const st=T.getState();
+  assert(st.sensorLayout.us.channels.length===11, `传感器 profile 应为 11 路, 实际 ${st.sensorLayout.us.channels.length}`);
+  assert(Object.keys(st.rawSensors.us).length===11, `rawSensors 应只包含 11 个真实通道, 实际 ${Object.keys(st.rawSensors.us).length}`);
+  assert(st.sensorLayout.us.channels.filter(c=>c.type==='digital').length===4,
+    '四路对角红外应按实车配置为 digital 类型');
+  assert(st.rawSensors.us.shovel_front!==undefined && st.sensors.us.sFL===st.sensors.us.sFR,
+    '单路铲前红外应保留 raw 通道并兼容映射到 sFL/sFR');
+  assert(st.sensorLayout.us.channels.find(c=>c.id==='diag_left_rear').angle > 2,
+    '传感器布局应保留安装朝向');
+  T.setVehicleFor('us',before);
+}
+
 console.log(failures===0 ? '\n全部通过 ✔' : `\n${failures} 项失败 ✘`);
 process.exit(failures===0?0:1);

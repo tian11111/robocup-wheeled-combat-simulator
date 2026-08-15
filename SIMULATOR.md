@@ -14,7 +14,7 @@
 | `build_3d.js` | `node build_3d.js` — 从兼容核心源提取 CORE 注入 3D 模板 |
 | `game_engine.js` | 比赛编排层：Referee + SensorAPI + RobotAPI + PhysicsAdapter |
 | `referee_system.js` | 裁判门面：计时、暂停/继续、调试/重启判罚、比分/事件读取 |
-| `sensor_api.js` | 稳定的机器人观测接口 `observe(core, role)` |
+| `sensor_api.js` | 稳定的机器人观测接口 `observe(core, role)`（含动态传感器 profile） |
 | `robot_api.js` | JS 策略接口：`update(sensors) → {leftSpeed,rightSpeed}` 或 `{v,w}` |
 | `physics_adapter.js` | Rapier 3D 台阶碰撞桥（优先 `lib/rapier3d-compat.min.js`，再尝试 CDN）；加载失败时回退到确定性登台判定 |
 | `robots/yellow_bot.js` | 我方 YellowBot.js 热插拔模板（默认关闭，交回内置 FSM） |
@@ -33,7 +33,7 @@
 - **裁判状态流转**：`PREP(最多60s) → READY → RUNNING ↔ PAUSED → FINISHED`。`arm()` 可在准备阶段提前发令；3D 控制面板支持暂停、继续、调试判罚(+3给对方)、重启判罚(+4给对方)。
 - **策略热插拔**：编辑 `robots/yellow_bot.js` / `robots/blue_bot.js`，将 controller 的 `active` 改为 `true`，在 `update(sensors, context)` 返回左右轮速即可接管对应一方；返回 `null` 则继续使用内置 FSM。
 
-- **双车同算法**：我方(US)与对手(THEM)是完全同构的车，各自 14 路传感器 + 同一套 FSM
+- **双车同算法**：我方(US)与对手(THEM)共用同一套 FSM，但每台车的传感器数量、类型、安装位置和朝向可以不同
   （WAIT_START → MOUNT_RING(姿态确认→倒车登台 780/800→失败前冲找墙→换面→正冲备选) →
   SEARCH(对角IR→转向→视觉分类 buff=SCORE_BLOCK / debuff=绕行 / 未知+前向持续=ATTACK) →
   ATTACK / SCORE_BLOCK / RECOVER(掉台→屁股朝擂台→贴边回中→超限 FINISHED) → FINISHED），
@@ -43,11 +43,36 @@
 - **确定性**：`resetAll({seed})` 后噪声/识别/能量块摆放全部可复现，便于参数迭代。
 - **车辆 profile 独立**：US/THEM 各自保存一份车辆参数，不再假定所有队伍都是同一尺寸、质量或速度。GUI 可直接编辑/复制/导入 JSON；HTTP、CLI 和 `resetAll` 也可传入同一 profile。
 
+### 自定义传感器 profile
+
+传感器是车辆 profile 的一部分，不再假定所有车都有相同数量。每个通道使用车体坐标：
+`forward` 沿车头为正、`lateral` 向车体左侧为正、`angle` 为相对车头的弧度；`range/fov` 为量程和半视场角。
+当前核心支持 `gray`、`ir_ground`、`ir_edge`、`ir_distance`、`digital` 五种决策逻辑模型。
+
+本车已内置 `wheeledCombat11` profile（4 路底盘灰度、4 路数字对角红外、2 路铲下红外、1 路铲前红外），
+也提供可导入文件 `vehicle_profiles/robocup_wheeled_combat_11.json`。
+
+```json
+{
+  "id": "robocup-wheeled-combat",
+  "sensors": "wheeledCombat11"
+}
+```
+
+`sensors` 保留旧逻辑别名；当前车辆真实通道在 `rawSensors`，通道类型/位置/朝向在 `sensorLayout`。
+本车只有一枚铲前红外，兼容层会把它同时映射为 `sFL/sFR`，真实策略应读取 `rawSensors.shovel_front`。
+无头/API 默认使用 `legacy14`，保证旧策略和确定性回归不变；3D 页面默认给我方应用本车 11 路 profile。
+
 ### 自定义小车参数
 
 车辆参数单位统一为 SI 制：长度/宽度/高度/footprint 为 m，速度为 m/s，转速为 rad/s，质量为 kg。
 `frontExtent`/`rearExtent`/`sideExtent` 是从车中心到实际最外缘的 footprint（应包含铲子和外挂），用于台沿连续碰撞；
 `collisionRadius` 用于车-车、车-能量块的保守分离；`mass` 与 `pushFactor` 影响推挤结果。
+
+3D 页面底部的“自定义小车参数”区域同时包含“传感器配置”：先选择“我方/对手”，再选择内置 profile
+（本车 11 路、兼容 14 路）或“自定义”。自定义模式下可直接填写“数量”，点击“应用数量”增删通道，
+也可以用“添加通道”和每行末尾的“×”调整数量；每行可编辑 ID、名称、类型、前向/侧向坐标、角度、量程和半视角。
+修改会立即作用于仿真传感器、3D 传感器锥体和 `rawSensors/sensorLayout`。
 
 ```json
 {
@@ -132,7 +157,8 @@ node sim_battle.js --vehicles vehicles.json --us @example --them fsm --seed 42
 | `POST /referee/restart` | `{role:'us'|'them', kind:'debug'|'restart'}` | 调试+3/重启+4，分数给对方 |
 
 返回的 `state` 关键字段：`robots.us/them`（x,y,th,v,w,vehicle,onPlatform,hang,state,action,armed,manual,timer）、
-`sensors.us/them`（14 路）、`scores{us,them}`、`done/doneReason`。
+`sensors.us/them`（旧逻辑别名）、`rawSensors.us/them`（profile 的真实动态通道）、
+`sensorLayout.us/them`（通道类型/位置/朝向）、`scores{us,them}`、`done/doneReason`。
 `/step` 额外返回 `reward`（本步得分增量）与 `done`，可直接做 gym 式循环。
 
 ## 子进程桥（跑你自己的小车程序）
@@ -162,14 +188,18 @@ obs 结构：
 {"t":12.3,"role":"us","timer":107.7,"scores":{"us":3,"them":0},
  "robot":{"x":1.9,"y":1.9,"th":0.5,"v":0.9,"w":0.1,"onPlatform":true,"hang":false,"state":"SEARCH","action":"旋转扫描"},
  "sensors":{"gF":940,"gB":920,"gL":300,"gR":310,"uL":1,"uR":1,"sFL":0.9,"sFR":0.8,
-            "dLF":0.1,"dRF":0.72,"dLB":0.0,"dRB":0.3,"f":0.98,"r":0.0},
+             "dLF":0.1,"dRF":0.72,"dLB":0.0,"dRB":0.3,"f":0.98,"r":0.0},
+ "rawSensors":{"gray_front":940,"gray_rear":920,"gray_left":300,"gray_right":310,
+                "diag_left_front":0.1,"diag_left_rear":0.0,"diag_right_front":0.72,"diag_right_rear":0.3,
+                "shovel_under_left":1,"shovel_under_right":1,"shovel_front":0.9},
+ "sensorLayout":{"id":"wheeledCombat11","channels":[{"id":"gray_front","type":"gray","forward":0.11,"lateral":0}]},
  "opponent":{"x":2.6,"y":2.0,"th":-2.2,"onPlatform":true,"state":"SCORE_BLOCK"},
  "objects":{"buffs":[{"x":1.4,"y":1.3,"onPlatform":true}],"debuff":{"x":2.2,"y":2.5,"onPlatform":true}}}
 ```
 
-传感器 14 路：`gF/gB/gL/gR` 灰度(0-1000，台上白≈1000/黑带≈300/走道=0，含噪声)；
-`uL/uR` 铲下红外(0/1)；`sFL/sFR` 铲前红外；`dLF/dRF/dLB/dRB` 对角红外(左前/右前/左后/右后)；
-`f` 正前远红外；`r` 后向红外。红外为 0~1 连续值，触发阈值 `IR_TRIGGER`(默认 0.35)。
+兼容逻辑传感器仍使用 `gF/gB/gL/gR`、`uL/uR`、`sFL/sFR`、`dLF/dRF/dLB/dRB`、`f/r` 这些名称，
+以保证已有策略可以继续运行。实际车辆通道数量和名称以 `sensorLayout.channels` 为准；
+灰度通常为 0-1000（台上白≈1000/黑带≈300/走道=0），红外通常为 0~1，具体输出范围由通道 profile 决定。
 
 ## AI Agent 迭代工作流
 

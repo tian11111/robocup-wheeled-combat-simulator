@@ -11,7 +11,7 @@
 | 约束 | 说明 |
 |---|---|
 | 核心逻辑唯一来源 | 规则核心暂保存在 `robot-simulator/wushu_ring_sim.html` 的 CORE 块（`CORE-BEGIN`~`CORE-END`），作为无 DOM 兼容源；用户界面唯一入口为 `wushu_ring_sim_3d.html`。改核心后必须 `node build_3d.js` 同步 3D |
-| 双车同构 | 我方(US)与对手(THEM)是完全同构的车（同一 FSM、同一 14 路传感器、同一物理）。任何行为差异只能来自位置/朝向/控制器 |
+| 双车同构 | 我方(US)与对手(THEM)共用同一 FSM，但每台车可独立配置传感器 profile（数量/类型/布局）和车辆物理参数。任何行为差异还可能来自这些 profile |
 | 实车代码零改动 | 实车 main.py/strategy/control/hardware **不改一行**。对接通过 `tools/sim_driver.py`（SimDriver：实现 `_Driver` 协议 + 提供 `adc_data/io_data`）+ `tools/sim_robot_main.py`（子进程入口）实现 |
 | 控制器可替换 | 任意一侧可独立选择：内置 FSM / HTTP 手动策略 / 用户子进程程序 |
 | 3D 分层接口 | `GameEngine` 编排 `RefereeSystem`、`SensorAPI`、`RobotAPI` 与 `PhysicsAdapter`；浏览器策略可由 `robots/yellow_bot.js` / `robots/blue_bot.js` 热插拔 |
@@ -22,7 +22,7 @@
 | 约束 | 说明 |
 |---|---|
 | **stdout 纯净** | 子进程 stdout **只允许动作 JSON 行** `{"v":..,"w":..}`。实车 `FSM._log` 用 `print("[fsm]...")` 会污染协议 → `sim_robot_main` 已装 `_StdoutProxy` 把 `[fsm]` 行重定向到 stderr。**新代码禁止往 stdout 打印非 JSON** |
-| 输入 obs | 每帧一行 JSON：`{t, role, timer, scores, robot{x,y,th,v,w,onPlatform,hang,state,action}, sensors{14路}, opponent, objects}`（见 SIMULATOR.md） |
+| 输入 obs | 每帧一行 JSON：`{t, role, timer, scores, robot{...}, sensors{兼容别名}, rawSensors{真实通道}, sensorLayout{类型/布局}, opponent, objects}`（见 SIMULATOR.md） |
 | 超时 | 单步响应超时 300ms 按零动作处理（sim_lib `actionTimeout`） |
 | 线程模型 | 实车 FSM 在子进程内独立线程跑 `fsm.run()`；`decide(obs)` 由桥主线程逐帧调用：更新传感器快照 → 回读电机指令 |
 | **发令时序** | `sim_robot_main` **模块加载时即 `fsm.arm()`**（run() 线程第一轮必消费信号）。禁止在 decide 里 arm——曾因线程启动与 arm 的竞态导致 WAIT_START 卡死 |
@@ -44,6 +44,10 @@
 
 **SimDriver 初始化竞态**（2026-08-12）：子进程 FSM 线程在第一个 decide() 前就跑几轮，adc_data 初始全 0 会被判成悬空 → 初始化为"出发区走道安全语义"（灰度=1260、铲前=有反射高值）。
 
+上表是现有实车 `SimDriver` 的 legacy14 兼容映射，不限制新的车辆 profile。用户本车的 11 路 profile
+通过 `rawSensors/sensorLayout` 表达；为了让未修改的实车桥继续运行，单路铲前红外会在兼容层同时提供 `sFL/sFR`，
+未配置的正前/后向数字红外不会伪造真实通道，`r` 兼容值为 0。
+
 ## 4. 执行器映射契约
 
 | 约束 | 说明 |
@@ -53,6 +57,21 @@
 | 动作时序 | 实车 actuator 用 `time.sleep` 拆片（真实时间）；仿真 dt=0.05 时 1:1 等价。**runBattle 每帧真实时间节流 ≥dt（2026-08-12 实现）**——实车 FSM 线程按真实时间 50Hz 节流，子进程响应毫秒级时仿真会加速（5ms/帧 vs 仿真 0.05s/帧）→ FSM 决策永远落后于仿真时间 → 登台时序错乱（align 不执行/倒车窗口丢失）。**禁止在仿真里加速/减速子进程侧的时间基准** |
 
 仿真 HTTP/子进程/浏览器策略的 `v,w` 与左右轮速还会按当前车辆 profile 的 `maxSpeed/maxTurnRate` 限幅；实车 `move_cmd` 的 ADC 映射常量仍以实车标定为准。
+
+### 3.1 动态传感器 profile 契约
+
+传感器配置位于 `vehicle.sensors`，每台车独立。通道字段为：`id`、`type`、`forward`、`lateral`、`angle`、
+`range`、`fov`、`mode`；坐标以车体中心为原点，车头方向为 `forward` 正方向，车体左侧为 `lateral` 正方向。
+核心支持 `gray`、`ir_ground`、`ir_edge`、`ir_distance`、`digital`。当前真实通道通过 `rawSensors` 暴露，
+`sensorLayout.channels` 是数量、类型和安装布局的权威来源。
+
+为保证旧实车桥和旧策略不崩，`sensors` 仍提供 `gF/gB/.../r` 兼容逻辑别名，缺失信号由 profile 的
+`logical` 映射标记/推导；新策略应优先使用 `rawSensors`，不能根据兼容别名数量推断真实硬件数量。
+
+本车 profile：4 路底盘灰度、4 路数字对角红外、2 路铲下红外、1 路铲前红外，共 11 路，名称为 `wheeledCombat11`。
+
+3D 页面在“自定义小车参数”区域提供传感器编辑器：可选择内置 profile 或“自定义”，按数量增删通道，
+并编辑每个通道的 ID、类型、车体坐标、朝向、量程和半视角；修改立即写入该车的 `vehicle.sensors`。
 
 ## 5. 参数契约（扫参前必读）
 
@@ -73,6 +92,7 @@
 | `collisionRadius` | 车-车/车-块保守碰撞半径 | 0.04–0.6m，且不小于车身半径 |
 | `maxSpeed/maxTurnRate/accelK` | 运动上限与加速度收敛系数 | 0.05–3m/s / 0.1–12rad/s / 1–40 |
 | `mass/pushFactor` | 推挤质量与推力系数 | 0.05–10kg / 0.1–3 |
+| `sensors` | 该车真实传感器 profile（通道数量/类型/布局/逻辑映射） | `wheeledCombat11` 或自定义对象 |
 
 未传字段沿用当前该车 profile；非法值按范围钳制。`frontExtent/rearExtent/sideExtent` 是防穿模的关键，不能只填车身尺寸而忽略铲子。
 
@@ -105,7 +125,7 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 
 | 约束 | 说明 |
 |---|---|
-| 必跑回归 | `node sim_selftest.js`（**25 个确定性场景 1-25**，必须全绿）+ `node sim_dragtest.js`（拖拽语义 8 项） |
+| 必跑回归 | `node sim_selftest.js`（**26 个确定性场景 1-26**，必须全绿）+ `node sim_dragtest.js`（拖拽语义 8 项） |
 | 确定性 | `resetAll({seed})` 后噪声/识别/能量块摆放可复现（mulberry32）；评估用固定种子集 |
 | 桥验证 | 实车侧改动后：`node sim_battle.js --us "python robot_adapter.py D:/.../tools/sim_robot_main.py" --them fsm --seed 42` 跑通一场 |
 | 语法 | 实车侧代码保持 Python 3.7 兼容（树莓派系统 python3） |
@@ -129,6 +149,7 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 
 - [x] **台壁阻挡物理**（2026-08-14）：CORE 加 6cm 台阶语义——从台下进入台上需"屁股正对台沿(<15°)+法向速度>0.3m/s"；斜撞、斜穿台角和低速顶台均被挡；台上→台下自由掉落。selftest 场景 16 固化 5 项。该“屁股先上台”是当前底盘工程约束，不是 PDF 中的明文动作要求。
 - [x] **自定义车辆 profile 与防穿模**（2026-08-14）：每台车独立尺寸/footprint/速度/质量/推力；GUI 支持编辑 JSON，HTTP `/vehicle`、`/reset`、`/battle/run` 和 CLI `--vehicles` 可复用；selftest 场景 23-25 固化参数限幅、台沿 footprint、双车 profile 传入和高速线段扫掠。
+- [x] **动态传感器 profile**（2026-08-15）：每台车可独立配置传感器数量、类型、车体坐标、朝向、量程和逻辑映射；本车 11 路 profile 为 `wheeledCombat11`；`rawSensors/sensorLayout` 新增到状态与子进程观测，旧 `sensors` 逻辑别名保持兼容；selftest 场景 26 固化。
 - [x] **规则级计分边界**（2026-08-14）：双方同帧掉台不得分；另一方已在台下时掉台不得分；读秒按双方台上/台下状态切换重新计时；能量块按最后接触者计分、同时接触不计分、下台后本场报废；连续静止超过 10 秒触发消极比赛 +1。selftest 场景 17-19 固化。
 - [x] **SimDriver 五处修复**（2026-08-12）：①铲前极性（active_high）②走道灰度 600→1260 ③adc 初始安全值 ④IO 通道（后向=IO5/正前=IO4）⑤move_cmd 移除过期（保持语义）；另后向红外量程截断 0.3m、铲前地面反射（走道恒反射）
 - [ ] **实车 FSM 完整登台未通（2026-08-12 诊断）**：危机已修 + 姿态确认三条件桩测全过（on_stage/rear_obstacle/front_edge_ahead），reverse_mount 能执行（runup 300→倒车-780），但 FSM 线程在 runup 与 find_wall 间反复（栈 dump 证实），倒车阶段灰度判定窗口与仿真时序未对齐。**剩余疑点**：FSM 线程 runup 后阶段间 abort_check 行为 / 倒车灰度判定时序。**下一轮方向**：sim_robot_main 打印 FSM 决策点 + USE_MOUNT_DETECTION 灰度窗口调试

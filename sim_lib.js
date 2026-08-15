@@ -8,7 +8,8 @@
  * 子进程协议 (行分隔 JSON):
  *   → 子进程 stdin : {"t":..,"role":"us"|"them","timer":..,"scores":..,
  *                     "robot":{x,y,th,v,w,vehicle,onPlatform,hang,state,action},
- *                     "sensors":{14路}, "opponent":{...}, "objects":{...}}
+ *                     "sensors":{兼容逻辑别名}, "rawSensors":{车辆真实通道},
+ *                     "sensorLayout":{类型/位置/朝向}, "opponent":{...}, "objects":{...}}
  *   ← 子进程 stdout: {"v":..,"w":..}   (超时 300ms 未回 → 按零动作处理)
  * ============================================================ */
 'use strict';
@@ -93,6 +94,9 @@ function mkObs(st, role){
     match: st.match,
     robot: r,
     sensors: st.sensors[role],
+    rawSensors: st.rawSensors ? st.rawSensors[role] : st.sensors[role],
+    sensorCompat: st.sensorCompat ? st.sensorCompat[role] : st.sensors[role],
+    sensorLayout: st.sensorLayout ? st.sensorLayout[role] : undefined,
     opponent: st.robots[role === 'us' ? 'them' : 'us'],
     objects: st.objects,
   };

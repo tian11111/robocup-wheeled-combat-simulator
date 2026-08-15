@@ -17,7 +17,8 @@ sim_env.py — 武术擂台仿真器 Python 客户端 (gym 风格, 仅标准库)
 
 obs 关键字段:
     state / action / simT / timer / scores{us,them} / robot{x,y,th,v,w,vehicle}
-    sensors{14路} / onPlatform / hang / done / doneReason / logTail
+    sensors{兼容逻辑别名} / rawSensors{车辆真实通道} / sensorLayout{类型布局}
+    / onPlatform / hang / done / doneReason / logTail
 
 命令行演示:
     python sim_env.py                   # 连接检查 + FSM 跑一集

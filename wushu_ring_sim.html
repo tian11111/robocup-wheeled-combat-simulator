@@ -186,8 +186,8 @@
 "use strict";
 /* ===== CORE-BEGIN ============================================================
  * 纯逻辑核心（无 DOM 依赖）：双车对称场景/传感器/状态机/物理/计分。
- * 我方(US)与对手(THEM)是两台完全同构的车, 共用同一套 FSM 与 14 路传感器,
- * 可由 GUI / HTTP API / 子进程(用户自己的小车程序) 任意方式控制。
+ * 我方(US)与对手(THEM)共用同一套 FSM，但每台车可独立配置传感器数量、类型、
+ * 安装位置和朝向；兼容层仍提供旧的逻辑信号名，方便已有小车程序继续运行。
  * 确定性: resetAll({seed}) 后所有随机(噪声/识别/能量块摆放)可复现。
  * ========================================================================== */
 
@@ -195,6 +195,120 @@
 const FIELD = 3.8, CENTER = 1.9, HALF = 1.2;
 const EL = CENTER - HALF, ER = CENTER + HALF;      // 擂台边 0.7 / 3.1
 const BODY = 0.16;                                  // 车身碰撞半径
+
+// ---------- 传感器 profile（每车独立；仅决策逻辑仿真） ----------
+// 坐标约定：forward=沿车头方向(m)，lateral=车体左侧为正(m)，angle=相对车头(rad)。
+// rawSensors 是 profile 中真实存在的通道；compatSensors 是旧 FSM/API 的逻辑别名。
+const SENSOR_LOGICAL_KEYS = Object.freeze([
+  'gF','gB','gL','gR','uL','uR','sFL','sFR',
+  'dLF','dRF','dLB','dRB','f','r',
+]);
+function sensorChannel(id, label, type, forward, lateral, angle, range, fov, mode){
+  return { id, label, type, forward, lateral, angle, range, fov, mode };
+}
+const LEGACY_SENSOR_CHANNELS = Object.freeze([
+  sensorChannel('gF','灰度·前','gray', 0.11, 0, 0, 0, 0, 'ground'),
+  sensorChannel('gB','灰度·后','gray',-0.11, 0, Math.PI, 0, 0, 'ground'),
+  sensorChannel('gL','灰度·左','gray', 0, 0.11, Math.PI/2, 0, 0, 'ground'),
+  sensorChannel('gR','灰度·右','gray', 0,-0.11,-Math.PI/2, 0, 0, 'ground'),
+  sensorChannel('uL','铲下·L','ir_ground',0.14, 0.06, 0, 0.25, 0.35, 'ground'),
+  sensorChannel('uR','铲下·R','ir_ground',0.14,-0.06, 0, 0.25, 0.35, 'ground'),
+  sensorChannel('sFL','铲前·L','ir_edge', 0.14, 0.06, 0, 0.90, 0.30, 'edge'),
+  sensorChannel('sFR','铲前·R','ir_edge', 0.14,-0.06, 0, 0.90, 0.30, 'edge'),
+  sensorChannel('dLF','对角·左前','ir_distance',0,0,-Math.PI/4,1.60,0.55,'target'),
+  sensorChannel('dRF','对角·右前','ir_distance',0,0, Math.PI/4,1.60,0.55,'target'),
+  sensorChannel('dLB','对角·左后','ir_distance',0,0, 3*Math.PI/4,1.60,0.55,'target'),
+  sensorChannel('dRB','对角·右后','ir_distance',0,0,-3*Math.PI/4,1.60,0.55,'target'),
+  sensorChannel('f','正前·远','ir_distance',0,0,0,2.20,0.40,'edge_target'),
+  sensorChannel('r','后向','ir_distance',0,0,Math.PI,1.30,0.70,'fence'),
+]);
+const LEGACY_SENSOR_LOGICAL = Object.freeze({
+  gF:'gF', gB:'gB', gL:'gL', gR:'gR', uL:'uL', uR:'uR',
+  sFL:'sFL', sFR:'sFR', dLF:'dLF', dRF:'dRF', dLB:'dLB', dRB:'dRB', f:'f', r:'r',
+});
+
+// 用户提供的 robocup-2026-wheeled-combat 实车布局：
+// 4 路底盘灰度 + 4 路对角数字红外 + 2 路铲下红外 + 1 路铲前红外 = 11 路。
+// 铲前只有单路，因此兼容层把它同时映射到 sFL/sFR；真实策略请读 rawSensors。
+const WHEELED_COMBAT_SENSOR_CHANNELS = Object.freeze([
+  sensorChannel('gray_front','底盘灰度·前','gray', 0.11, 0, 0, 0, 0, 'ground'),
+  sensorChannel('gray_rear','底盘灰度·后','gray',-0.11, 0, Math.PI, 0, 0, 'ground'),
+  sensorChannel('gray_left','底盘灰度·左','gray', 0, 0.11, Math.PI/2, 0, 0, 'ground'),
+  sensorChannel('gray_right','底盘灰度·右','gray', 0,-0.11,-Math.PI/2, 0, 0, 'ground'),
+  sensorChannel('diag_left_front','数字红外·左前','digital',0,0,-Math.PI/4,1.60,0.55,'target'),
+  sensorChannel('diag_left_rear','数字红外·左后','digital',0,0, 3*Math.PI/4,1.60,0.55,'target'),
+  sensorChannel('diag_right_front','数字红外·右前','digital',0,0, Math.PI/4,1.60,0.55,'target'),
+  sensorChannel('diag_right_rear','数字红外·右后','digital',0,0,-3*Math.PI/4,1.60,0.55,'target'),
+  sensorChannel('shovel_under_left','铲下红外·左','ir_ground',0.14, 0.06,0,0.25,0.35,'ground'),
+  sensorChannel('shovel_under_right','铲下红外·右','ir_ground',0.14,-0.06,0,0.25,0.35,'ground'),
+  sensorChannel('shovel_front','铲前红外','ir_edge',0.16,0,0,0.90,0.30,'edge'),
+]);
+const WHEELED_COMBAT_SENSOR_LOGICAL = Object.freeze({
+  gF:'gray_front', gB:'gray_rear', gL:'gray_left', gR:'gray_right',
+  uL:'shovel_under_left', uR:'shovel_under_right',
+  sFL:'shovel_front', sFR:'shovel_front',
+  dLF:'diag_left_front', dRF:'diag_right_front',
+  dLB:'diag_left_rear', dRB:'diag_right_rear',
+  // 没有独立正前/后向数字红外：f 用两路前对角的最大值作兼容提示，r=0 表示未配置。
+  f:{ channels:['diag_left_front','diag_right_front'], reducer:'max', virtual:true },
+  r:null,
+});
+const SENSOR_PRESETS = Object.freeze({
+  legacy14:{ id:'legacy14', label:'兼容 14 路', channels:LEGACY_SENSOR_CHANNELS, logical:LEGACY_SENSOR_LOGICAL },
+  wheeledCombat11:{ id:'wheeledCombat11', label:'本车 11 路', channels:WHEELED_COMBAT_SENSOR_CHANNELS, logical:WHEELED_COMBAT_SENSOR_LOGICAL },
+});
+// 无头/API 默认保留 legacy14，保证旧策略和确定性回归不变；3D 页面会显式给我方
+// 应用本车 11 路 profile。这样“默认兼容”与“真实车辆配置”互不污染。
+const DEFAULT_SENSOR_PROFILE = SENSOR_PRESETS.legacy14;
+const SENSOR_COMPAT_PROFILE = SENSOR_PRESETS.legacy14;
+const USER_SENSOR_PROFILE = SENSOR_PRESETS.wheeledCombat11;
+function sensorNumber(value, fallback, lo, hi){
+  const n=Number(value);
+  return Number.isFinite(n) ? Math.max(lo,Math.min(hi,n)) : fallback;
+}
+function cloneSensorProfile(profile){
+  const p=profile||SENSOR_COMPAT_PROFILE;
+  return {
+    id:String(p.id||'custom'), label:String(p.label||p.id||'custom'),
+    channels:(p.channels||[]).map(c=>({ ...c })),
+    logical:JSON.parse(JSON.stringify(p.logical||{})),
+  };
+}
+function normalizeSensorProfile(input, base){
+  let src=input;
+  if(typeof src==='string') src={ preset:src };
+  if(Array.isArray(src)) src={ channels:src };
+  if(!src || typeof src!=='object') src={};
+  const requested=src.preset && SENSOR_PRESETS[src.preset] ? SENSOR_PRESETS[src.preset] : null;
+  const inherited=base && typeof base==='object' ? base : DEFAULT_SENSOR_PROFILE;
+  const seed=requested || inherited || DEFAULT_SENSOR_PROFILE;
+  const channelInput=Array.isArray(src.channels) ? src.channels : seed.channels;
+  const seen=new Set(); const channels=[];
+  for(let i=0;i<channelInput.length;i++){
+    const raw=channelInput[i]||{};
+    const id=String(raw.id||`sensor_${i+1}`).trim() || `sensor_${i+1}`;
+    if(seen.has(id)) continue;
+    seen.add(id);
+    const seedCh=(seed.channels||[]).find(c=>c.id===id) || {};
+    const type=String(raw.type||seedCh.type||'ir_distance');
+    const max=type==='gray'?1000:(type==='digital'?1:1.2);
+    channels.push({
+      id, label:String(raw.label||seedCh.label||id), type,
+      forward:sensorNumber(raw.forward,Number(seedCh.forward)||0,-1,1),
+      lateral:sensorNumber(raw.lateral,Number(seedCh.lateral)||0,-1,1),
+      angle:sensorNumber(raw.angle,Number(seedCh.angle)||0,-Math.PI,Math.PI),
+      range:sensorNumber(raw.range,Number(seedCh.range)||0.9,0.05,3),
+      fov:sensorNumber(raw.fov,Number(seedCh.fov)||0.35,0.01,Math.PI),
+      mode:String(raw.mode||seedCh.mode||'target'),
+      min:sensorNumber(raw.min,0,0,100000),
+      max:sensorNumber(raw.max,max,0.0001,100000),
+      noise:Number.isFinite(Number(raw.noise)) ? Math.max(0,Number(raw.noise)) : undefined,
+      activeHigh:raw.activeHigh===undefined ? true : !!raw.activeHigh,
+    });
+  }
+  const logical=src.logical && typeof src.logical==='object' ? src.logical : (seed.logical||{});
+  return { id:String(src.id||seed.id||'custom'), label:String(src.label||seed.label||'custom'), channels, logical:JSON.parse(JSON.stringify(logical)) };
+}
 
 // ---------- 通用小车参数 ----------
 // 物理/显示不再假定所有队伍都是 26cm 方车。长度、宽度决定车身
@@ -208,12 +322,15 @@ const DEFAULT_VEHICLE = Object.freeze({
   shovelLength:0.04, shovelWidth:0.24,
   maxSpeed:1.5, maxTurnRate:4.0, accelK:12,
   mass:1.0, pushFactor:1.0,
+  sensors:DEFAULT_SENSOR_PROFILE,
 });
 function vehicleNumber(value, fallback, lo, hi){
   const n=Number(value);
   return Number.isFinite(n) ? Math.max(lo,Math.min(hi,n)) : fallback;
 }
-function cloneVehicle(v){ return { ...v }; }
+function cloneVehicle(v){
+  return { ...v, sensors:cloneSensorProfile(v && v.sensors ? v.sensors : DEFAULT_SENSOR_PROFILE) };
+}
 function normalizeVehicle(input, base){
   const src = input && typeof input==='object' ? input : {};
   const b = { ...DEFAULT_VEHICLE, ...(base||{}), ...src };
@@ -238,6 +355,9 @@ function normalizeVehicle(input, base){
   b.accelK = vehicleNumber(b.accelK, DEFAULT_VEHICLE.accelK, 1, 40);
   b.mass = vehicleNumber(b.mass, DEFAULT_VEHICLE.mass, 0.05, 10);
   b.pushFactor = vehicleNumber(b.pushFactor, DEFAULT_VEHICLE.pushFactor, 0.1, 3);
+  const sensorInput = src.sensors===undefined ? src.sensorProfile : src.sensors;
+  const sensorBase = base && base.sensors ? base.sensors : DEFAULT_SENSOR_PROFILE;
+  b.sensors = normalizeSensorProfile(sensorInput===undefined ? sensorBase : sensorInput, sensorBase);
   return b;
 }
 
@@ -274,9 +394,11 @@ const S = Object.freeze({
   SCORE:'SCORE_BLOCK', RECOVER:'RECOVER', DONE:'FINISHED', MANUAL:'MANUAL',
 });
 
-// ---------- 机器人 (我方/对手 完全同构) ----------
+// ---------- 机器人 (我方/对手共用 FSM，车辆 profile 可独立) ----------
 function mkRobot(cfg){
   const vehicle = normalizeVehicle(cfg.vehicle);
+  const sensorLayout = cloneSensorProfile(vehicle.sensors);
+  const compat = {}; for(const k of SENSOR_LOGICAL_KEYS) compat[k]=0;
   return {
     name: cfg.name, color: cfg.color, headColor: cfg.headColor,
     x: cfg.x, y: cfg.y, th: cfg.th, v:0, w:0, vx:0, vy:0,
@@ -291,7 +413,8 @@ function mkRobot(cfg){
       bonusUs:0, bonusThem:0, simT:0, doneReason:'',
       inactiveT:0, inactiveWarned:false,
     },
-    sens:{ gF:0,gB:0,gL:0,gR:0, uL:0,uR:0, sFL:0,sFR:0, dLF:0,dRF:0,dLB:0,dRB:0, f:0, r:0 },
+    // sens 供内置 FSM 使用（旧逻辑别名）；rawSens 才是该车 profile 的真实通道集合。
+    sens:compat, rawSens:{}, sensorLayout,
     probe:{},
   };
 }
@@ -363,7 +486,7 @@ function distToNearestEdge(x,y){
   return Math.min(Math.abs(x-EL),Math.abs(x-ER),Math.abs(y-EL),Math.abs(y-ER));
 }
 
-// ---------- 传感器 (每车 14 路, 完全对称) ----------
+// ---------- 传感器 (每车按 profile 动态生成，仅决策逻辑仿真) ----------
 function irProbeFor(r, ox,oy,ang,half,range,inclEdge,inclFence){
   let best=null;
   const targets = blocks.concat([other(r)]);
@@ -406,62 +529,116 @@ function wallProbe(px,py,ang,range){
 }
 const irVal = (pr, range)=> pr==null? 0 : clamp(1 - pr.d/range, 0, 1);
 
-function sampleSensorsFor(r){
-  const gN = ()=> (rng()*2-1)*params.grayNoise;
-  const iN = ()=> (rng()*2-1)*params.irNoise;
-  const c = r, sens = r.sens, probe = r.probe, off=0.11;
-  const pt = a=> ({ x:c.x+Math.cos(c.th+a)*off, y:c.y+Math.sin(c.th+a)*off });
-  const f=pt(0), b=pt(Math.PI), l=pt(Math.PI/2), rr=pt(-Math.PI/2);
-  sens.gF = clamp(fieldGray(f.x,f.y)+gN(), 0, 1000);
-  sens.gB = clamp(fieldGray(b.x,b.y)+gN(), 0, 1000);
-  sens.gL = clamp(fieldGray(l.x,l.y)+gN(), 0, 1000);
-  sens.gR = clamp(fieldGray(rr.x,rr.y)+gN(), 0, 1000);
-
-  // 铲下红外 ×2 (铲子底部两点, 0/1)
-  const fw = (d,lat)=> ({ x:c.x+Math.cos(c.th)*d - Math.sin(c.th)*lat, y:c.y+Math.sin(c.th)*d + Math.cos(c.th)*lat });
-  const pL=fw(0.14,0.06), pR=fw(0.14,-0.06);
-  sens.uL = onPlatform(pL.x,pL.y)?1:0;
-  sens.uR = onPlatform(pR.x,pR.y)?1:0;
-
-  // 铲前红外 ×2 (目标物/台壁反射/地面反射取近者)。
-  // 真机语义(2026-08-12): 铲前红外**朝下照地**——走道/台面恒有反射,
-  // 只有"车在台上且铲前越过台沿"(悬空)才无反射。原实现走道 sFL≈0 →
-  // 实车 FSM front_edge_ahead 误判"铲前悬空" → align_reverse 姿态确认
-  // 失败 → 登台卡死。地面反射值 0.3(<内置 IR_TRIGGER 0.35, 不误触发找墙;
-  // >SimDriver 0.15, 实车侧判"有反射")。
-  const sfl=(px,py)=>{
-    const p=irProbeFor(r, px,py, c.th, 0.30, 0.9, !onPlatform(px,py), false);
-    const w=wallProbe(px,py,c.th,0.9);
-    let g=0;
-    if(!onPlatform(c.x,c.y)) g=0.3;              // 车在走道 → 铲前照走道地面
-    else if(onPlatform(px,py)) g=1;              // 车在台上+铲前台上 → 台面(sv 已有)
-    // 车在台上+铲前台下 = 铲子伸出台沿(悬空) → 无反射
-    let best=null;
-    const cand=[p, w!=null?{d:w,obj:'台壁'}:null, g?{d:0.9*(1-g),obj:'地面'}:null];
-    for(const cdt of cand){ if(cdt && (!best || cdt.d<best.d)) best=cdt; }
-    return best;
+function sensorPointFor(r,ch){
+  return {
+    x:r.x+Math.cos(r.th)*ch.forward-Math.sin(r.th)*ch.lateral,
+    y:r.y+Math.sin(r.th)*ch.forward+Math.cos(r.th)*ch.lateral,
   };
-  probe.sFL=sfl(pL.x,pL.y); probe.sFR=sfl(pR.x,pR.y);
-  let sv=0;
-  if(onPlatform(c.x,c.y)){ const sp=frontPt(r,0.35); sv = onPlatform(sp.x,sp.y)? 1 : 0.12; }
-  sens.sFL = Math.max(irVal(probe.sFL,0.9), sv) + iN();
-  sens.sFR = Math.max(irVal(probe.sFR,0.9), sv) + iN();
-
-  // 对角红外 ×4
-  const diag=(ang)=>{ probe[ang.k]=irProbeFor(r,c.x,c.y, ang.a, 0.55, 1.6, false, false); return sens[ang.k]=irVal(probe[ang.k],1.6)+iN(); };
-  diag({k:'dLF',a:c.th-Math.PI/4}); diag({k:'dRF',a:c.th+Math.PI/4});
-  diag({k:'dLB',a:c.th+3*Math.PI/4}); diag({k:'dRB',a:c.th-3*Math.PI/4});
-
-  // 正前红外
-  probe.f = irProbeFor(r,c.x,c.y, c.th, 0.4, 2.2, !onPlatform(c.x,c.y), false);
-  let fv = irVal(probe.f, 2.2);
-  if(onPlatform(c.x,c.y)){ const sp=frontPt(r,0.25); fv = Math.max(fv, onPlatform(sp.x,sp.y)? 1 : 0.12); }
-  sens.f = fv + iN();
-
-  // 后向红外
-  probe.r = irProbeFor(r,c.x,c.y, c.th+Math.PI, 0.7, 1.3, false, true);
-  sens.r = irVal(probe.r, 1.3) + iN();
-  for(const k in sens) sens[k] = clamp(sens[k], 0, k[0]==='g' ? 1000 : 1.2);
+}
+function sensorAngleFor(r,ch){ return r.th + (Number(ch.angle)||0); }
+function sensorNoiseFor(ch){
+  return Number.isFinite(Number(ch.noise)) ? Number(ch.noise) : (ch.type==='gray' ? params.grayNoise : params.irNoise);
+}
+function clampSensorValue(ch,v){
+  const n=Number.isFinite(Number(v)) ? Number(v) : 0;
+  return clamp(n, Number(ch.min)||0, Number(ch.max)||((ch.type==='gray')?1000:1.2));
+}
+function edgeProbeFor(r,ch,p){
+  const ang=sensorAngleFor(r,ch), range=Number(ch.range)||0.9, half=Number(ch.fov)||0.30;
+  const target=irProbeFor(r,p.x,p.y,ang,half,range,!onPlatform(p.x,p.y),false);
+  const wall=wallProbe(p.x,p.y,ang,range);
+  let ground=0;
+  if(!onPlatform(r.x,r.y)) ground=0.3;              // 走道地面有弱反射
+  else if(onPlatform(p.x,p.y)) ground=1;            // 铲前仍在台面
+  const candidates=[target, wall!=null?{d:wall,obj:'台壁'}:null,
+    ground?{d:range*(1-ground),obj:'地面'}:null];
+  let best=null;
+  for(const cdt of candidates){ if(cdt && (!best || cdt.d<best.d)) best=cdt; }
+  return best;
+}
+function sampleSensorChannelFor(r,ch){
+  const p=sensorPointFor(r,ch), ang=sensorAngleFor(r,ch);
+  const range=Number(ch.range)||0.9, half=Number(ch.fov)||0.35;
+  let value=0, probe=null;
+  if(ch.type==='gray'){
+    value=fieldGray(p.x,p.y);
+  } else if(ch.type==='ir_ground'){
+    // 铲下红外的决策语义：台面/地面反射=1，悬空=0；不假设所有车都有同一组通道。
+    value=onPlatform(p.x,p.y)?1:0;
+    if(ch.mode==='target'){
+      probe=irProbeFor(r,p.x,p.y,ang,half,range,false,false);
+      value=Math.max(value,irVal(probe,range));
+    }
+  } else if(ch.type==='ir_edge'){
+    probe=edgeProbeFor(r,ch,p);
+    value=irVal(probe,range);
+    if(onPlatform(r.x,r.y)){
+      const sp=frontPt(r,0.35);
+      value=Math.max(value,onPlatform(sp.x,sp.y)?1:0.12);
+    }
+  } else if(ch.type==='digital' || ch.type==='ir_distance'){
+    const inclEdge=ch.mode==='edge_target' || ch.mode==='edge';
+    const inclFence=ch.mode==='fence';
+    probe=irProbeFor(r,p.x,p.y,ang,half,range,inclEdge,inclFence);
+    value=irVal(probe,range);
+    if(ch.mode==='edge_target' && onPlatform(r.x,r.y)){
+      const sp=frontPt(r,0.25);
+      value=Math.max(value,onPlatform(sp.x,sp.y)?1:0.12);
+    }
+    if(ch.type==='digital') value=value>0.35?1:0;
+  }
+  value += (rng()*2-1)*sensorNoiseFor(ch);
+  return { value:clampSensorValue(ch,value), probe };
+}
+function logicalSpec(profile,key){
+  const raw=profile && profile.logical ? profile.logical[key] : null;
+  if(raw===null || raw===undefined) return { ids:[], reducer:'none', virtual:false };
+  if(typeof raw==='string') return { ids:[raw], reducer:'first', virtual:false };
+  if(Array.isArray(raw)) return { ids:raw.map(String), reducer:'max', virtual:false };
+  if(typeof raw==='object'){
+    const ids=Array.isArray(raw.channels) ? raw.channels.map(String) : (raw.channel ? [String(raw.channel)] : []);
+    return { ids, reducer:String(raw.reducer||'first'), virtual:!!raw.virtual };
+  }
+  return { ids:[], reducer:'none', virtual:false };
+}
+function logicalValueFor(profile,key,raw){
+  const spec=logicalSpec(profile,key);
+  const values=spec.ids.map(id=>raw[id]).filter(v=>Number.isFinite(Number(v))).map(Number);
+  if(!values.length) return 0;
+  if(spec.reducer==='min') return Math.min(...values);
+  if(spec.reducer==='mean' || spec.reducer==='avg') return values.reduce((a,b)=>a+b,0)/values.length;
+  if(spec.reducer==='sum') return values.reduce((a,b)=>a+b,0);
+  if(spec.reducer==='max') return Math.max(...values);
+  return values[0];
+}
+function logicalProbeFor(profile,key,probes){
+  const spec=logicalSpec(profile,key);
+  const list=spec.ids.map(id=>probes[id]).filter(Boolean);
+  if(!list.length) return null;
+  return list.reduce((best,p)=>!best || p.d<best.d ? p : best,null);
+}
+function compatSensorsFor(r,raw){
+  const profile=r.sensorLayout||r.vehicle.sensors||SENSOR_COMPAT_PROFILE;
+  const out={};
+  for(const key of SENSOR_LOGICAL_KEYS) out[key]=logicalValueFor(profile,key,raw);
+  // 单路铲前红外无法提供左右差值，sFL/sFR 由同一真实通道兼容映射。
+  // 没有正前独立红外时，用两路前对角的最大值作为“前方有目标”提示。
+  if(!logicalSpec(profile,'f').ids.length) out.f=Math.max(out.dLF||0,out.dRF||0);
+  return out;
+}
+function sampleSensorsFor(r){
+  const profile=r.vehicle.sensors||DEFAULT_SENSOR_PROFILE;
+  r.sensorLayout=cloneSensorProfile(profile);
+  const raw={}, probes={};
+  for(const ch of r.sensorLayout.channels){
+    const sampled=sampleSensorChannelFor(r,ch);
+    raw[ch.id]=sampled.value; probes[ch.id]=sampled.probe;
+  }
+  const compat=compatSensorsFor(r,raw);
+  for(const key of SENSOR_LOGICAL_KEYS){ r.sens[key]=compat[key]; r.probe[key]=logicalProbeFor(r.sensorLayout,key,probes); }
+  r.rawSens=raw;
+  // 保留动态通道 probe，便于 GUI/策略调试；FSM 继续使用兼容逻辑名。
+  for(const id of Object.keys(probes)) r.probe[id]=probes[id];
 }
 function sampleSensors(){ sampleSensorsFor(US); }
 
@@ -1254,12 +1431,16 @@ function resetAll(opts){
   log('[fsm] 重置完成 → WAIT_START, 发令(arm) 或 手动/外部策略模式');
   if(opts.scene) scenePreset(opts.scene);
   respawnBlock(buffs[0]); respawnBlock(buffs[1]); respawnBlock(deb);
+  // 重置/场景摆放后立即刷新一次各车 profile 传感器，避免 PREP 阶段面板显示旧位置数据。
+  for(const r of robots) sampleSensorsFor(r);
 }
 function setParams(obj){ Object.assign(params, obj); }
 function setVehicleFor(role, patch){
   const r = role==='them' ? THEM : US;
   r.vehicle = normalizeVehicle(patch, r.vehicle);
   r.r = r.vehicle.collisionRadius;
+  r.sensorLayout = cloneSensorProfile(r.vehicle.sensors);
+  sampleSensorsFor(r);
   return cloneVehicle(r.vehicle);
 }
 function getVehicleFor(role){
@@ -1294,6 +1475,7 @@ function getState(){
     armed:r.fsm.armed, manual:r.fsm.manual, timer:+r.fsm.timer.toFixed(2), simT:+r.fsm.simT.toFixed(3),
   });
   const sensOf = r => { const s={}; for(const k in r.sens) s[k]=+r.sens[k].toFixed(3); return s; };
+  const rawSensOf = r => { const s={}; for(const k in r.rawSens) s[k]=+Number(r.rawSens[k]).toFixed(3); return s; };
   return {
     simT:+US.fsm.simT.toFixed(3), timer:+US.fsm.timer.toFixed(2),
     match:{ phase:matchControl.phase, paused:matchControl.paused,
@@ -1305,7 +1487,12 @@ function getState(){
       us: rState(US),
       them: rState(THEM),
     },
+    // sensors 保留旧的逻辑别名，保证已有外部程序不崩；
+    // rawSensors 是该车真实 profile 的动态通道集合，sensorLayout 描述类型/布局。
     sensors:{ us: sensOf(US), them: sensOf(THEM) },
+    rawSensors:{ us: rawSensOf(US), them: rawSensOf(THEM) },
+    sensorCompat:{ us: sensOf(US), them: sensOf(THEM) },
+    sensorLayout:{ us:cloneSensorProfile(US.sensorLayout), them:cloneSensorProfile(THEM.sensorLayout) },
     objects:{
       buffs: buffs.map(b=>({ x:+b.x.toFixed(4), y:+b.y.toFixed(4), onPlatform:onPlatform(b.x,b.y), out:!!b.out })),
       debuff:{ x:+deb.x.toFixed(4), y:+deb.y.toFixed(4), onPlatform:onPlatform(deb.x,deb.y), out:!!deb.out },
@@ -1325,6 +1512,7 @@ if (typeof module !== 'undefined' && module.exports){
     setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset,
     onPlatform, onStage, hangOn, fullOn, fieldGray, distToNearestEdge,
     log, logFor, setSeed, enterSearchFor, toDoneFor, driveToward, rotateTo,
+    SENSOR_PRESETS, SENSOR_LOGICAL_KEYS, DEFAULT_SENSOR_PROFILE, SENSOR_COMPAT_PROFILE, USER_SENSOR_PROFILE,
   };
 }
 </script>

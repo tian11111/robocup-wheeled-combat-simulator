@@ -74,6 +74,21 @@
   .vehicle-fields label{display:flex; align-items:center; gap:6px; color:var(--muted); font-size:11.5px;}
   .vehicle-fields input{width:82px; margin-left:auto; padding:3px 5px; background:#14181e; color:var(--txt); border:1px solid var(--line); border-radius:3px; font-family:Consolas,monospace;}
   .vehicle-actions{display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-top:8px;}
+  .sensor-editor{margin-top:10px; padding-top:8px; border-top:1px solid var(--line);}
+  .sensor-editor-head{display:flex; align-items:center; gap:7px; flex-wrap:wrap; color:var(--muted); font-size:11.5px;}
+  .sensor-editor-head select,.sensor-editor-head input,.sensor-editor button{padding:3px 5px; background:#14181e; color:var(--txt); border:1px solid var(--line); border-radius:3px; font-size:11px;}
+  .sensor-editor-head input{width:52px; font-family:Consolas,monospace;}
+  .sensor-editor button{cursor:pointer;}
+  .sensor-editor button:hover{border-color:var(--acc); color:#fff;}
+  .sensor-editor-status{color:var(--muted); font-size:10.5px;}
+  .sensor-channel-scroll{margin-top:6px; max-height:250px; overflow:auto; border:1px solid var(--line); border-radius:4px; background:#181d23;}
+  .sensor-channel-head,.sensor-channel-row{min-width:870px; display:grid; grid-template-columns:105px 105px 105px 68px 68px 68px 68px 68px 34px; gap:4px; align-items:center; padding:4px 5px;}
+  .sensor-channel-head{position:sticky; top:0; z-index:1; color:var(--muted); background:#252d37; font-size:10px;}
+  .sensor-channel-row{border-top:1px solid rgba(51,61,73,.55);}
+  .sensor-channel-row input,.sensor-channel-row select{width:100%; box-sizing:border-box; padding:3px 4px; background:#14181e; color:var(--txt); border:1px solid var(--line); border-radius:3px; font:10.5px Consolas,monospace;}
+  .sensor-channel-row select{font-family:inherit;}
+  .sensor-channel-row button{padding:2px 6px; color:#ffb0b0; border-color:#75444a;}
+  .sensor-editor-note{margin-top:5px; color:var(--muted); font-size:10.5px; line-height:1.5;}
   .ctrl-row{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px;}
   button{
     background:var(--panel2); color:var(--txt); border:1px solid var(--line); border-radius:4px;
@@ -131,8 +146,9 @@
     </div>
 
     <div class="panel">
-      <h3 style="display:flex; align-items:center; gap:8px;">传感器 (14 路 · 灰度≈1000台上白/300黑带/0走道 · 红外0~1)
+      <h3 style="display:flex; align-items:center; gap:8px;">传感器（按车辆 profile 动态）
         <select id="sensSel"><option value="us">我方</option><option value="them">对手</option></select>
+        <span id="sensorMeta" class="cap"></span>
       </h3>
       <div id="sensors"></div>
     </div>
@@ -152,8 +168,28 @@
       <span id="vehicleProfileName" class="cap"></span>
     </div>
     <div id="vehicleFields" class="vehicle-fields" style="margin-top:8px;"></div>
+    <div class="sensor-editor">
+      <div class="sensor-editor-head">
+        <span>传感器配置</span>
+        <select id="sensorPreset" title="选择内置传感器 profile">
+          <option value="wheeledCombat11">本车 11 路</option>
+          <option value="legacy14">兼容 14 路</option>
+          <option value="custom">自定义</option>
+        </select>
+        <span>数量</span>
+        <input id="sensorCount" type="number" min="0" max="64" step="1" value="0" title="传感器通道数量">
+        <button id="btnSensorCount" type="button">应用数量</button>
+        <button id="btnSensorAdd" type="button">＋添加通道</button>
+        <span id="sensorEditorStatus" class="sensor-editor-status"></span>
+      </div>
+      <div class="sensor-channel-scroll">
+        <div class="sensor-channel-head"><span>ID</span><span>名称</span><span>类型</span><span>前向 m</span><span>左侧 m</span><span>角度 rad</span><span>量程 m</span><span>半视角 rad</span><span></span></div>
+        <div id="sensorChannelFields"></div>
+      </div>
+      <div class="sensor-editor-note">数量决定真实通道数；类型和坐标决定传感器模型。兼容别名只用于旧策略，新策略请读取 rawSensors / sensorLayout。</div>
+    </div>
     <div class="vehicle-actions">
-      <button id="btnVehicleDefault">恢复默认</button>
+      <button id="btnVehicleDefault">恢复默认车身</button>
       <button id="btnVehicleCopy">复制 JSON</button>
       <button id="btnVehicleImport">导入 JSON</button>
       <input id="vehicleImportFile" type="file" accept=".json,application/json" style="display:none">
@@ -247,6 +283,8 @@
     matchControl, beginPreparation, pauseMatch, resumeMatch, restartFor,
     setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset,
   };
+  // 3D 主页面默认展示用户提供的实车布局；无头/API 仍保持 legacy14 兼容默认。
+  setVehicleFor('us', { id:'robocup-wheeled-combat', sensors:'wheeledCombat11' });
 </script>
 
 <script>
@@ -269,7 +307,7 @@ onLog = (e) => {
 
 // ---------- three.js 场景 ----------
 let renderer, scene, camera, botGroup, themGroup, botBodyGroup, themBodyGroup, buffMeshes, debMesh, startZoneGroup;
-let physicsBridge = null, gameEngine = null, pickMeshes = [], coneMat = {};
+let physicsBridge = null, gameEngine = null, pickMeshes = [], coneMat = {}, sensorConeLayoutId='';
 
 function showPhysicsStatus(){
   if(!physicsStatus || !physicsBridge) return;
@@ -389,6 +427,33 @@ function makeCone(color, halfAngle, range){
 }
 function alignCone(mesh, dir){
   mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+}
+
+function sensorLayoutKey(r){
+  const p=r && r.sensorLayout;
+  return String(p && p.id || 'none')+':'+((p && p.channels)||[]).map(c=>c.id).join('|');
+}
+function rebuildSensorCones(){
+  if(!botGroup) return;
+  for(const child of [...botGroup.children]){
+    if(child.userData && child.userData.sensorCone) botGroup.remove(child);
+  }
+  coneMat={};
+  const sensorColor = ch => ch.type==='gray' ? '#ffd166' : (ch.type==='ir_edge' ? '#ff9f43' : '#35d07f');
+  for(const ch of (US.sensorLayout?.channels || [])){
+    if(ch.type==='gray') continue; // 灰度用面板显示，不画长锥避免遮挡视野
+    const half=Number(ch.fov)||0.35, range=Number(ch.range)||0.9;
+    const cone = makeCone(sensorColor(ch), half, range);
+    const dir = new THREE.Vector3(Math.cos(Number(ch.angle)||0), 0, -Math.sin(Number(ch.angle)||0));
+    alignCone(cone, dir);
+    cone.position.set(Number(ch.forward)||0, 0.02, -(Number(ch.lateral)||0));
+    cone.visible = false;          // 默认隐藏, 按钮切换
+    cone.userData.sensorCone=true;
+    botGroup.add(cone);
+    coneMat[ch.id] = { material:cone.material, sensorId:ch.id, type:ch.type };
+  }
+  sensorConeLayoutId=sensorLayoutKey(US);
+  window.__sensorCones = botGroup.children.filter(c => c.userData && c.userData.sensorCone);
 }
 
 function init3D(){
@@ -521,33 +586,8 @@ function init3D(){
   themGroup.add(themBodyGroup);
   scene.add(botGroup);
   scene.add(themGroup);
-  // ---- 传感器锥体 (机器人子对象, 随车头旋转) ----
-  const U = new THREE.Vector3(0,1,0);
-  const coneDefs = [
-    ['dLF','#35d07f',0.55,1.6, new THREE.Vector3(Math.cos(-Math.PI/4),0,Math.sin(-Math.PI/4))],
-    ['dRF','#35d07f',0.55,1.6, new THREE.Vector3(Math.cos( Math.PI/4),0,Math.sin( Math.PI/4))],
-    ['dLB','#35d07f',0.55,1.6, new THREE.Vector3(Math.cos( 3*Math.PI/4),0,Math.sin( 3*Math.PI/4))],
-    ['dRB','#35d07f',0.55,1.6, new THREE.Vector3(Math.cos(-3*Math.PI/4),0,Math.sin(-3*Math.PI/4))],
-    ['f',  '#4da3ff',0.40,2.2, new THREE.Vector3(1,0,0)],
-    ['r',  '#b07bff',0.70,1.3, new THREE.Vector3(-1,0,0)],
-  ];
-  for(const [k,col,half,rg,dir] of coneDefs){
-    const cone = makeCone(col, half, rg);
-    alignCone(cone, dir);
-    cone.position.y = 0.02;
-    cone.visible = false;          // 2026-08-14: 传感器线默认隐藏(用户要求), 按钮切换
-    botGroup.add(cone);
-    coneMat[k] = cone.material;
-  }
-  const shovelDir = new THREE.Vector3(1,0,0);
-  for(const zOff of [0.06, -0.06]){
-    const sc = makeCone('#ff9f43', 0.30, 0.9);
-    alignCone(sc, shovelDir);
-    sc.position.set(0.14, 0.005, zOff);
-    sc.visible = false;            // 同上
-    botGroup.add(sc);
-  }
-  window.__sensorCones = botGroup.children.filter(c => c.geometry && c.geometry.type === 'ConeGeometry');
+  // ---- 传感器锥体 (按我方车辆 profile 动态生成, 随车头旋转) ----
+  rebuildSensorCones();
 
   // ---- 对手 / 能量块 ----
   buffMeshes = [];
@@ -595,6 +635,7 @@ function sync3D(){
   // 车辆参数面板在 3D 场景初始化前也会刷新一次；此时网格尚未创建，
   // 不能因为提前同步而中断整个启动流程。
   if(!botGroup || !themGroup) return;
+  if(sensorLayoutKey(US)!==sensorConeLayoutId) rebuildSensorCones();
   const on = onPlatform(US.x, US.y);
   const syncVehicleVisual = (group, body, r, isOn) => {
     const v = r.vehicle || DEFAULT_VEHICLE;
@@ -615,9 +656,10 @@ function sync3D(){
     physicsBridge.syncRobot('them', { ...THEM, onPlatform:onT, vehicle:THEM.vehicle });
     showPhysicsStatus();
   }
-  // 传感器锥体透明度 (我方)
+  // 传感器锥体透明度 (我方, 按 rawSens 动态通道)
   for(const k in coneMat){
-    coneMat[k].opacity = US.sens[k] > params.IR_TRIGGER ? 0.30 : 0.07;
+    const item=coneMat[k], v=Number(US.rawSens?.[item.sensorId]||0);
+    item.material.opacity = v > params.IR_TRIGGER ? 0.30 : 0.07;
   }
 }
 
@@ -756,38 +798,51 @@ function updateStateUI(){
   if(matchPhase) matchPhase.textContent = match ? match.phase : 'RUNNING';
 }
 
-// 传感器面板
-const SENSOR_DEFS=[
-  ['gF','灰度·前'],['gB','灰度·后'],['gL','灰度·左'],['gR','灰度·右'],
-  ['uL','铲下·L'],['uR','铲下·R'],['sFL','铲前·L'],['sFR','铲前·R'],
-  ['dLF','对角·左前'],['dRF','对角·右前'],['dLB','对角·左后'],['dRB','对角·右后'],
-  ['f','正前·远'],['r','后向'],
-];
+// 传感器面板：只显示该车辆 profile 中真实存在的 rawSens 通道。
 const senBox=document.getElementById('sensors');
-for(const [k,nm] of SENSOR_DEFS){
-  const d=document.createElement('div'); d.className='sen';
-  d.innerHTML=`<span class="nm">${nm}</span><span class="val" id="sv_${k}">0</span><span class="bar"><i id="sb_${k}"></i></span>`;
-  senBox.appendChild(d);
-}
+const sensorMeta=document.getElementById('sensorMeta');
+let sensorRows=[]; let sensorLayoutId='';
 let sensTarget = US;
 document.getElementById('sensSel').addEventListener('change', e=>{
   sensTarget = e.target.value==='them' ? THEM : US;
+  renderSensorRows();
 });
+function renderSensorRows(){
+  const layout=sensTarget.sensorLayout || sensTarget.vehicle.sensors || { id:'none', channels:[] };
+  const channels=Array.isArray(layout.channels)?layout.channels:[];
+  sensorLayoutId=String(layout.id||'custom')+':'+channels.map(c=>c.id).join('|');
+  sensorRows=[]; senBox.innerHTML='';
+  sensorMeta.textContent=`${channels.length} 路 · ${layout.label||layout.id||'custom'}`;
+  for(const ch of channels){
+    const d=document.createElement('div'); d.className='sen';
+    const nm=document.createElement('span'); nm.className='nm'; nm.textContent=ch.label||ch.id;
+    const val=document.createElement('span'); val.className='val'; val.textContent='0';
+    const bar=document.createElement('span'); bar.className='bar';
+    const fill=document.createElement('i'); bar.appendChild(fill);
+    d.append(nm,val,bar); senBox.appendChild(d);
+    sensorRows.push({ ch, val, fill });
+  }
+}
+renderSensorRows();
 function updateSensorUI(){
-  const sens = sensTarget.sens;
-  for(const [k] of SENSOR_DEFS){
-    const v=sens[k], isG=k.startsWith('g');
-    const el=document.getElementById('sv_'+k), bar=document.getElementById('sb_'+k);
+  const layout=sensTarget.sensorLayout || sensTarget.vehicle.sensors || { id:'none', channels:[] };
+  const expected=String(layout.id||'custom')+':'+(layout.channels||[]).map(c=>c.id).join('|');
+  if(expected!==sensorLayoutId) renderSensorRows();
+  const sens = sensTarget.rawSens || {};
+  for(const row of sensorRows){
+    const {ch, val:el, fill:bar}=row;
+    const v=Number(sens[ch.id])||0, isG=ch.type==='gray';
     let col;
     if(isG){
       col = v>params.ON_STAGE_THRESHOLD? '#3ddc84' : v>params.EDGE_THRESHOLD? '#ffd166' : v>params.FALL_THRESHOLD? '#ff9f43' : '#ff5b5b';
       el.textContent = Math.round(v);
-      bar.style.width = (v/10)+'%';
+      bar.style.width = Math.max(0,Math.min(100,v/10))+'%';
     } else {
       const trig = v>params.IR_TRIGGER;
       col = trig? '#3ddc84' : v>0.12? '#ffd166' : '#5a6472';
       el.textContent = v.toFixed(2);
-      bar.style.width = (v*100)+'%';
+      const max=Number(ch.max)||1;
+      bar.style.width = Math.max(0,Math.min(100,v/max*100))+'%';
     }
     el.style.color=col; bar.style.background=col;
   }
@@ -820,6 +875,10 @@ for(const [k,lab,min,max,step] of paramDefs){
 const vehicleRoleEl = document.getElementById('vehicleRole');
 const vehicleFieldsEl = document.getElementById('vehicleFields');
 const vehicleProfileNameEl = document.getElementById('vehicleProfileName');
+const sensorPresetEl = document.getElementById('sensorPreset');
+const sensorCountEl = document.getElementById('sensorCount');
+const sensorChannelFieldsEl = document.getElementById('sensorChannelFields');
+const sensorEditorStatusEl = document.getElementById('sensorEditorStatus');
 const VEHICLE_FIELDS = [
   ['id','profile 名称','text'],
   ['length','车身长度 (m)','number'],['width','车身宽度 (m)','number'],['height','车身高度 (m)','number'],
@@ -830,6 +889,89 @@ const VEHICLE_FIELDS = [
   ['accelK','加速度系数','number'],['mass','质量 (kg)','number'],['pushFactor','推挤系数','number'],
 ];
 function vehicleRoleObj(){ return vehicleRoleEl.value==='them' ? THEM : US; }
+const SENSOR_TYPE_OPTIONS = [
+  ['gray','灰度'],['ir_ground','铲下红外'],['ir_edge','铲前/边缘红外'],
+  ['ir_distance','距离红外'],['digital','数字红外'],
+];
+function editorSensorProfile(){
+  const v=getVehicleFor(vehicleRoleEl.value);
+  const p=v.sensors || { id:'custom', label:'自定义', channels:[], logical:{} };
+  return {
+    id:String(p.id||'custom'), label:String(p.label||p.id||'custom'),
+    channels:(p.channels||[]).map(c=>({ ...c })),
+    logical:JSON.parse(JSON.stringify(p.logical||{})),
+  };
+}
+function defaultEditorChannel(index){
+  return { id:`sensor_${index+1}`, label:`传感器 ${index+1}`, type:'ir_distance',
+    forward:0, lateral:0, angle:0, range:0.9, fov:0.35, mode:'target' };
+}
+function editorNumber(value, fallback){
+  const n=Number(value); return Number.isFinite(n) ? n : fallback;
+}
+function readSensorEditorRows(){
+  const profile=editorSensorProfile();
+  const rows=[...sensorChannelFieldsEl.querySelectorAll('.sensor-channel-row')];
+  profile.channels=rows.map((row,i)=>{
+    const q=s=>row.querySelector(`[data-sensor-field="${s}"]`);
+    const old=profile.channels[i]||defaultEditorChannel(i);
+    return {
+      ...old,
+      id:(q('id').value.trim() || `sensor_${i+1}`),
+      label:(q('label').value.trim() || q('id').value.trim() || `传感器 ${i+1}`),
+      type:q('type').value,
+      forward:editorNumber(q('forward').value,0),
+      lateral:editorNumber(q('lateral').value,0),
+      angle:editorNumber(q('angle').value,0),
+      range:editorNumber(q('range').value,0.9),
+      fov:editorNumber(q('fov').value,0.35),
+    };
+  });
+  return profile;
+}
+function applySensorEditorProfile(profile, status){
+  const clean={...profile, id:String(profile.id||'custom'), label:String(profile.label||profile.id||'custom')};
+  setVehicleFor(vehicleRoleEl.value,{sensors:clean});
+  renderVehicleFields();
+  if(status) sensorEditorStatusEl.textContent=status;
+}
+function commitSensorEditor(){
+  const p=readSensorEditorRows();
+  p.id='custom'; p.label=`自定义 ${p.channels.length} 路`;
+  applySensorEditorProfile(p,'已应用');
+}
+function renderSensorEditor(){
+  if(!sensorPresetEl || !sensorCountEl || !sensorChannelFieldsEl) return;
+  const p=editorSensorProfile();
+  const isPreset=['wheeledCombat11','legacy14'].includes(p.id);
+  sensorPresetEl.value=isPreset ? p.id : 'custom';
+  sensorCountEl.value=p.channels.length;
+  sensorEditorStatusEl.textContent=`当前 ${p.channels.length} 路`;
+  sensorChannelFieldsEl.innerHTML='';
+  p.channels.forEach((ch,i)=>{
+    const row=document.createElement('div'); row.className='sensor-channel-row';
+    const input=(field,value,type='text')=>{
+      const el=document.createElement('input'); el.type=type; el.value=String(value ?? '');
+      el.dataset.sensorField=field; if(type==='number') el.step='0.001'; return el;
+    };
+    const id=input('id',ch.id), label=input('label',ch.label);
+    const type=document.createElement('select'); type.dataset.sensorField='type';
+    for(const [value,textLabel] of SENSOR_TYPE_OPTIONS){ const o=document.createElement('option'); o.value=value; o.textContent=textLabel; type.appendChild(o); }
+    type.value=SENSOR_TYPE_OPTIONS.some(([value])=>value===ch.type) ? ch.type : 'ir_distance';
+    const forward=input('forward',Number(ch.forward||0).toFixed(3),'number');
+    const lateral=input('lateral',Number(ch.lateral||0).toFixed(3),'number');
+    const angle=input('angle',Number(ch.angle||0).toFixed(3),'number');
+    const range=input('range',Number(ch.range||0.9).toFixed(3),'number');
+    const fov=input('fov',Number(ch.fov||0.35).toFixed(3),'number');
+    const del=document.createElement('button'); del.type='button'; del.textContent='×'; del.title='删除此通道';
+    del.addEventListener('click',()=>{
+      const next=readSensorEditorRows(); next.channels.splice(i,1); next.id='custom'; next.label=`自定义 ${next.channels.length} 路`;
+      applySensorEditorProfile(next,'已删除通道');
+    });
+    row.append(id,label,type,forward,lateral,angle,range,fov,del); sensorChannelFieldsEl.appendChild(row);
+    for(const el of [id,label,type,forward,lateral,angle,range,fov]) el.addEventListener('change',commitSensorEditor);
+  });
+}
 function renderVehicleFields(){
   const v = getVehicleFor(vehicleRoleEl.value);
   vehicleProfileNameEl.textContent = `当前: ${v.id}`;
@@ -848,9 +990,34 @@ function renderVehicleFields(){
       renderVehicleFields();
     });
   }
+  renderSensorEditor();
   if(typeof sync3D==='function') sync3D();
 }
 vehicleRoleEl.addEventListener('change', renderVehicleFields);
+sensorPresetEl.addEventListener('change',()=>{
+  const choice=sensorPresetEl.value;
+  if(choice==='custom'){
+    const p=editorSensorProfile(); p.id='custom'; p.label=`自定义 ${p.channels.length} 路`;
+    applySensorEditorProfile(p,'已切换到自定义');
+  } else if(SENSOR_PRESETS[choice]) {
+    setVehicleFor(vehicleRoleEl.value,{sensors:choice});
+    renderVehicleFields();
+    sensorEditorStatusEl.textContent=`已载入 ${SENSOR_PRESETS[choice].label}`;
+  }
+});
+document.getElementById('btnSensorCount').addEventListener('click',()=>{
+  const p=readSensorEditorRows();
+  let n=Math.max(0,Math.min(64,Math.floor(Number(sensorCountEl.value)||0)));
+  while(p.channels.length<n) p.channels.push(defaultEditorChannel(p.channels.length));
+  if(p.channels.length>n) p.channels.length=n;
+  p.id='custom'; p.label=`自定义 ${n} 路`;
+  applySensorEditorProfile(p,`已设置 ${n} 路`);
+});
+document.getElementById('btnSensorAdd').addEventListener('click',()=>{
+  const p=readSensorEditorRows(); p.channels.push(defaultEditorChannel(p.channels.length));
+  p.id='custom'; p.label=`自定义 ${p.channels.length} 路`;
+  applySensorEditorProfile(p,'已添加通道');
+});
 document.getElementById('btnVehicleDefault').addEventListener('click',()=>{
   setVehicleFor(vehicleRoleEl.value, { ...DEFAULT_VEHICLE });
   renderVehicleFields();
@@ -1020,12 +1187,18 @@ function pollRemote(){
   Promise.all([api('/state'), api('/battle/status')]).then(([st, stt]) => {
     if (!st || !st.robots) return;
     // 用服务器状态覆盖双车(远程渲染)
-    US.x = st.robots.us.x; US.y = st.robots.us.y; US.th = st.robots.us.th;
-    US.fsm.state = st.robots.us.state; US.fsm.action = st.robots.us.action;
-    if (st.robots.us.vehicle){ US.vehicle = { ...st.robots.us.vehicle }; US.r = US.vehicle.collisionRadius; }
-    THEM.x = st.robots.them.x; THEM.y = st.robots.them.y; THEM.th = st.robots.them.th;
-    THEM.fsm.state = st.robots.them.state; THEM.fsm.action = st.robots.them.action;
-    if (st.robots.them.vehicle){ THEM.vehicle = { ...st.robots.them.vehicle }; THEM.r = THEM.vehicle.collisionRadius; }
+     US.x = st.robots.us.x; US.y = st.robots.us.y; US.th = st.robots.us.th;
+     US.fsm.state = st.robots.us.state; US.fsm.action = st.robots.us.action;
+     if (st.robots.us.vehicle){ US.vehicle = { ...st.robots.us.vehicle }; US.r = US.vehicle.collisionRadius; }
+     if (st.sensors && st.sensors.us) US.sens = { ...st.sensors.us };
+     if (st.rawSensors && st.rawSensors.us) US.rawSens = { ...st.rawSensors.us };
+     if (st.sensorLayout && st.sensorLayout.us) US.sensorLayout = { ...st.sensorLayout.us };
+     THEM.x = st.robots.them.x; THEM.y = st.robots.them.y; THEM.th = st.robots.them.th;
+     THEM.fsm.state = st.robots.them.state; THEM.fsm.action = st.robots.them.action;
+     if (st.robots.them.vehicle){ THEM.vehicle = { ...st.robots.them.vehicle }; THEM.r = THEM.vehicle.collisionRadius; }
+     if (st.sensors && st.sensors.them) THEM.sens = { ...st.sensors.them };
+     if (st.rawSensors && st.rawSensors.them) THEM.rawSens = { ...st.rawSensors.them };
+     if (st.sensorLayout && st.sensorLayout.them) THEM.sensorLayout = { ...st.sensorLayout.them };
     US.fsm.scores.us = st.scores.us; THEM.fsm.scores.us = st.scores.them;
     US.fsm.timer = st.timer;
     if (stt){
