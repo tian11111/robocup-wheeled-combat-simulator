@@ -589,6 +589,10 @@ const deb = { kind:'debuff', name:'减益块', x:1.6, y:2.4, vx:0, vy:0, r:0.075
 const blocks = [buffs[0], buffs[1], deb];
 const objs = blocks;                    // 兼容别名(仅能量块)
 const matchScore = { phase:'both_off', t:0 };
+// Rendering-only events emitted when a user drags a block into another body.
+// They never participate in scoring or state transitions.
+const dragImpactEvents = [];
+let dragImpactSeq = 0;
 // ---------- 裁判比赛阶段 ----------
 // PREP=最多60s赛前准备, READY=准备结束等待发令, RUNNING=正赛,
 // PAUSED=暂停/调试, FINISHED=比赛结束。旧 API 仍可直接 arm() 开始正赛。
@@ -1199,16 +1203,87 @@ function finalizeBlockContacts(){
 // 能量块/对手而没有出现最终重叠。该函数只返回最近接触点，不改变状态，
 // 保持核心碰撞确定性（仅决策逻辑仿真，不承诺逐帧动力学保真）。
 function sweptCircleContact(ax, ay, bx, by, cx, cy, radius){
-  const dx=bx-ax, dy=by-ay, len2=dx*dx+dy*dy;
-  const t=len2>1e-12 ? clamp(((cx-ax)*dx+(cy-ay)*dy)/len2, 0, 1) : 0;
+  const dx=bx-ax, dy=by-ay;
+  const fx=ax-cx, fy=ay-cy;
+  const a=dx*dx+dy*dy;
+  const c=fx*fx+fy*fy-radius*radius;
+  if(a<1e-12){
+    if(c>=0) return null;
+    const d=Math.hypot(cx-ax,cy-ay)||1;
+    return { qx:ax, qy:ay, nx:(cx-ax)/d, ny:(cy-ay)/d, d, t:0, penetrating:true };
+  }
+  if(c<0){
+    const d=Math.hypot(cx-ax,cy-ay)||1;
+    return { qx:ax, qy:ay, nx:(cx-ax)/d, ny:(cy-ay)/d, d, t:0, penetrating:true };
+  }
+  const b=2*(fx*dx+fy*dy);
+  const disc=b*b-4*a*c;
+  if(disc<0) return null;
+  const t=(-b-Math.sqrt(disc))/(2*a);
+  if(t<0 || t>1) return null;
   const qx=ax+dx*t, qy=ay+dy*t;
-  const ex=cx-qx, ey=cy-qy, d=Math.hypot(ex,ey);
-  if(d >= radius) return null;
-  let nx, ny;
-  if(d>1e-9){ nx=ex/d; ny=ey/d; }
-  else if(Math.hypot(dx,dy)>1e-9){ const l=Math.hypot(dx,dy); nx=dx/l; ny=dy/l; }
-  else { nx=1; ny=0; }
-  return { qx, qy, nx, ny, d, t };
+  const ex=cx-qx, ey=cy-qy, d=Math.hypot(ex,ey)||radius;
+  const nx=ex/d, ny=ey/d;
+  // A tangent at t=0 while separating is not a new impact.
+  if(dx*nx+dy*ny<=1e-9 && c>=-1e-9) return null;
+  return { qx, qy, nx, ny, d, t, penetrating:false };
+}
+function bodyMass(o){
+  const configured=o && o.vehicle ? o.vehicle.mass : o && o.mass;
+  return Math.max(0.05, Number.isFinite(Number(configured)) ? Number(configured) : (o && o.kind ? 0.30 : 1));
+}
+function separatePair(a, b, nx, ny, overlap){
+  if(!(overlap>0)) return;
+  const invA=1/bodyMass(a), invB=1/bodyMass(b), total=invA+invB;
+  a.x-=nx*overlap*(invA/total); a.y-=ny*overlap*(invA/total);
+  b.x+=nx*overlap*(invB/total); b.y+=ny*overlap*(invB/total);
+}
+function applyPairImpulse(a, b, nx, ny, restitution, scale){
+  const rel=(a.vx*nx+a.vy*ny)-(b.vx*nx+b.vy*ny);
+  if(rel<=0) return 0;
+  const invA=1/bodyMass(a), invB=1/bodyMass(b);
+  const impulse=rel*(1+restitution)*(scale==null?1:scale)/(invA+invB);
+  a.vx-=nx*impulse*invA; a.vy-=ny*impulse*invA;
+  b.vx+=nx*impulse*invB; b.vy+=ny*impulse*invB;
+  return impulse;
+}
+function keepBlockInsideFence(o){
+  const B=0.12;
+  if(o.x<B){ o.x=B; if(o.vx<0) o.vx*=-0.10; }
+  else if(o.x>3.8-B){ o.x=3.8-B; if(o.vx>0) o.vx*=-0.10; }
+  if(o.y<B){ o.y=B; if(o.vy<0) o.vy*=-0.10; }
+  else if(o.y>3.8-B){ o.y=3.8-B; if(o.vy>0) o.vy*=-0.10; }
+}
+function resolveRobotBlockCollision(r, o, px, py){
+  const R=(r.r||BODY)+o.r;
+  let dx=o.x-r.x, dy=o.y-r.y, d=Math.hypot(dx,dy);
+  let hit=null;
+  if(!(d<R)) hit=sweptCircleContact(px,py,r.x,r.y,o.x,o.y,R);
+  if(!(d<R) && !hit) return false;
+  let nx, ny, overlap=0;
+  if(d<R){
+    if(d<1e-9){ const h=Math.hypot(r.vx,r.vy)||1; nx=r.vx/h; ny=r.vy/h; }
+    else { nx=dx/d; ny=dy/d; }
+    overlap=R-d;
+  } else {
+    nx=hit.nx; ny=hit.ny;
+    // Put the car back at first contact so a swept hit cannot cross the block.
+    r.x=hit.qx-nx*0.0005; r.y=hit.qy-ny*0.0005;
+  }
+  markBlockContact(o, r);
+  separatePair(r,o,nx,ny,overlap);
+  const push=clamp(Number(r.vehicle?.pushFactor)||1,0.1,3);
+  applyPairImpulse(r,o,nx,ny,0.08,push);
+  return true;
+}
+function resolveBlockPair(a,b){
+  if(a.dragLock || b.dragLock) return false;
+  const dx=b.x-a.x, dy=b.y-a.y, R=a.r+b.r, d=Math.hypot(dx,dy);
+  if(!(d<R)) return false;
+  const nx=d>1e-9?dx/d:1, ny=d>1e-9?dy/d:0;
+  separatePair(a,b,nx,ny,R-d);
+  applyPairImpulse(a,b,nx,ny,0.06,1);
+  return true;
 }
 function motionFor(r, dt){
   const vehicle = r.vehicle || DEFAULT_VEHICLE;
@@ -1229,49 +1304,21 @@ function motionFor(r, dt){
   else if(r.x > 3.8-B){ r.x = 3.8-B; if(r.vx>0) r.vx = 0; }
   if(r.y < B){ r.y = B; if(r.vy<0) r.vy = 0; }
   else if(r.y > 3.8-B){ r.y = 3.8-B; if(r.vy>0) r.vy = 0; }
-  // 能量块: 推块速度继承(带上限防抖) + 摩擦 (dragLock: 拖拽中不参与物理; out: 已下台静止)
+  // out means "already scored", not "remove this block". A fallen block is
+  // still solid on the walkway and can be pushed into the perimeter fence.
   for(const o of blocks){
-    if(o.dragLock || o.out) continue;
-    const dx=o.x-r.x, dy=o.y-r.y, d=Math.hypot(dx,dy)||0.001;
-    const R=(r.r||BODY)+o.r;
-    if(d<R){
-      markBlockContact(o, r);
-      const nx=dx/d, ny=dy/d;
-      o.x=r.x+nx*R; o.y=r.y+ny*R;
-      const dot=(r.vx*nx+r.vy*ny);
-      if(dot>0){
-        const push=(r.vehicle?.pushFactor||1)*dot;
-        o.vx+=nx*push; o.vy+=ny*push;
-      }
-    } else {
-      const hit=sweptCircleContact(px,py,r.x,r.y,o.x,o.y,R);
-      if(hit){
-        markBlockContact(o, r);
-        o.x=hit.qx+hit.nx*R; o.y=hit.qy+hit.ny*R;
-        const dot=(r.vx*hit.nx+r.vy*hit.ny);
-        if(dot>0){
-          const push=(r.vehicle?.pushFactor||1)*dot;
-          o.vx+=hit.nx*push; o.vy+=hit.ny*push;
-        }
-      }
-    }
+    if(o.dragLock) continue;
+    resolveRobotBlockCollision(r,o,px,py);
     o.x+=o.vx*dt; o.y+=o.vy*dt;
     const fric=Math.exp(-2.2*dt); o.vx*=fric; o.vy*=fric;
     const spd=Math.hypot(o.vx,o.vy);
-    if(spd>2.0){ o.vx*=2.0/spd; o.vy*=2.0/spd; }
-    o.x=clamp(o.x,0.12,3.68); o.y=clamp(o.y,0.12,3.68);
+    if(spd>2.4){ o.vx*=2.4/spd; o.vy*=2.4/spd; }
+    keepBlockInsideFence(o);
   }
-  // 能量块之间: 简单分离(防重叠; 拖拽中的块不参与)
+  // Blocks exchange a small impulse too, including blocks that left the stage.
+  // A dragged source is handled directly by pushDraggedBlock below.
   for(let i=0;i<blocks.length;i++) for(let j=i+1;j<blocks.length;j++){
-    const a=blocks[i], b=blocks[j];
-    if(a.dragLock || b.dragLock || a.out || b.out) continue;
-    const bdx=b.x-a.x, bdy=b.y-a.y, bd=Math.hypot(bdx,bdy)||0.001;
-    const BR=a.r+b.r;
-    if(bd<BR){
-      const bnx=bdx/bd, bny=bdy/bd, bov=BR-bd;
-      a.x-=bnx*bov*0.5; a.y-=bny*bov*0.5;
-      b.x+=bnx*bov*0.5; b.y+=bny*bov*0.5;
-    }
+    resolveBlockPair(blocks[i],blocks[j]);
   }
   // 对另一台车: 恢复系数 e=0.3 的法向交换 + 切向摩擦 + 对称分离
   const o = other(r);
@@ -1281,6 +1328,9 @@ function motionFor(r, dt){
   if(d < R || swept){
     const nx=d<R ? dx/d : swept.nx, ny=d<R ? dy/d : swept.ny;
     const overlap = d<R ? R-d : 0;
+    if(swept && !(d<R)){
+      r.x=swept.qx-nx*0.0005; r.y=swept.qy-ny*0.0005;
+    }
     r.x -= nx*overlap*0.5; r.y -= ny*overlap*0.5;
     o.x += nx*overlap*0.5; o.y += ny*overlap*0.5;
     const rv = r.vx*nx + r.vy*ny;
@@ -1576,6 +1626,7 @@ function resetAll(opts){
     o.vx=o.vy=0; o.wasOn=onPlatform(o.x,o.y); o.out=false;
     o.contactThisStep=[]; o.lastContactRole=null;
   }
+  dragImpactEvents.length=0;
   matchScore.phase='both_off'; matchScore.t=0;
   logEvents.length = 0;
   log('[fsm] 重置完成 → WAIT_START, 发令(arm) 或 手动/外部策略模式');
@@ -1598,10 +1649,45 @@ function getVehicleFor(role){
 }
 function setPoseFor(r, x, y, th){ r.x=clamp(x,0.05,3.75); r.y=clamp(y,0.05,3.75); r.th=norm(th||0); r.v=r.w=0; r.vx=0; r.vy=0; }
 function setPose(x,y,th){ setPoseFor(US, x, y, th); }
+function queueDragImpact(source, target, x, y, nx, ny, strength){
+  dragImpactEvents.push({
+    id:++dragImpactSeq, x:+x.toFixed(4), y:+y.toFixed(4),
+    nx:+nx.toFixed(4), ny:+ny.toFixed(4), strength:+strength.toFixed(3),
+    source:source.kind || 'block', target:target.kind || (target===US?'us':'them'),
+  });
+  if(dragImpactEvents.length>32) dragImpactEvents.splice(0,dragImpactEvents.length-32);
+}
+function consumeDragImpacts(){ return dragImpactEvents.splice(0,dragImpactEvents.length); }
+function pushDraggedBlock(source, oldX, oldY){
+  const dx=source.x-oldX, dy=source.y-oldY, distance=Math.hypot(dx,dy);
+  if(distance<1e-6) return;
+  const dirX=dx/distance, dirY=dy/distance;
+  const targets=[...robots.filter(r=>!r.dragLock),...blocks.filter(o=>o!==source&&!o.dragLock)];
+  for(const target of targets){
+    const radius=source.r+(target.r||0.075);
+    const hit=sweptCircleContact(oldX,oldY,source.x,source.y,target.x,target.y,radius);
+    const finalDistance=Math.hypot(target.x-source.x,target.y-source.y);
+    if(!hit && finalDistance>=radius) continue;
+    // Dragging is kinematic input: move the target ahead of the source and
+    // retain a capped impulse so it continues moving after pointer release.
+    const pushDistance=Math.max(0,radius-finalDistance)+Math.min(distance,0.12);
+    target.x=clamp(source.x+dirX*(radius+0.002),0.12,3.68);
+    target.y=clamp(source.y+dirY*(radius+0.002),0.12,3.68);
+    const speed=Math.min(2.4,0.45+distance*18);
+    target.vx=(target.vx||0)+dirX*speed;
+    target.vy=(target.vy||0)+dirY*speed;
+    const targetSpeed=Math.hypot(target.vx,target.vy);
+    if(targetSpeed>2.4){ target.vx*=2.4/targetSpeed; target.vy*=2.4/targetSpeed; }
+    queueDragImpact(source,target,(source.x+target.x)/2,(source.y+target.y)/2,dirX,dirY,
+      Math.max(0.4,pushDistance*12+speed*0.35));
+  }
+}
 function setObject(kind, idx, x, y){
   let o = kind==='opp' ? THEM : kind==='debuff' ? deb : buffs[idx||0];
   if(!o) return false;
+  const oldX=o.x, oldY=o.y;
   o.x=clamp(x,0.05,3.75); o.y=clamp(y,0.05,3.75); o.vx=o.vy=0;
+  if(o.kind && o.dragLock) pushDraggedBlock(o,oldX,oldY);
   return true;
 }
 function scenePreset(name){
@@ -1659,7 +1745,7 @@ if (typeof module !== 'undefined' && module.exports){
     params, fs, fs2, bot, opp, US, THEM, robots, scoreBoard, buffs, deb, blocks, objs, SENS, SENS2, logEvents,
     resetAll, arm, armFor, startManual, stepSim, stepSimExt, getState, getLog,
     matchControl, beginPreparation, pauseMatch, resumeMatch, restartFor,
-    setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset,
+    setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset, consumeDragImpacts,
     onPlatform, onStage, hangOn, fullOn, fieldGray, distToNearestEdge,
     log, logFor, setSeed, enterSearchFor, toDoneFor, driveToward, rotateTo,
     SENSOR_PRESETS, SENSOR_LOGICAL_KEYS, DEFAULT_SENSOR_PROFILE, SENSOR_COMPAT_PROFILE, USER_SENSOR_PROFILE,
@@ -1682,7 +1768,7 @@ if (typeof module !== 'undefined' && module.exports){
     params, US, THEM, robots, scoreBoard,
     resetAll, arm, startManual, stepSim, stepSimExt, getState, getLog,
     matchControl, beginPreparation, pauseMatch, resumeMatch, restartFor,
-    setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset,
+    setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset, consumeDragImpacts,
   };
   // 3D 主页面默认展示用户提供的实车布局；无头/API 仍保持 legacy14 兼容默认。
   setVehicleFor('us', { id:'robocup-wheeled-combat', sensors:'wheeledCombat11' });
@@ -1716,6 +1802,7 @@ const fxVisible = { hud:true, trails:true, vectors:true, scan:false, collisions:
 let frameDt = 0.016, visualClock = 0, trailClock = 0, sensorClock = 0;
 let replayHistory = [], replayCursor = -1, replaySlowTimer = 0, tireMarks = [], replayGhost = {us:null,them:null};
 const visualStageMemory = { us:null, them:null };
+let lastDragImpactFx = -10;
 const MAX_REPLAY_HISTORY = 180; // 最近约 3 秒，供复盘/慢放使用
 
 function showPhysicsStatus(){
@@ -1798,16 +1885,16 @@ function makeGroundTexture(){
   const c = document.createElement('canvas'); c.width = c.height = 512;
   const g = c.getContext('2d');
   // 场外底台顶面使用蓝灰石墨色，和黑色围栏拉开明度；走道仍保持比赛规则的黑色观感。
-  g.fillStyle = '#3b4652'; g.fillRect(0,0,512,512);
+  g.fillStyle = '#70757a'; g.fillRect(0,0,512,512);
   // 场内走道 (规则: 黑色, 宽 70cm; 加噪点纹理让黑色有质感, 3.8m → 389px)
-  g.fillStyle = '#252d36'; g.fillRect(61,61,389,389);
+  g.fillStyle = '#5d6268'; g.fillRect(61,61,389,389);
   for (let i = 0; i < 400; i++){          // 走道细微噪点(水泥感)
-    const v = 38 + Math.floor(Math.random() * 18);
+    const v = 82 + Math.floor(Math.random() * 20);
     g.fillStyle = 'rgb(' + v + ',' + (v+4) + ',' + (v+10) + ')';
     g.fillRect(61 + Math.random() * 389, 61 + Math.random() * 389, 1.4, 1.4);
   }
   // 围栏线(黑)，使用一圈蓝灰内缘避免和走道完全糊成一片。
-  g.strokeStyle = '#11161d'; g.lineWidth = 6;
+  g.strokeStyle = '#565b60'; g.lineWidth = 6;
   g.strokeRect(61,61,389,389);
   // 出发区保留一层纹理底色；实际显示由独立彩色平面、边框和箭头强化，
   // 即使材质/光照/低视角变化也不会消失。
@@ -1951,8 +2038,8 @@ function init3D(){
 
   scene = new THREE.Scene();
   // 场外采用蓝灰竞技场环境，和黑色围栏/走道形成层次；远处雾色与背景一致。
-  scene.background = new THREE.Color(0x566675);
-  scene.fog = new THREE.Fog(0x566675, 24, 42);
+  scene.background = new THREE.Color(0x5e6267);
+  scene.fog = new THREE.Fog(0x5e6267, 24, 42);
 
   camera = new THREE.PerspectiveCamera(55, cv.clientWidth/cv.clientHeight, 0.05, 60);
 
@@ -1973,7 +2060,7 @@ function init3D(){
   // 场地外环境地板：底台下方再铺一层大面积石墨蓝灰，避免场地边缘直接融入黑墙。
   const outerFloor = new THREE.Mesh(
     new THREE.PlaneGeometry(10, 10),
-    makePBRMaterial({color:0x536473,roughness:0.92,metalness:0.02,normalStrength:0.7,repeat:5,seed:39,emissive:0x19232d,emissiveIntensity:0.12})
+    makePBRMaterial({color:0x74787d,roughness:0.92,metalness:0.02,normalStrength:0.7,repeat:5,seed:39,emissive:0x202124,emissiveIntensity:0.1})
   );
   outerFloor.rotation.x = -Math.PI/2;
   outerFloor.position.y = -0.51;
@@ -1983,7 +2070,7 @@ function init3D(){
   // 地面 (加微弱自发光, 避免阴影区/擂台周围死黑)
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(5.2, 5.2),
-    makePBRMaterial({map:makeGroundTexture(),color:0x22262d,roughness:0.94,metalness:0.02,normalStrength:0.85,repeat:3,seed:41,emissive:0x14191f,emissiveIntensity:0.18})
+    makePBRMaterial({map:makeGroundTexture(),color:0x74787d,roughness:0.94,metalness:0.02,normalStrength:0.85,repeat:3,seed:41,emissive:0x202124,emissiveIntensity:0.1})
   );
   ground.rotation.x = -Math.PI/2;
   ground.receiveShadow = true;
@@ -2004,7 +2091,7 @@ function init3D(){
   // 场地底台 (规则: 底端平台 50cm — 整个场地架在 50cm 高深色基座上)
   const base = new THREE.Mesh(
     new THREE.BoxGeometry(4.3, 0.5, 4.3),
-    makePBRMaterial({color:0x303b47,roughness:0.86,metalness:0.08,normalStrength:0.6,repeat:2,seed:43,emissive:0x17232d,emissiveIntensity:0.2})
+    makePBRMaterial({color:0x41464b,roughness:0.86,metalness:0.08,normalStrength:0.6,repeat:2,seed:43,emissive:0x202124,emissiveIntensity:0.16})
   );
   base.position.y = -0.249;   // 顶面 y=0.001, 脱离地面平面(防 z-fighting)
   base.receiveShadow = true;
@@ -2012,21 +2099,21 @@ function init3D(){
   // 底台下方的浅色护边和描边，给低视角增加平台层次。
   const baseSkirt = new THREE.Mesh(
     new THREE.BoxGeometry(4.56, 0.13, 4.56),
-    makePBRMaterial({color:0x3d4c5a,roughness:0.78,metalness:0.12,normalStrength:0.55,repeat:2,seed:44,emissive:0x1a2732,emissiveIntensity:0.16})
+    makePBRMaterial({color:0x5b6065,roughness:0.78,metalness:0.12,normalStrength:0.55,repeat:2,seed:44,emissive:0x26282b,emissiveIntensity:0.12})
   );
   baseSkirt.position.y = -0.565;
   baseSkirt.receiveShadow = true;
   scene.add(baseSkirt);
   const baseSkirtEdge = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(4.57, 0.132, 4.57)),
-    new THREE.LineBasicMaterial({color:0x91a7ba,transparent:true,opacity:0.52})
+    new THREE.LineBasicMaterial({color:0xb2b5b9,transparent:true,opacity:0.58})
   );
   baseSkirtEdge.position.copy(baseSkirt.position);
   scene.add(baseSkirtEdge);
 
   // 围栏 (规则: 黑色, 高 20cm; 提亮材质+亮灰边缘线保证在黑走道上可见)
-  const fenceMat = makePBRMaterial({color:0x242a31,roughness:0.72,metalness:0.18,normalStrength:0.75,repeat:2,seed:47});
-  const fenceEdgeMat = new THREE.LineBasicMaterial({ color: 0xaab4bd, transparent: true, opacity: 0.5 });
+  const fenceMat = makePBRMaterial({color:0x5a5f64,roughness:0.72,metalness:0.18,normalStrength:0.75,repeat:2,seed:47});
+  const fenceEdgeMat = new THREE.LineBasicMaterial({ color: 0xd0d3d5, transparent: true, opacity: 0.58 });
   const mkFence = (w, h, d, x, z) => {
     const f = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), fenceMat);
     f.position.set(x, h/2 + 0.001, z);  // 底面抬离地面(防 z-fighting)
@@ -2412,6 +2499,24 @@ function projectTo2D(ev, planeY){
   if (raycaster.ray.intersectPlane(plane, hit)) return worldTo2D(hit);
   return null;
 }
+function emitDragImpacts(){
+  const events=window.__SIM_CORE?.consumeDragImpacts?.() || [];
+  for(const event of events){
+    // Pointer events can arrive faster than the renderer. Keep the stateful
+    // collision result, but throttle particles so a held mouse is readable.
+    if(visualClock-lastDragImpactFx<0.065) continue;
+    lastDragImpactFx=visualClock;
+    const p=new THREE.Vector3(event.x-CENTER,0.075,CENTER-event.y);
+    const color=event.source==='debuff' ? 0xff5b5b : 0x72e8ae;
+    collisionFx?.emit({
+      position:p, normal:{x:event.nx,y:0,z:-event.ny}, sensorType:'vision',
+      color, intensity:Math.min(2.2,0.75+event.strength*0.48),
+      life:0.48, spotSize:Math.min(0.24,0.11+event.strength*0.035),
+    });
+    if(event.target==='us') carFx.us.dust?.emit(p,{x:0,y:0.22,z:0},10);
+    if(event.target==='them') carFx.them.dust?.emit(p,{x:0,y:0.22,z:0},10);
+  }
+}
 function dragTo(ev){
   const r = cv.getBoundingClientRect();
   ndc.set((ev.clientX-r.left)/r.width*2-1, -(ev.clientY-r.top)/r.height*2+1);
@@ -2426,6 +2531,7 @@ function dragTo(ev){
     else if(k==='buff0') setObject('buff', 0, p.x-drag.dx2d, p.y-drag.dy2d);
     else if(k==='buff1') setObject('buff', 1, p.x-drag.dx2d, p.y-drag.dy2d);
     else if(k==='debuff') setObject('debuff', 0, p.x-drag.dx2d, p.y-drag.dy2d);
+    emitDragImpacts();
   }
 }
 cv.addEventListener('pointerdown', e=>{

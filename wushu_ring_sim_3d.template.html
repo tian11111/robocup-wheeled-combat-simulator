@@ -349,7 +349,7 @@
     params, US, THEM, robots, scoreBoard,
     resetAll, arm, startManual, stepSim, stepSimExt, getState, getLog,
     matchControl, beginPreparation, pauseMatch, resumeMatch, restartFor,
-    setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset,
+    setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset, consumeDragImpacts,
   };
   // 3D 主页面默认展示用户提供的实车布局；无头/API 仍保持 legacy14 兼容默认。
   setVehicleFor('us', { id:'robocup-wheeled-combat', sensors:'wheeledCombat11' });
@@ -383,6 +383,7 @@ const fxVisible = { hud:true, trails:true, vectors:true, scan:false, collisions:
 let frameDt = 0.016, visualClock = 0, trailClock = 0, sensorClock = 0;
 let replayHistory = [], replayCursor = -1, replaySlowTimer = 0, tireMarks = [], replayGhost = {us:null,them:null};
 const visualStageMemory = { us:null, them:null };
+let lastDragImpactFx = -10;
 const MAX_REPLAY_HISTORY = 180; // 最近约 3 秒，供复盘/慢放使用
 
 function showPhysicsStatus(){
@@ -465,16 +466,16 @@ function makeGroundTexture(){
   const c = document.createElement('canvas'); c.width = c.height = 512;
   const g = c.getContext('2d');
   // 场外底台顶面使用蓝灰石墨色，和黑色围栏拉开明度；走道仍保持比赛规则的黑色观感。
-  g.fillStyle = '#3b4652'; g.fillRect(0,0,512,512);
+  g.fillStyle = '#70757a'; g.fillRect(0,0,512,512);
   // 场内走道 (规则: 黑色, 宽 70cm; 加噪点纹理让黑色有质感, 3.8m → 389px)
-  g.fillStyle = '#252d36'; g.fillRect(61,61,389,389);
+  g.fillStyle = '#5d6268'; g.fillRect(61,61,389,389);
   for (let i = 0; i < 400; i++){          // 走道细微噪点(水泥感)
-    const v = 38 + Math.floor(Math.random() * 18);
+    const v = 82 + Math.floor(Math.random() * 20);
     g.fillStyle = 'rgb(' + v + ',' + (v+4) + ',' + (v+10) + ')';
     g.fillRect(61 + Math.random() * 389, 61 + Math.random() * 389, 1.4, 1.4);
   }
   // 围栏线(黑)，使用一圈蓝灰内缘避免和走道完全糊成一片。
-  g.strokeStyle = '#11161d'; g.lineWidth = 6;
+  g.strokeStyle = '#565b60'; g.lineWidth = 6;
   g.strokeRect(61,61,389,389);
   // 出发区保留一层纹理底色；实际显示由独立彩色平面、边框和箭头强化，
   // 即使材质/光照/低视角变化也不会消失。
@@ -618,8 +619,8 @@ function init3D(){
 
   scene = new THREE.Scene();
   // 场外采用蓝灰竞技场环境，和黑色围栏/走道形成层次；远处雾色与背景一致。
-  scene.background = new THREE.Color(0x566675);
-  scene.fog = new THREE.Fog(0x566675, 24, 42);
+  scene.background = new THREE.Color(0x5e6267);
+  scene.fog = new THREE.Fog(0x5e6267, 24, 42);
 
   camera = new THREE.PerspectiveCamera(55, cv.clientWidth/cv.clientHeight, 0.05, 60);
 
@@ -640,7 +641,7 @@ function init3D(){
   // 场地外环境地板：底台下方再铺一层大面积石墨蓝灰，避免场地边缘直接融入黑墙。
   const outerFloor = new THREE.Mesh(
     new THREE.PlaneGeometry(10, 10),
-    makePBRMaterial({color:0x536473,roughness:0.92,metalness:0.02,normalStrength:0.7,repeat:5,seed:39,emissive:0x19232d,emissiveIntensity:0.12})
+    makePBRMaterial({color:0x74787d,roughness:0.92,metalness:0.02,normalStrength:0.7,repeat:5,seed:39,emissive:0x202124,emissiveIntensity:0.1})
   );
   outerFloor.rotation.x = -Math.PI/2;
   outerFloor.position.y = -0.51;
@@ -650,7 +651,7 @@ function init3D(){
   // 地面 (加微弱自发光, 避免阴影区/擂台周围死黑)
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(5.2, 5.2),
-    makePBRMaterial({map:makeGroundTexture(),color:0x22262d,roughness:0.94,metalness:0.02,normalStrength:0.85,repeat:3,seed:41,emissive:0x14191f,emissiveIntensity:0.18})
+    makePBRMaterial({map:makeGroundTexture(),color:0x74787d,roughness:0.94,metalness:0.02,normalStrength:0.85,repeat:3,seed:41,emissive:0x202124,emissiveIntensity:0.1})
   );
   ground.rotation.x = -Math.PI/2;
   ground.receiveShadow = true;
@@ -671,7 +672,7 @@ function init3D(){
   // 场地底台 (规则: 底端平台 50cm — 整个场地架在 50cm 高深色基座上)
   const base = new THREE.Mesh(
     new THREE.BoxGeometry(4.3, 0.5, 4.3),
-    makePBRMaterial({color:0x303b47,roughness:0.86,metalness:0.08,normalStrength:0.6,repeat:2,seed:43,emissive:0x17232d,emissiveIntensity:0.2})
+    makePBRMaterial({color:0x41464b,roughness:0.86,metalness:0.08,normalStrength:0.6,repeat:2,seed:43,emissive:0x202124,emissiveIntensity:0.16})
   );
   base.position.y = -0.249;   // 顶面 y=0.001, 脱离地面平面(防 z-fighting)
   base.receiveShadow = true;
@@ -679,21 +680,21 @@ function init3D(){
   // 底台下方的浅色护边和描边，给低视角增加平台层次。
   const baseSkirt = new THREE.Mesh(
     new THREE.BoxGeometry(4.56, 0.13, 4.56),
-    makePBRMaterial({color:0x3d4c5a,roughness:0.78,metalness:0.12,normalStrength:0.55,repeat:2,seed:44,emissive:0x1a2732,emissiveIntensity:0.16})
+    makePBRMaterial({color:0x5b6065,roughness:0.78,metalness:0.12,normalStrength:0.55,repeat:2,seed:44,emissive:0x26282b,emissiveIntensity:0.12})
   );
   baseSkirt.position.y = -0.565;
   baseSkirt.receiveShadow = true;
   scene.add(baseSkirt);
   const baseSkirtEdge = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(4.57, 0.132, 4.57)),
-    new THREE.LineBasicMaterial({color:0x91a7ba,transparent:true,opacity:0.52})
+    new THREE.LineBasicMaterial({color:0xb2b5b9,transparent:true,opacity:0.58})
   );
   baseSkirtEdge.position.copy(baseSkirt.position);
   scene.add(baseSkirtEdge);
 
   // 围栏 (规则: 黑色, 高 20cm; 提亮材质+亮灰边缘线保证在黑走道上可见)
-  const fenceMat = makePBRMaterial({color:0x242a31,roughness:0.72,metalness:0.18,normalStrength:0.75,repeat:2,seed:47});
-  const fenceEdgeMat = new THREE.LineBasicMaterial({ color: 0xaab4bd, transparent: true, opacity: 0.5 });
+  const fenceMat = makePBRMaterial({color:0x5a5f64,roughness:0.72,metalness:0.18,normalStrength:0.75,repeat:2,seed:47});
+  const fenceEdgeMat = new THREE.LineBasicMaterial({ color: 0xd0d3d5, transparent: true, opacity: 0.58 });
   const mkFence = (w, h, d, x, z) => {
     const f = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), fenceMat);
     f.position.set(x, h/2 + 0.001, z);  // 底面抬离地面(防 z-fighting)
@@ -1079,6 +1080,24 @@ function projectTo2D(ev, planeY){
   if (raycaster.ray.intersectPlane(plane, hit)) return worldTo2D(hit);
   return null;
 }
+function emitDragImpacts(){
+  const events=window.__SIM_CORE?.consumeDragImpacts?.() || [];
+  for(const event of events){
+    // Pointer events can arrive faster than the renderer. Keep the stateful
+    // collision result, but throttle particles so a held mouse is readable.
+    if(visualClock-lastDragImpactFx<0.065) continue;
+    lastDragImpactFx=visualClock;
+    const p=new THREE.Vector3(event.x-CENTER,0.075,CENTER-event.y);
+    const color=event.source==='debuff' ? 0xff5b5b : 0x72e8ae;
+    collisionFx?.emit({
+      position:p, normal:{x:event.nx,y:0,z:-event.ny}, sensorType:'vision',
+      color, intensity:Math.min(2.2,0.75+event.strength*0.48),
+      life:0.48, spotSize:Math.min(0.24,0.11+event.strength*0.035),
+    });
+    if(event.target==='us') carFx.us.dust?.emit(p,{x:0,y:0.22,z:0},10);
+    if(event.target==='them') carFx.them.dust?.emit(p,{x:0,y:0.22,z:0},10);
+  }
+}
 function dragTo(ev){
   const r = cv.getBoundingClientRect();
   ndc.set((ev.clientX-r.left)/r.width*2-1, -(ev.clientY-r.top)/r.height*2+1);
@@ -1093,6 +1112,7 @@ function dragTo(ev){
     else if(k==='buff0') setObject('buff', 0, p.x-drag.dx2d, p.y-drag.dy2d);
     else if(k==='buff1') setObject('buff', 1, p.x-drag.dx2d, p.y-drag.dy2d);
     else if(k==='debuff') setObject('debuff', 0, p.x-drag.dx2d, p.y-drag.dy2d);
+    emitDragImpacts();
   }
 }
 cv.addEventListener('pointerdown', e=>{

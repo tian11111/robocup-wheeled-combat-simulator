@@ -9,7 +9,7 @@ global.document={getElementById:()=>({addEventListener:()=>{}}),addEventListener
 global.window={addEventListener:()=>{}};
 global.navigator={};
 
-eval(script + "\n;global.__T = global.__T || { fs, fs2, bot, opp, US, THEM, robots, blocks, buffs, deb, params, arm, resetAll, startManual, stepSim, stepSimExt, getState, getLog, setPose, setPoseFor, setObject, scenePreset, setVehicleFor, getVehicleFor, onPlatform, onStage, hangOn, fullOn, fieldGray, distToNearestEdge, toDoneFor, enterSearchFor, beginPreparation, pauseMatch, resumeMatch, restartFor };");
+eval(script + "\n;global.__T = global.__T || { fs, fs2, bot, opp, US, THEM, robots, blocks, buffs, deb, params, arm, resetAll, startManual, stepSim, stepSimExt, getState, getLog, setPose, setPoseFor, setObject, scenePreset, setVehicleFor, getVehicleFor, onPlatform, onStage, hangOn, fullOn, fieldGray, distToNearestEdge, toDoneFor, enterSearchFor, beginPreparation, pauseMatch, resumeMatch, restartFor, consumeDragImpacts };");
 const T = global.__T;
 let failures = 0;
 const assert = (cond, msg)=>{ if(cond) console.log(`  ✓ ${msg}`); else { failures++; console.log(`  ✗ FAIL: ${msg}`); } };
@@ -374,6 +374,37 @@ console.log('== 场景 26: 每车独立传感器数量/类型/布局 ==');
   assert(st.sensorLayout.us.channels.find(c=>c.id==='diag_left_rear').angle > 2,
     '传感器布局应保留安装朝向');
   T.setVehicleFor('us',before);
+}
+
+console.log('== 场景 27: 掉台能量块仍可碰撞，拖拽块可推开实体 ==');
+{
+  resetScene(42);
+  const fallen=T.buffs[0];
+  fallen.out=true; fallen.wasOn=false; fallen.x=0.48; fallen.y=1.9; fallen.vx=fallen.vy=0;
+  T.setPoseFor(T.US,0.18,1.9,0); T.US.fsm.armed=true; T.US.fsm.state='MANUAL';
+  T.THEM.fsm.armed=false; T.THEM.fsm.state='WAIT_START';
+  const fallenX=fallen.x;
+  for(let i=0;i<16;i++) T.stepSimExt(0.05,{us:{v:1.1,w:0},them:null});
+  assert(fallen.out && fallen.x>fallenX+0.01 && T.US.x<fallen.x,
+    `掉台块仍应阻挡并被推动, 实际 block=${fallen.x.toFixed(3)} car=${T.US.x.toFixed(3)}`);
+
+  const source=T.buffs[1];
+  source.x=1.15; source.y=2.0; source.vx=source.vy=0; source.dragLock=true;
+  T.setPoseFor(T.US,1.45,2.0,0);
+  const carX=T.US.x;
+  T.setObject('buff',1,1.60,2.0);
+  const carEvents=T.consumeDragImpacts();
+  assert(T.US.x>carX+0.05 && Math.hypot(T.US.vx,T.US.vy)>0.1 && carEvents.some(e=>e.target==='us'),
+    `拖拽块应推开车辆并发出事件, 实际 x=${T.US.x.toFixed(3)} speed=${Math.hypot(T.US.vx,T.US.vy).toFixed(3)}`);
+
+  source.x=1.15; source.y=1.3; source.vx=source.vy=0;
+  fallen.x=1.45; fallen.y=1.3; fallen.vx=fallen.vy=0;
+  const blockX=fallen.x;
+  T.setObject('buff',1,1.60,1.3);
+  const blockEvents=T.consumeDragImpacts();
+  assert(fallen.x>blockX+0.05 && Math.hypot(fallen.vx,fallen.vy)>0.1 && blockEvents.some(e=>e.target==='buff'),
+    `拖拽块应推开另一能量块并发出事件, 实际 x=${fallen.x.toFixed(3)} speed=${Math.hypot(fallen.vx,fallen.vy).toFixed(3)}`);
+  source.dragLock=false;
 }
 
 console.log(failures===0 ? '\n全部通过 ✔' : `\n${failures} 项失败 ✘`);

@@ -23,7 +23,7 @@ function loadCore(){
 }
 
 const api = loadCore();
-const { resetAll, stepSimExt, onPlatform } = api;
+const { resetAll, stepSimExt, onPlatform, setObject, setPoseFor, consumeDragImpacts } = api;
 const buffs = api.buffs;
 
 // objFallCheckAll 未导出: 用 stepSimExt(极小步长) 触发 (未 arm 时只跑掉台判定+wasOn 同步)
@@ -98,4 +98,28 @@ const moved = Math.hypot(b2.x - b2x, b2.y - b2y) > 0.001 || Math.hypot(b3.x - b3
 check('正常块物理无异常', true);
 
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
+// Active dragging is distinct from the passive dragLock rule above: the source
+// is kinematic, and objects along its swept path receive a bounded impulse.
+resetAll({ seed: 2 });
+const source = buffs[0];
+const target = buffs[1];
+source.x=1.15; source.y=1.9; source.vx=source.vy=0; source.dragLock=true;
+setPoseFor(api.US,1.45,1.9,0);
+const carX=api.US.x;
+setObject('buff',0,1.60,1.9);
+const carEvents=consumeDragImpacts();
+check('drag block pushes a robot and emits an impact',
+      api.US.x>carX+0.05 && Math.hypot(api.US.vx,api.US.vy)>0.1 && carEvents.some(e=>e.target==='us'),
+      `car x=${api.US.x.toFixed(3)} speed=${Math.hypot(api.US.vx,api.US.vy).toFixed(3)} events=${carEvents.length}`);
+
+source.x=1.15; source.y=1.3; source.vx=source.vy=0;
+target.x=1.45; target.y=1.3; target.vx=target.vy=0;
+const blockX=target.x;
+setObject('buff',0,1.60,1.3);
+const blockEvents=consumeDragImpacts();
+check('drag block pushes another block and emits an impact',
+      target.x>blockX+0.05 && Math.hypot(target.vx,target.vy)>0.1 && blockEvents.some(e=>e.target==='buff'),
+      `block x=${target.x.toFixed(3)} speed=${Math.hypot(target.vx,target.vy).toFixed(3)} events=${blockEvents.length}`);
+source.dragLock=false;
+console.log(`final: ${pass} passed / ${fail} failed`);
 process.exit(fail ? 1 : 0);

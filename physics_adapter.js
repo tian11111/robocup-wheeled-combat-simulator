@@ -483,18 +483,19 @@
           bridge.blocks[key] = body;
           bridge._blockMeta[key] = { body, collider, sig, kind:'block', role:key };
         }
-        const out = !!state.out;
         const bx = finite(state.x, CENTER), by = finite(state.y, CENTER);
         const platformHalf = bridge.geometry ? bridge.geometry.platformHalf : DEFAULT_PLATFORM_HALF;
         const inferredOn = Math.abs(bx - CENTER) <= platformHalf && Math.abs(by - CENTER) <= platformHalf;
         const on = state.onPlatform === undefined ? inferredOn : !!state.onPlatform;
         const p = {
           x:bx - CENTER,
-          y:out ? -10 : (on ? bridge.stepHeight : 0) + height/2,
+          // CORE's out flag means "scoring already resolved". Keep the body
+          // on the real floor so a visible fallen block remains collidable.
+          y:(on ? bridge.stepHeight : 0) + height/2,
           z:CENTER - by,
         };
         try {
-          if (typeof body.setEnabled === 'function') body.setEnabled(!out);
+          if (typeof body.setEnabled === 'function') body.setEnabled(true);
           if (typeof body.setNextKinematicTranslation === 'function') body.setNextKinematicTranslation(p);
           else if (typeof body.setTranslation === 'function') body.setTranslation(p, true);
         } catch (e) { bridge.error = `Rapier syncBlock: ${String(e && e.message || e)}`; }
