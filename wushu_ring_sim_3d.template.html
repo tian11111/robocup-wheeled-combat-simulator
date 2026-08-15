@@ -854,10 +854,11 @@ function setViewMode(mode){
 function cameraRobotState(r){
   const v=r.vehicle||DEFAULT_VEHICLE;
   const on=onPlatform(r.x,r.y);
+  const zG=(r.zG!==undefined && r.zG!==null) ? Number(r.zG) : (on?0.06:0);
   return {
     x:Number(r.x)-CENTER,
     z:CENTER-Number(r.y),
-    worldY:(on?0.06:0)+Number(v.height||0.09)/2,
+    worldY:zG+Number(v.height||0.09)/2,
     th:Number(r.th)||0,
   };
 }
@@ -885,7 +886,8 @@ function stateLightName(state){
 }
 function robotWorldPosition(r,on){
   const v=r.vehicle||DEFAULT_VEHICLE;
-  return new THREE.Vector3(Number(r.x)-CENTER,(on?0.06:0)+Number(v.height||0.09)/2,CENTER-Number(r.y));
+  const zG=(r.zG!==undefined && r.zG!==null) ? Number(r.zG) : (on?0.06:0);
+  return new THREE.Vector3(Number(r.x)-CENTER,zG+Number(v.height||0.09)/2,CENTER-Number(r.y));
 }
 function visualPoseOutsideStage(r, isOn){
   const x=Number(r.x), y=Number(r.y);
@@ -1006,25 +1008,26 @@ function sync3D(){
   const syncVehicleVisual = (group, body, r, isOn) => {
     const v = r.vehicle || DEFAULT_VEHICLE;
     const pose=visualPoseForVehicle(r,isOn,body===botBodyGroup?'us':'them');
-    group.position.set(pose.x-CENTER, (isOn?0.06:0)+v.height/2, CENTER-pose.y);
+    // 台阶 3D 姿态: zG=重心平滑沉降(消除二值瞬切), pitch/roll=CORE 四轮采样姿态。
+    const zG=(r.zG!==undefined && r.zG!==null) ? Number(r.zG) : (isOn?0.06:0);
+    group.position.set(pose.x-CENTER, zG+v.height/2, CENTER-pose.y);
     group.rotation.y = r.th;
     group.userData.visualClamped=pose.clamped;
     if(body) body.scale.set(v.length/0.26, v.height/0.09, v.width/0.26);
-    // 视觉悬挂反馈（仅显示层）：速度/角速度越大，车体轻微俯仰和颠簸，
-    // 不修改 CORE 位姿，也不伪装成真机标定数据。
     const model=group.userData.model;
     if(model){
       const bump=isOn ? Math.sin(visualClock*26+r.th*3.1)*Math.min(0.012,Math.abs(r.v||0)*0.008) : 0;
       model.position.y=bump;
-      model.rotation.z=clamp(-(r.w||0)*0.012,-0.045,0.045);
-      model.rotation.x=clamp(-(r.v||0)*0.018,-0.035,0.035);
+      // 模型前向=+X: 俯仰(pitch)=rotation.z(车头上仰), 翻滚(roll)=rotation.x(左侧上抬)。
+      model.rotation.z = Number(r.pitch)||0;
+      model.rotation.x = Number(r.roll)||0;
     }
   };
   syncVehicleVisual(botGroup, botBodyGroup, US, on);
   const onT = onPlatform(THEM.x, THEM.y);
   syncVehicleVisual(themGroup, themBodyGroup, THEM, onT);
-  if(carFx.us.shadow?.object) carFx.us.shadow.object.position.y=(on?0.066:0.006);
-  if(carFx.them.shadow?.object) carFx.them.shadow.object.position.y=(onT?0.066:0.006);
+  if(carFx.us.shadow?.object) carFx.us.shadow.object.position.y=(US.zG!==undefined?Number(US.zG):(on?0.06:0))+0.006;
+  if(carFx.them.shadow?.object) carFx.them.shadow.object.position.y=(THEM.zG!==undefined?Number(THEM.zG):(onT?0.06:0))+0.006;
   carFx.us.status?.setState(stateLightName(US.fsm.state)); carFx.them.status?.setState(stateLightName(THEM.fsm.state));
   overheadHud.us?.update({state:US.fsm.state,v:US.v,omega:US.w,gray:US.rawSens},frameDt);
   overheadHud.them?.update({state:THEM.fsm.state,v:THEM.v,omega:THEM.w,gray:THEM.rawSens},frameDt);
@@ -1211,7 +1214,8 @@ function updateStateUI(){
   subTxt.textContent=subOf(US);
   themSub.textContent=subOf(THEM);
   scUs.textContent=scoreBoard.us; scTh.textContent=scoreBoard.them;
-  const match = gameEngine ? gameEngine.referee.state().match : null;
+  // 远程对战的裁判状态属于 sim_server，不使用页面本地 GameEngine 的旧时钟。
+  const match = remote && remote.mode && remote.match ? remote.match : (gameEngine ? gameEngine.referee.state().match : null);
   const matchTimer = match ? match.timer : US.fsm.timer;
   const shownTime = match && match.phase==='PREP' ? match.prepRemaining : matchTimer;
   const m=Math.floor(shownTime/60), s=Math.floor(shownTime%60);
@@ -1289,6 +1293,7 @@ for(const [k,lab,min,max,step] of paramDefs){
   l.querySelector('input').addEventListener('input',e=>{
     params[k]=+e.target.value;
     document.getElementById('v_'+k).textContent=params[k];
+    if(remote && remote.mode) api('/params',{[k]:params[k]});
   });
 }
 
@@ -1477,7 +1482,15 @@ vehicleImportFile.addEventListener('change',()=>{
 renderVehicleFields();
 
 // ---------- 控制 ----------
-document.getElementById('btnArm').addEventListener('click', arm);
+// 本地预览与远程对战有两个独立核心；远程模式下所有比赛控制必须发往 server。
+function controlMatch(remotePath, body, localAction){
+  if(!remote || !remote.mode) return localAction();
+  api(remotePath, body).then(result=>{
+    if(result && result.error) log('[远程控制] '+result.error,'warn');
+    else pollRemote();
+  });
+}
+document.getElementById('btnArm').addEventListener('click', ()=>controlMatch('/arm',undefined,arm));
 function clearVisualHistory(){
   replayHistory.length=0; replayCursor=-1; visualClock=0; replayScrub.value=0; replayScrub.max=0; replayLabel.textContent='实时';
   visualStageMemory.us=null; visualStageMemory.them=null;
@@ -1486,11 +1499,20 @@ function clearVisualHistory(){
   trails.us?.clear(); trails.them?.clear(); sensorFx?.clear(); collisionFx?.clear();
   for(const mark of tireMarks) mark?.dispose?.(); tireMarks=[];
 }
-document.getElementById('btnReset').addEventListener('click', ()=>{ logBox.innerHTML=''; resetAll(); clearVisualHistory(); setViewMode('free'); });
-document.getElementById('btnPause').addEventListener('click', ()=> gameEngine.referee.pause('UI'));
-document.getElementById('btnResume').addEventListener('click', ()=> gameEngine.referee.resume());
-document.getElementById('btnDebug').addEventListener('click', ()=> gameEngine.referee.restart(document.getElementById('refRole').value, 'debug'));
-document.getElementById('btnRestart').addEventListener('click', ()=> gameEngine.referee.restart(document.getElementById('refRole').value, 'restart'));
+document.getElementById('btnReset').addEventListener('click', ()=>{
+  if(remote && remote.mode) return resetRemoteMatch();
+  logBox.innerHTML=''; resetAll(); clearVisualHistory(); setViewMode('free');
+});
+document.getElementById('btnPause').addEventListener('click', ()=>controlMatch('/referee/pause',{reason:'UI'},()=>gameEngine.referee.pause('UI')));
+document.getElementById('btnResume').addEventListener('click', ()=>controlMatch('/referee/resume',{},()=>gameEngine.referee.resume()));
+document.getElementById('btnDebug').addEventListener('click', ()=>{
+  const role=document.getElementById('refRole').value;
+  controlMatch('/referee/restart',{role,kind:'debug'},()=>gameEngine.referee.restart(role,'debug'));
+});
+document.getElementById('btnRestart').addEventListener('click', ()=>{
+  const role=document.getElementById('refRole').value;
+  controlMatch('/referee/restart',{role,kind:'restart'},()=>gameEngine.referee.restart(role,'restart'));
+});
 document.getElementById('btnRotL').addEventListener('click', ()=>{ bot.th=norm(bot.th+0.26); });
 document.getElementById('btnRotR').addEventListener('click', ()=>{ bot.th=norm(bot.th-0.26); });
 document.getElementById('speedGrp').addEventListener('click', e=>{
@@ -1503,12 +1525,13 @@ document.addEventListener('keydown', e=>{
   if(e.key==='Enter') arm();
   if(e.key==='r'||e.key==='R'){ logBox.innerHTML=''; resetAll(); clearVisualHistory(); setViewMode('free'); }
 });
-document.getElementById('scCenter').onclick = ()=> scenePreset('center');
-document.getElementById('scEdge').onclick = ()=> scenePreset('edge');
-document.getElementById('scFloor').onclick = ()=> scenePreset('walkway');
-document.getElementById('scHang').onclick = ()=> scenePreset('hang');
-document.getElementById('scOppOn').onclick = ()=> scenePreset('opp_on');
-document.getElementById('scOppGo').onclick = ()=> scenePreset('opp_start');
+function applyScene(preset){ controlMatch('/scene',{preset},()=>scenePreset(preset)); }
+document.getElementById('scCenter').onclick = ()=> applyScene('center');
+document.getElementById('scEdge').onclick = ()=> applyScene('edge');
+document.getElementById('scFloor').onclick = ()=> applyScene('walkway');
+document.getElementById('scHang').onclick = ()=> applyScene('hang');
+document.getElementById('scOppOn').onclick = ()=> applyScene('opp_on');
+document.getElementById('scOppGo').onclick = ()=> applyScene('opp_start');
 document.querySelectorAll('#camToolbar [data-cam]').forEach(btn=>btn.addEventListener('click',()=>setViewMode(btn.dataset.cam)));
 document.querySelectorAll('#fxToolbar [data-fx]').forEach(btn=>btn.addEventListener('click',()=>setFxVisibility(btn.dataset.fx,!fxVisible[btn.dataset.fx])));
 const replayScrub=document.getElementById('replayScrub'), replayLabel=document.getElementById('replayLabel');
@@ -1535,7 +1558,7 @@ const API_BASE = (() => {
   const configured = window.SIM_API_BASE || query || 'http://127.0.0.1:8932';
   return String(configured).replace(/\/$/, '');
 })();
-let remote = { mode: false, timer: null, lastUpload: null, lastLogLen: 0, lastOutLen: 0 };
+let remote = { mode: false, timer: null, lastUpload: null, lastLogLen: 0, lastOutLen: 0, pollInFlight: false, startInFlight: false, match: null };
 const remoteStatus = document.getElementById('remoteStatus');
 const remoteOut = document.getElementById('remoteOut');
 const remoteOutWrap = document.getElementById('remoteOutWrap');
@@ -1639,26 +1662,70 @@ document.getElementById('importPy').addEventListener('change', async e => {
   }
   e.target.value = '';
 });
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function waitForRemoteStop(timeoutMs=5000){
+  const deadline = performance.now() + timeoutMs;
+  do {
+    const status = await api('/battle/status');
+    if (status.error) return { stopped:false, error:status.error };
+    if (!status.running) return { stopped:true };
+    await sleep(150);
+  } while (performance.now() < deadline);
+  return { stopped:false, error:'上一场对战仍在停止，请稍后再试' };
+}
+async function startRemoteBattle(payload){
+  let result = await api('/battle/start', payload);
+  if (result.ok || !/已有对战进行中/.test(result.error || '')) return result;
+
+  remoteStatus.textContent = '正在停止上一场对战…';
+  remoteStatus.style.color = '#ffd166';
+  await api('/battle/stop');
+  const stopped = await waitForRemoteStop();
+  if (!stopped.stopped) return { error: stopped.error || '无法停止上一场对战' };
+  return api('/battle/start', payload);
+}
+async function resetRemoteMatch(){
+  remoteStatus.textContent='正在停止远程对战…';
+  await api('/battle/stop');
+  const stopped=await waitForRemoteStop();
+  if(!stopped.stopped){ remoteStatus.textContent='重置失败: '+(stopped.error||'对战未停止'); return; }
+  const r=await api('/reset',{vehicles:{us:getVehicleFor('us'),them:getVehicleFor('them')}});
+  if(!r.ok){ remoteStatus.textContent='重置失败: '+(r.error||''); return; }
+  remote.mode=false; remote.match=null;
+  if(remote.timer) clearInterval(remote.timer);
+  remote.timer=null; logBox.innerHTML=''; clearVisualHistory(); setViewMode('free');
+  remoteStatus.textContent='已重置 (本地预览)';
+}
+function startRemotePolling(){
+  if (remote.timer) clearInterval(remote.timer);
+  remote.timer = setInterval(pollRemote, 250);
+  pollRemote();
+}
 document.getElementById('btnRemoteStart').addEventListener('click', async () => {
-  if (remote.mode) return;
+  if (remote.mode || remote.startInFlight) return;
+  remote.startInFlight = true;
   const us = document.getElementById('selUs').value || '@example';
   const them = document.getElementById('selThem').value || 'fsm';
-  const r = await api('/battle/start', {
-    us, them, seed: 42, maxSteps: 2400,
-    // 远程 server 与当前页面是两个核心实例，必须显式传车辆 profile，
-    // 否则远程对战会退回默认车身/速度，3D 本地预览与实际比赛不一致。
-    vehicles: { us: getVehicleFor('us'), them: getVehicleFor('them') },
-  });
-  if (!r.ok){ remoteStatus.textContent = '启动失败: ' + (r.error || ''); log('[远程] ' + (r.error || ''), 'warn'); return; }
-  remote.mode = true;
-  remote.lastLogLen = logEvents.length;
-  remote.lastOutLen = 0;
-  remoteOutWrap.style.display = 'block';
-  remoteOut.innerHTML = '';
-  remoteStatus.textContent = `对战进行中 ${r.us} vs ${r.them}`;
-  remoteStatus.style.color = '#ffd166';
-  log(`[远程] 对战开始: ${r.us} vs ${r.them} (轮询渲染中)`);
-  remote.timer = setInterval(pollRemote, 200);
+  try {
+    const r = await startRemoteBattle({
+      us, them, seed: 42, maxSteps: 2400,
+      // 远程 server 与当前页面是两个核心实例，必须显式传车辆 profile，
+      // 否则远程对战会退回默认车身/速度，3D 本地预览与实际比赛不一致。
+      vehicles: { us: getVehicleFor('us'), them: getVehicleFor('them') },
+    });
+    if (!r.ok){ remoteStatus.textContent = '启动失败: ' + (r.error || ''); log('[远程] ' + (r.error || ''), 'warn'); return; }
+    remote.mode = true;
+    remote.lastLogLen = logEvents.length;
+    remote.lastOutLen = 0;
+    remoteOutWrap.style.display = 'block';
+    remoteOut.innerHTML = '';
+    remoteStatus.textContent = `对战进行中 ${r.us} vs ${r.them}`;
+    remoteStatus.style.color = '#ffd166';
+    log(`[远程] 对战开始: ${r.us} vs ${r.them} (轮询渲染中)`);
+    startRemotePolling();
+  } finally {
+    remote.startInFlight = false;
+  }
 });
 document.getElementById('btnRemoteStop').addEventListener('click', async () => {
   await api('/battle/stop');
@@ -1668,8 +1735,12 @@ document.getElementById('btnRemoteStop').addEventListener('click', async () => {
   remoteStatus.textContent = '已停止 (本地模式)';
   log('[远程] 已停止, 回到本地模式', 'warn');
 });
-function pollRemote(){
-  Promise.all([api('/state'), api('/battle/status')]).then(([st, stt]) => {
+async function pollRemote(){
+  if (remote.pollInFlight) return;
+  remote.pollInFlight = true;
+  try {
+    const stt = await api('/battle/status');
+    const st = stt && stt.state;
     if (!st || !st.robots) return;
     // 用服务器状态覆盖双车(远程渲染)
      US.x = st.robots.us.x; US.y = st.robots.us.y; US.th = st.robots.us.th;
@@ -1684,8 +1755,10 @@ function pollRemote(){
      if (st.sensors && st.sensors.them) THEM.sens = { ...st.sensors.them };
      if (st.rawSensors && st.rawSensors.them) THEM.rawSens = { ...st.rawSensors.them };
      if (st.sensorLayout && st.sensorLayout.them) THEM.sensorLayout = { ...st.sensorLayout.them };
-    US.fsm.scores.us = st.scores.us; THEM.fsm.scores.us = st.scores.them;
-    US.fsm.timer = st.timer;
+     scoreBoard.us = st.scores.us; scoreBoard.them = st.scores.them;
+     US.fsm.scores.us = st.scores.us; THEM.fsm.scores.us = st.scores.them;
+     US.fsm.timer = st.timer;
+     remote.match = st.match || null;
     if (stt){
       // 日志增量显示(服务器 logTail → 主日志)
       for (const e of stt.logTail || []){
@@ -1710,24 +1783,28 @@ function pollRemote(){
         remoteStatus.style.color = '#4da3ff';
       }
     }
-  }).catch(() => {});
+  } finally {
+    remote.pollInFlight = false;
+  }
 }
 // ---------- 主循环 ----------
 let last = performance.now();
+let lastUiPaint = 0;
 function loop(now){
   const dt = Math.min((now-last)/1000, 0.05) * params.simSpeed;
   last = now;
   frameDt = dt;
   if (!remote.mode) gameEngine.step(dt); // 3D GameEngine: FSM/RobotAPI + 规则裁判 + 物理桥
-  else if (physicsBridge) physicsBridge.step(dt); // 远程对战时服务器负责规则推进
+  // 远程对战的规则和物理均由 sim_server 推进；此处只渲染其状态，
+  // 避免浏览器侧 Rapier 每帧重复计算并与网络快照相互抢占。
   sync3D();
   updateCam();          // 应用相机状态(左键拖拽旋转/右键平移/滚轮缩放/双击复位)
   carFx.us.dust?.update(dt); carFx.them.dust?.update(dt); sensorFx?.update(dt); collisionFx?.update(dt);
   for(let i=tireMarks.length-1;i>=0;i--){ tireMarks[i]?.update(dt); if(tireMarks[i]?.object && !tireMarks[i].object.visible){ tireMarks[i].dispose?.(); tireMarks.splice(i,1); } }
   if(replayHistory.length){ replayScrub.max=Math.max(0,replayHistory.length-1); if(replayCursor<0) replayScrub.value=replayHistory.length-1; else updateReplayGhost(); }
   if(renderPipeline && renderPipeline.render) renderPipeline.render(dt); else renderer.render(scene,camera);
-  updateSensorUI();
-  updateStateUI();
+  // 文本/传感器面板逐帧改 DOM 会导致远程对战掉帧；10Hz 对读数仍足够实时。
+  if(now-lastUiPaint>=100){ updateSensorUI(); updateStateUI(); lastUiPaint=now; }
   requestAnimationFrame(loop);
 }
 

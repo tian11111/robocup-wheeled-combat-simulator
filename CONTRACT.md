@@ -106,6 +106,9 @@
 | `collisionRadius` | 车-车/车-块保守碰撞半径 | 0.04–0.6m，且不小于车身半径 |
 | `maxSpeed/maxTurnRate/accelK` | 运动上限与加速度收敛系数 | 0.05–3m/s / 0.1–12rad/s / 1–40 |
 | `mass/pushFactor` | 推挤质量与推力系数 | 0.05–10kg / 0.1–3 |
+| `wheelBase/trackWidth` | 四轮采样/台阶姿态的轴距与轮距 | 0.02–0.8m |
+| `latFrictionK/angDamping` | 侧向摩擦系数(侧滑衰减) / 碰撞打转角阻尼 | 0.5–60 / 0–40 |
+| `shovelHeight` | 铲刃离地高度（楔入判定：更低方切入对手底盘） | 0–0.3m |
 | `sensors` | 该车真实传感器 profile（通道数量/类型/布局/逻辑映射） | `wheeledCombat11` 或自定义对象 |
 
 未传字段沿用当前该车 profile；非法值按范围钳制。`frontExtent/rearExtent/sideExtent` 是防穿模的关键，不能只填车身尺寸而忽略铲子。
@@ -174,6 +177,7 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 - [ ] 实车 actuator 动作的 `_on_stage_live` 灰度确认依赖 SimDriver 分段映射，标定后需用实车采样复核
 - [ ] 视觉（buff/debuff 分类）待实车 YOLO 就位后替换 `classifyRate`
 - [x] **文件夹导入**（2026-08-12）：`POST /import-dir {name,dir,entry}` 直接引用本地文件夹入口程序（不复制，改代码即时生效），自动探测 `tools/sim_robot_main.py→main.py`；`robot_adapter.py` 自动把入口目录加入 sys.path（多文件 import 可用）；3D GUI 加"📁 导入代码文件夹"
+- [x] **动力学与传感非理想特性重构**（2026）：保留 `{v,w}` 接口与 `US/THEM/blocks/vehicle` 结构不变，原生 ES6、零外部依赖、沿用 `rng()` 确定性。①轮式驱动滑移（纵向 `accelK` 收敛 + 侧向 `latFrictionK` 衰减 + 碰撞打转 `spinOmega` 独立衰减叠加）②偏心力矩 `r×J` 撞角打转③台阶 4 轮采样 pitch/roll/zG 连续姿态（消除二值瞬切）④能量块库仑摩擦（`BLOCK_STICK_SPEED` 粘住消微滑）⑤数字红外施密特迟滞 + 灰度近地光斑 + 红外入射角 `cosθ` 衰减⑥铲子楔入（`shovelHeight` 判定，被挑车 `frontLoad→0` 推力骤降）⑦堵转过流 `isStalled`⑧指令延迟环形队列 `cmdLatencyFrames`（默认 0=零回归）。`getState().robots.<role>` 新增 `speed/omega/pitch/roll/zG/isStalled/wedgedFront/frontLoad`；3D/Rapier 读取 `zG/pitch/roll` 仅作显示。selftest 27 场景 + dragtest 10 项全绿。
 
 ## 11. 3D 渲染约束（GUI 层）
 

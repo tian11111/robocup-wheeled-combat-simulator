@@ -345,6 +345,7 @@
 const FIELD = 3.8, CENTER = 1.9, HALF = 1.2;
 const EL = CENTER - HALF, ER = CENTER + HALF;      // 擂台边 0.7 / 3.1
 const BODY = 0.16;                                  // 车身碰撞半径
+const STEP_HEIGHT = 0.06;                           // 擂台台阶高度 (m), 与 3D/Rapier 层一致
 
 // ---------- 传感器 profile（每车独立；仅决策逻辑仿真） ----------
 // 坐标约定：forward=沿车头方向(m)，lateral=车体左侧为正(m)，angle=相对车头(rad)。
@@ -472,6 +473,10 @@ const DEFAULT_VEHICLE = Object.freeze({
   shovelLength:0.04, shovelWidth:0.24,
   maxSpeed:1.5, maxTurnRate:4.0, accelK:12,
   mass:1.0, pushFactor:1.0,
+  wheelBase:0.16, trackWidth:0.18,   // 四轮采样/姿态: 轴距/轮距 (m)
+  latFrictionK:8,                    // 侧向摩擦系数 (1/s): 越大侧滑衰减越快
+  angDamping:3,                      // 角阻尼 (1/s): 碰撞打转的衰减
+  shovelHeight:0.015,                // 铲刃离地高度 (m), 用于楔入判定
   sensors:DEFAULT_SENSOR_PROFILE,
 });
 function vehicleNumber(value, fallback, lo, hi){
@@ -505,6 +510,11 @@ function normalizeVehicle(input, base){
   b.accelK = vehicleNumber(b.accelK, DEFAULT_VEHICLE.accelK, 1, 40);
   b.mass = vehicleNumber(b.mass, DEFAULT_VEHICLE.mass, 0.05, 10);
   b.pushFactor = vehicleNumber(b.pushFactor, DEFAULT_VEHICLE.pushFactor, 0.1, 3);
+  b.wheelBase = vehicleNumber(b.wheelBase, DEFAULT_VEHICLE.wheelBase, 0.02, 0.8);
+  b.trackWidth = vehicleNumber(b.trackWidth, DEFAULT_VEHICLE.trackWidth, 0.02, 0.8);
+  b.latFrictionK = vehicleNumber(b.latFrictionK, DEFAULT_VEHICLE.latFrictionK, 0.5, 60);
+  b.angDamping = vehicleNumber(b.angDamping, DEFAULT_VEHICLE.angDamping, 0, 40);
+  b.shovelHeight = vehicleNumber(b.shovelHeight, DEFAULT_VEHICLE.shovelHeight, 0, 0.3);
   const sensorInput = src.sensors===undefined ? src.sensorProfile : src.sensors;
   const sensorBase = base && base.sensors ? base.sensors : DEFAULT_SENSOR_PROFILE;
   b.sensors = normalizeSensorProfile(sensorInput===undefined ? sensorBase : sensorInput, sensorBase);
@@ -524,6 +534,15 @@ const params = {
   RECOVER_LIMIT: 3,         // 恢复次数上限
   simSpeed: 1,              // 倍速(仅 GUI 使用)
   seed: null,               // 随机种子: null=真随机, 数字=可复现
+  // ---- 动力学 / 传感非理想特性 (2026 重构) ----
+  STALL_TIME: 0.4,          // 堵转判定持续时长 (s): 指令非零但实际速度持续接近 0
+  STALL_SPEED: 0.03,        // 实际线速度低于此视为堵转 (m/s)
+  STALL_RELEASE: 0.06,      // 实际线速度高于此解除堵转 (m/s)
+  cmdLatencyFrames: 0,      // 指令延迟环形队列长度(帧), 0=关闭(零回归)
+  IR_HYST_BAND: 0.10,       // 数字红外施密特迟滞带宽(值域0-1, 围绕 IR_TRIGGER)
+  graySpotRadius: 0.025,    // 灰度近地光斑采样半径 (m)
+  BLOCK_STICK_SPEED: 0.02,  // 能量块库仑静摩擦"粘住"阈值 (m/s)
+  BLOCK_MU_K: 0.5,          // 能量块库仑动摩擦系数 (无量纲)
 };
 
 // ---------- 可复现随机 ----------
@@ -553,6 +572,13 @@ function mkRobot(cfg){
     name: cfg.name, color: cfg.color, headColor: cfg.headColor,
     x: cfg.x, y: cfg.y, th: cfg.th, v:0, w:0, vx:0, vy:0,
     vehicle, r:vehicle.collisionRadius,
+    // 动力学运行态 (2026 重构): omega=实际横摆角速度, spinOmega=碰撞打转衰减, zG/pitch/roll=台阶 3D 姿态,
+    // frontLoad=前轮法向载荷(铲子楔入用), cmdQueue/cmdV/cmdW=指令延迟环形队列, irHyst=红外迟滞状态
+    omega:0, spinOmega:0, zG:0, pitch:0, roll:0,
+    isStalled:false, stallT:0,
+    wedgedFront:false, frontLoad:1,
+    cmdQueue:[], cmdV:0, cmdW:0,
+    irHyst:{},
     wasOn:false, dropPending:false,
     fsm: {
       state:S.WAIT, action:'等待发令', armed:false, manual:false, timer:120,
@@ -644,23 +670,28 @@ function distToNearestEdge(x,y){
 function irProbeFor(r, ox,oy,ang,half,range,inclEdge,inclFence){
   let best=null;
   const targets = blocks.concat([other(r)]);
+  const beamX = Math.cos(ang), beamY = Math.sin(ang);
   for(const o of targets){
     const dx=o.x-ox, dy=o.y-oy, d=Math.hypot(dx,dy);
     if(d>range+o.r) continue;
     const a=norm(Math.atan2(dy,dx)-ang);
     if(Math.abs(a)>half+Math.asin(Math.min(1,o.r/Math.max(0.05,d)))) continue;
     const dd=d-o.r;
-    if(!best||dd<best.d) best={d:dd, obj:o};
+    // 入射角余弦衰减: 圆形目标(能量块)最近点法线沿径向 → cosθ≈1;
+    // 对手按矩形车身取朝向传感器的一面法线 → 倾斜入射时 cosθ<1 反射减弱。
+    let atten = 1;
+    if(o.vehicle) atten = robotFaceCos(o, ox, oy, beamX, beamY);
+    if(!best||dd<best.d) best={d:dd, obj:o, atten:atten};
   }
   if(inclEdge && !onPlatform(ox,oy)){          // 从台下探测台沿
     for(let s=0.05; s<=range; s+=0.05){
       const px=ox+Math.cos(ang)*s, py=oy+Math.sin(ang)*s;
-      if(onPlatform(px,py)){ if(!best||s<best.d) best={d:s, obj:null}; break; }
+      if(onPlatform(px,py)){ if(!best||s<best.d) best={d:s, obj:null, atten:1}; break; }
     }
   }
   if(inclFence){                                // 围栏(后向)
     const s=fenceDist(ox,oy,ang,range);
-    if(s!=null && (!best||s<best.d)) best={d:s, obj:null};
+    if(s!=null && (!best||s<best.d)) best={d:s, obj:null, atten:1};
   }
   return best;
 }
@@ -681,7 +712,23 @@ function wallProbe(px,py,ang,range){
   }
   return null;
 }
-const irVal = (pr, range)=> pr==null? 0 : clamp(1 - pr.d/range, 0, 1);
+// 对手矩形车身的"朝向传感器那一面"的外法线, 用于红外入射角余弦衰减。
+function robotFaceCos(o, ox, oy, beamX, beamY){
+  const c=Math.cos(o.th), s=Math.sin(o.th);
+  const dx=ox-o.x, dy=oy-o.y;
+  const lx=dx*c+dy*s;                       // 传感器在对手车身前向坐标
+  const ly=-dx*s+dy*c;                      // 传感器在对手车身左侧坐标
+  let fnx, fny;
+  if(Math.abs(lx) >= Math.abs(ly)){         // 前/后面
+    const sg = lx>=0 ? 1 : -1;
+    fnx = sg*c; fny = sg*s;
+  } else {                                   // 左/右侧面
+    const sg = ly>=0 ? 1 : -1;
+    fnx = -sg*s; fny = sg*c;
+  }
+  return Math.max(0, Math.abs(beamX*fnx + beamY*fny));
+}
+const irVal = (pr, range)=> pr==null? 0 : clamp(((pr.atten==null?1:pr.atten)*(1 - pr.d/range)), 0, 1);
 
 function sensorPointFor(r,ch){
   return {
@@ -710,12 +757,40 @@ function edgeProbeFor(r,ch,p){
   for(const cdt of candidates){ if(cdt && (!best || cdt.d<best.d)) best=cdt; }
   return best;
 }
+// 灰度近地圆形光斑加权采样: 单点采样 → 以传感器点为圆心的区域加权平均。
+// 确定性采样(中心 + 四个方向边缘点), 归一化取均值, 平滑边缘/斑点的阶跃。
+function graySpotSample(x, y){
+  const R = Number(params.graySpotRadius) || 0.025;
+  const pts = [[0,0],[R,0],[-R,0],[0,R],[0,-R]];
+  let sum = 0;
+  for(const [dx,dy] of pts) sum += fieldGray(x + dx, y + dy);
+  return sum / pts.length;
+}
+// 施密特触发器(迟滞滤波): 数字红外二值输出, 进入阈值 Don 与释放阈值 Doff 分离,
+// 避免临界距离信号高频抖动 (值≥on 触发, 值≤off 释放, 中间保持)。
+function irHysteresis(r, id, value){
+  const band = Number(params.IR_HYST_BAND) || 0.10;
+  const trig = Number(params.IR_TRIGGER) || 0.35;
+  const on = trig + band;
+  const off = Math.max(0, trig - band);
+  const st = r.irHyst[id] || (r.irHyst[id] = { state: 0 });
+  if(value >= on) st.state = 1;
+  else if(value <= off) st.state = 0;
+  return st.state;
+}
+// 连续距离/地面/沿红外做值级迟滞(死区): 变化小于死区时保持上一值, 抑制微小抖动。
+function valueHysteresis(r, id, value){
+  const band = (Number(params.IR_HYST_BAND) || 0.10) * 0.2;
+  const st = r.irHyst[id] || (r.irHyst[id] = { value: value });
+  if(Math.abs(value - st.value) > band) st.value = value;
+  return st.value;
+}
 function sampleSensorChannelFor(r,ch){
   const p=sensorPointFor(r,ch), ang=sensorAngleFor(r,ch);
   const range=Number(ch.range)||0.9, half=Number(ch.fov)||0.35;
   let value=0, probe=null;
   if(ch.type==='gray'){
-    value=fieldGray(p.x,p.y);
+    value=graySpotSample(p.x,p.y);                    // 近地圆形区域加权采样
   } else if(ch.type==='ir_ground'){
     // 铲下红外的决策语义：台面/地面反射=1，悬空=0；不假设所有车都有同一组通道。
     value=onPlatform(p.x,p.y)?1:0;
@@ -739,9 +814,11 @@ function sampleSensorChannelFor(r,ch){
       const sp=frontPt(r,0.25);
       value=Math.max(value,onPlatform(sp.x,sp.y)?1:0.12);
     }
-    if(ch.type==='digital') value=value>0.35?1:0;
   }
   value += (rng()*2-1)*sensorNoiseFor(ch);
+  // 非理想特性滤波: 数字红外施密特二值 / 连续距离红外值级迟滞(死区)。
+  if(ch.type==='digital') value = irHysteresis(r, ch.id, value);
+  else if(ch.type==='ir_distance' || ch.type==='ir_ground' || ch.type==='ir_edge') value = valueHysteresis(r, ch.id, value);
   return { value:clampSensorValue(ch,value), probe };
 }
 function logicalSpec(profile,key){
@@ -1149,7 +1226,8 @@ function stageWall(r, px, py){
     { nx:1,  ny:0,  axis:'x', boundary:EL },                 // 西边，向东入台
     { nx:-1, ny:0,  axis:'x', boundary:ER },                 // 东边，向西入台
   ];
-  const desiredVx = r.v*Math.cos(r.th), desiredVy = r.v*Math.sin(r.th);
+  const vCmd = (r.cmdV !== undefined && r.cmdV !== null) ? r.cmdV : r.v;
+  const desiredVx = vCmd*Math.cos(r.th), desiredVy = vCmd*Math.sin(r.th);
   const contacts=[];
   for(const wall of walls){
     const coord0 = wall.axis==='x' ? px : py;
@@ -1232,6 +1310,84 @@ function bodyMass(o){
   const configured=o && o.vehicle ? o.vehicle.mass : o && o.mass;
   return Math.max(0.05, Number.isFinite(Number(configured)) ? Number(configured) : (o && o.kind ? 0.30 : 1));
 }
+// ---------- 轮式驱动动力学辅助 (2026 重构) ----------
+// 转动惯量: 按车身矩形 I = m(L²+W²)/12 估算 (用于偏心力矩 Δω)
+function momentInertia(r){
+  const v = r.vehicle || DEFAULT_VEHICLE;
+  const m = bodyMass(r);
+  const L = Number(v.length) || 0.26, W = Number(v.width) || 0.26;
+  return Math.max(1e-6, m*(L*L + W*W)/12);
+}
+// 车身矩形上离世界点 (px,py) 最近的点 (用于接触点力臂)
+function closestPointOnRobot(r, px, py){
+  const v = r.vehicle || DEFAULT_VEHICLE;
+  const c = Math.cos(r.th), s = Math.sin(r.th);
+  const dx = px - r.x, dy = py - r.y;
+  const lx = dx*c + dy*s;                       // 车身前向坐标
+  const ly = -dx*s + dy*c;                      // 车身左侧坐标
+  const cl = clamp(lx, -v.rearExtent, v.frontExtent);
+  const ct = clamp(ly, -v.sideExtent, v.sideExtent);
+  return { x: r.x + cl*c - ct*s, y: r.y + cl*s + ct*c };
+}
+// 对接触点力臂施加角冲量: (Jx,Jy) 为作用在 r 上的冲量向量, (leverX,leverY) 为力臂。
+// 碰撞打转作为独立 spinOmega 状态衰减, 叠加在指令横摆之上(指令横摆仍瞬时响应)。
+function applyContactTorque(r, Jx, Jy, leverX, leverY){
+  if(!r || !r.vehicle) return;                 // 能量块无车身矩形, 不产生打转
+  const I = momentInertia(r);
+  const tau = leverX*Jy - leverY*Jx;           // 2D 叉积 r × J
+  r.spinOmega = (Number(r.spinOmega)||0) + tau/I;
+}
+// 台阶高度: 台上 0.06 / 台下 0 (由 4 轮位置采样做连续姿态)
+function stageHeightAt(x,y){ return onPlatform(x,y) ? STEP_HEIGHT : 0; }
+// 台阶 3D 姿态: 4 轮位置采样台阶高度 → 最小二乘平面 → pitch/roll/重心平滑沉降
+function computeRobotPose(r, dt){
+  const v = r.vehicle || DEFAULT_VEHICLE;
+  const c = Math.cos(r.th), s = Math.sin(r.th);
+  const wb = (Number(v.wheelBase)||0.16)/2;
+  const tw = (Number(v.trackWidth)||0.18)/2;
+  const h = (fx, ly) => {
+    const wx = r.x + fx*c - ly*s;
+    const wy = r.y + fx*s + ly*c;
+    return stageHeightAt(wx, wy);
+  };
+  const hFL = h(wb, tw), hFR = h(wb, -tw), hRL = h(-wb, tw), hRR = h(-wb, -tw);
+  const targetZG = (hFL + hFR + hRL + hRR)/4;
+  const frontAvg = (hFL + hFR)/2, rearAvg = (hRL + hRR)/2;
+  const leftAvg = (hFL + hRL)/2, rightAvg = (hFR + hRR)/2;
+  const targetPitch = Math.atan((frontAvg - rearAvg)/(2*wb));   // 车头上仰为正
+  const targetRoll  = Math.atan((leftAvg  - rightAvg)/(2*tw));   // 左侧上抬为正
+  const k = 1 - Math.exp(-12*dt);                                // 重心平滑沉降
+  r.zG = (Number(r.zG)||0) + (targetZG - (Number(r.zG)||0))*k;
+  r.pitch = (Number(r.pitch)||0) + (targetPitch - (Number(r.pitch)||0))*k;
+  r.roll = (Number(r.roll)||0) + (targetRoll - (Number(r.roll)||0))*k;
+}
+// 堵转/电流过载检测: 指令非零但实际线速度持续接近 0 → isStalled
+function updateStall(r, dt){
+  const commanded = Math.abs(r.v) > 0.05;
+  const actual = Math.hypot(r.vx, r.vy);
+  if(commanded && actual < (params.STALL_SPEED||0.03)){
+    r.stallT = (r.stallT||0) + dt;
+    if(r.stallT >= (params.STALL_TIME||0.4)) r.isStalled = true;
+  } else {
+    r.stallT = 0;
+    if(!commanded || actual > (params.STALL_RELEASE||0.06)) r.isStalled = false;
+  }
+}
+// 指令延迟环形队列: 模拟"传感器采集→主控运算→电机响应"的时钟周期差。
+// cmdLatencyFrames=0 时等价直通 (零回归)。
+function applyCommandLatency(r){
+  const n = Math.max(0, Math.floor(Number(params.cmdLatencyFrames)||0));
+  if(n === 0){ r.cmdV = r.v; r.cmdW = r.w; return; }
+  if(!Array.isArray(r.cmdQueue)) r.cmdQueue = [];
+  r.cmdQueue.push({ v: r.v, w: r.w });
+  if(r.cmdQueue.length > n){
+    const c = r.cmdQueue.shift();
+    r.cmdV = c.v; r.cmdW = c.w;
+  } else {
+    r.cmdV = 0; r.cmdW = 0;                    // 管线未满: 电机尚未收到指令
+  }
+}
+
 function separatePair(a, b, nx, ny, overlap){
   if(!(overlap>0)) return;
   const invA=1/bodyMass(a), invB=1/bodyMass(b), total=invA+invB;
@@ -1273,29 +1429,75 @@ function resolveRobotBlockCollision(r, o, px, py){
   markBlockContact(o, r);
   separatePair(r,o,nx,ny,overlap);
   const push=clamp(Number(r.vehicle?.pushFactor)||1,0.1,3);
-  applyPairImpulse(r,o,nx,ny,0.08,push);
+  const impulse=applyPairImpulse(r,o,nx,ny,0.08,push);
+  // 偏心力矩: 接触点取车身矩形上离块最近的点, 力臂 = 接触点 - 质心 → 撞角打转
+  const cp = closestPointOnRobot(r, o.x, o.y);
+  applyContactTorque(r, -nx*impulse, -ny*impulse, cp.x - r.x, cp.y - r.y);
   return true;
 }
 function resolveBlockPair(a,b){
   if(a.dragLock || b.dragLock) return false;
   const dx=b.x-a.x, dy=b.y-a.y, R=a.r+b.r, d=Math.hypot(dx,dy);
-  if(!(d<R)) return false;
+  const gap=0.001;
+  if(!(d<R+gap)) return false;
   const nx=d>1e-9?dx/d:1, ny=d>1e-9?dy/d:0;
-  separatePair(a,b,nx,ny,R-d);
+  separatePair(a,b,nx,ny,Math.max(0,R+gap-d));
   applyPairImpulse(a,b,nx,ny,0.06,1);
   return true;
 }
+function settleBlockPairs(){
+  // Position-based iterations remove the small residual overlap left when two
+  // blocks are pushed in the same frame. Four passes are ample for three
+  // blocks and keep the result deterministic.
+  for(let pass=0;pass<4;pass++){
+    let moved=false;
+    for(let i=0;i<blocks.length;i++) for(let j=i+1;j<blocks.length;j++){
+      moved=resolveBlockPair(blocks[i],blocks[j]) || moved;
+    }
+    if(!moved) break;
+  }
+  for(const block of blocks) if(!block.dragLock) keepBlockInsideFence(block);
+}
 function motionFor(r, dt){
   const vehicle = r.vehicle || DEFAULT_VEHICLE;
+  // 控制指令限幅 (保持原有 {v,w} 接口不变)
   r.v = clamp(r.v, -vehicle.maxSpeed, vehicle.maxSpeed);
   r.w = clamp(r.w, -vehicle.maxTurnRate, vehicle.maxTurnRate);
-  r.th += r.w*dt;
+  // 指令延迟环形队列: 模拟传感器采集/主控运算/电机响应的时钟周期差
+  applyCommandLatency(r);
+
+  // ---- 轮式驱动动力学 (车身坐标系) ----
+  // 将上一帧世界速度投影回车身坐标: 纵向 vF(车头)、侧向 vL(左)、碰撞打转 spinOmega。
+  const th0 = r.th;
+  const c0 = Math.cos(th0), s0 = Math.sin(th0);
+  let vF = r.vx*c0 + r.vy*s0;              // 纵向速度
+  let vL = -r.vx*s0 + r.vy*c0;             // 侧向速度
+  let spin = Number(r.spinOmega) || 0;     // 碰撞偏心力矩产生的打转(衰减)
+  const vCmd = Number(r.cmdV) || 0;
+  const wCmd = Number(r.cmdW) || 0;
+
+  // 纵向向指令加速收敛(accelK); 侧向按侧偏抗力衰减(滑移); 碰撞打转按角阻尼衰减。
+  const kAcc = 1 - Math.exp(-(vehicle.accelK||ACCEL_K)*dt);
+  const latF = Math.exp(-(vehicle.latFrictionK||8)*dt);
+  const angF = Math.exp(-(vehicle.angDamping||3)*dt);
+  // 铲子楔入: 前轮被垫起 → 前轮法向正压力 N→0 → 驱动推力急剧下降。
+  const frontLoad = Number(r.frontLoad) || 1;
+  const thrust = 0.2 + 0.8*frontLoad;
+  vF += (vCmd - vF)*kAcc*thrust;
+  vL *= latF;
+  spin *= angF;
+
+  // 指令横摆瞬时响应(wCmd) + 碰撞打转(spin)衰减叠加 → 实际横摆角速度。
+  const omega = wCmd + spin;
+  r.th += omega*dt;
+  // 车身速度 → 世界速度
+  const c = Math.cos(r.th), s = Math.sin(r.th);
+  r.vx = vF*c - vL*s;
+  r.vy = vF*s + vL*c;
+  r.omega = omega;                         // 实际横摆角速度(供观测)
+  r.spinOmega = spin;                      // 发布给碰撞力矩累加
+
   const px = r.x, py = r.y;    // 旧位置 (台沿穿越判定)
-  // 2026-08-14 加速度限制: 实际速度向目标速度平滑收敛(启动/停止有过渡, 移动更真实)
-  const tvx = r.v*Math.cos(r.th), tvy = r.v*Math.sin(r.th);
-  const k = 1 - Math.exp(-(vehicle.accelK||ACCEL_K)*dt);
-  r.vx += (tvx - r.vx)*k;
-  r.vy += (tvy - r.vy)*k;
   r.x += r.vx*dt; r.y += r.vy*dt;
   stageWall(r, px, py);        // 台壁阻挡: 斜撞滑行 / 垂直+速度登台
   const B=0.12;
@@ -1308,19 +1510,31 @@ function motionFor(r, dt){
   // still solid on the walkway and can be pushed into the perimeter fence.
   for(const o of blocks){
     if(o.dragLock) continue;
+    // 拖拽运动学控制: o 正与某拖拽中的块接触时, 其位置由 pushDraggedBlock
+    // 瞬移管理, 本步冻结物理(跳过碰撞/速度积分/摩擦)并把速度清零——避免
+    // 冻结速度在拖拽块微动离开冻结半径时被"爆发式"积分, 导致目标块抽搐。
+    // 松手后 dragLock=false 物理自动恢复。
+    const dragControlled = blocks.some(d => d.dragLock && Math.hypot(d.x-o.x, d.y-o.y) < (d.r||0.075) + (o.r||0.075) + 0.02);
+    if(dragControlled){ o.vx = 0; o.vy = 0; continue; }
     resolveRobotBlockCollision(r,o,px,py);
     o.x+=o.vx*dt; o.y+=o.vy*dt;
-    const fric=Math.exp(-2.2*dt); o.vx*=fric; o.vy*=fric;
-    const spd=Math.hypot(o.vx,o.vy);
+    // 库仑摩擦: 低速粘住(消除无限微滑), 高速库仑动摩擦 + 指数背压。
+    let spd=Math.hypot(o.vx,o.vy);
+    if(spd < (params.BLOCK_STICK_SPEED||0.02)){ o.vx=0; o.vy=0; }
+    else {
+      const fric=Math.exp(-2.2*dt); o.vx*=fric; o.vy*=fric;
+      const muK = (params.BLOCK_MU_K||0.5)*9.81*dt;
+      spd = Math.hypot(o.vx,o.vy);
+      if(spd > muK){ const sc=(spd-muK)/spd; o.vx*=sc; o.vy*=sc; }
+      else { o.vx=0; o.vy=0; }
+    }
     if(spd>2.4){ o.vx*=2.4/spd; o.vy*=2.4/spd; }
     keepBlockInsideFence(o);
   }
   // Blocks exchange a small impulse too, including blocks that left the stage.
   // A dragged source is handled directly by pushDraggedBlock below.
-  for(let i=0;i<blocks.length;i++) for(let j=i+1;j<blocks.length;j++){
-    resolveBlockPair(blocks[i],blocks[j]);
-  }
-  // 对另一台车: 恢复系数 e=0.3 的法向交换 + 切向摩擦 + 对称分离
+  settleBlockPairs();
+  // 对另一台车: 恢复系数 e=0.3 的法向交换 + 切向摩擦 + 对称分离 + 偏心力矩 + 铲子楔入
   const o = other(r);
   const dx=o.x-r.x, dy=o.y-r.y, d=Math.hypot(dx,dy)||0.001;
   const R = r.r + o.r;
@@ -1345,6 +1559,11 @@ function motionFor(r, dt){
       const impulse = rel*(1+E)*push/(invR+invO);
       r.vx -= nx*impulse*invR; r.vy -= ny*impulse*invR;
       o.vx += nx*impulse*invO; o.vy += ny*impulse*invO;
+      // 偏心力矩: 两车各自接触点力臂产生 Δω (撞角打转, 不再只交换线速度)
+      const cpR = closestPointOnRobot(r, o.x, o.y);
+      applyContactTorque(r, -nx*impulse, -ny*impulse, cpR.x - r.x, cpR.y - r.y);
+      const cpO = closestPointOnRobot(o, r.x, r.y);
+      applyContactTorque(o, nx*impulse, ny*impulse, cpO.x - o.x, cpO.y - o.y);
       // 切向摩擦: 碰撞时两车侧向速度相互衰减(车身打滑感)
       const tx=-ny, ty=nx;
       const rt = r.vx*tx + r.vy*ty;
@@ -1352,8 +1571,29 @@ function motionFor(r, dt){
       const ft = (rt-ot)*0.2;
       r.vx -= tx*ft; r.vy -= ty*ft;
       o.vx += tx*ft; o.vy += ty*ft;
+      // 铲子楔入 (Shovel Wedging): 正面对冲时, 铲刃更低的一方切入对手底盘,
+      // 被挑车辆前轮法向正压力 N→0 → 前轮驱动推力丧失(实车被铲起推下擂台)。
+      const facing = Math.abs(norm(r.th - o.th));
+      if(facing > Math.PI*0.6){
+        const rBlade = (Number(r.zG)||0) + (Number(r.vehicle.shovelHeight)||0);
+        const oBlade = (Number(o.zG)||0) + (Number(o.vehicle.shovelHeight)||0);
+        if(Math.abs(rBlade - oBlade) > 0.004){
+          const upper = rBlade > oBlade ? r : o;   // 铲刃更高的一方被垫起
+          upper.wedgedFront = true;
+        }
+      }
     }
   }
+
+  // 堵转/电流过载检测
+  updateStall(r, dt);
+
+  // 台阶 3D 姿态 (4 轮采样 → pitch/roll/zG 平滑沉降)
+  computeRobotPose(r, dt);
+
+  // 前轮载荷恢复: 楔入解除后平滑回升到 1 (被挑车辆恢复推力)
+  const targetLoad = r.wedgedFront ? 0 : 1;
+  r.frontLoad = (Number(r.frontLoad)||1) + (targetLoad - (Number(r.frontLoad)||1))*(1 - Math.exp(-8*dt));
 }
 function motion(dt){ motionFor(US, dt); }
 
@@ -1552,6 +1792,8 @@ function stepSimExt(d, acts){
     if(act) continue;
     if(r.fsm.armed && r.fsm.state!==S.DONE) fsmTickFor(r, d);
   }
+  // 每步先清空楔入标记, 由本帧碰撞重新判定 (碰撞只在车-车接触时置位)
+  for(const r of robots){ r.wedgedFront = false; }
   for(const r of robots){
     if(r.fsm.armed || r.fsm.manual) motionFor(r, d);
   }
@@ -1610,6 +1852,10 @@ function resetAll(opts){
   deb.x=1.6; deb.y=2.4;
   for(const r of robots){
     r.v=r.w=0; r.vx=0; r.vy=0;   // 2026-08-14: 加速度限制下 vx/vy 是累加状态, 必须重置(否则残留速度破坏确定性)
+    r.omega=0; r.spinOmega=0; r.zG=stageHeightAt(r.x,r.y); r.pitch=0; r.roll=0;   // 台阶 3D 姿态
+    r.isStalled=false; r.stallT=0;
+    r.wedgedFront=false; r.frontLoad=1;
+    r.cmdQueue=[]; r.cmdV=0; r.cmdW=0; r.irHyst={};
     const st=r.fsm;
     st.state=S.WAIT; st.armed=false; st.manual=false; st.timer=120; st.simT=0;
     st.scores.us=0; st.scores.them=0;
@@ -1647,7 +1893,7 @@ function setVehicleFor(role, patch){
 function getVehicleFor(role){
   return cloneVehicle((role==='them' ? THEM : US).vehicle);
 }
-function setPoseFor(r, x, y, th){ r.x=clamp(x,0.05,3.75); r.y=clamp(y,0.05,3.75); r.th=norm(th||0); r.v=r.w=0; r.vx=0; r.vy=0; }
+function setPoseFor(r, x, y, th){ r.x=clamp(x,0.05,3.75); r.y=clamp(y,0.05,3.75); r.th=norm(th||0); r.v=r.w=0; r.vx=0; r.vy=0; r.omega=0; r.spinOmega=0; r.zG=stageHeightAt(r.x,r.y); r.pitch=0; r.roll=0; r.wedgedFront=false; r.frontLoad=1; }
 function setPose(x,y,th){ setPoseFor(US, x, y, th); }
 function queueDragImpact(source, target, x, y, nx, ny, strength){
   dragImpactEvents.push({
@@ -1661,25 +1907,58 @@ function consumeDragImpacts(){ return dragImpactEvents.splice(0,dragImpactEvents
 function pushDraggedBlock(source, oldX, oldY){
   const dx=source.x-oldX, dy=source.y-oldY, distance=Math.hypot(dx,dy);
   if(distance<1e-6) return;
-  const dirX=dx/distance, dirY=dy/distance;
+  const rawX=dx/distance, rawY=dy/distance;
+  // Pointer updates can be sub-millimetre and noisy. Smooth only the contact
+  // normal, while keeping source position exactly under the pointer.
+  let dirX=rawX, dirY=rawY;
+  const prevX=Number(source.dragDirX), prevY=Number(source.dragDirY);
+  if(Number.isFinite(prevX) && Number.isFinite(prevY)){
+    const blend=clamp(distance/0.028,0.22,0.72);
+    const mixedX=prevX*(1-blend)+rawX*blend;
+    const mixedY=prevY*(1-blend)+rawY*blend;
+    const mixedLength=Math.hypot(mixedX,mixedY);
+    if(mixedLength>1e-6){ dirX=mixedX/mixedLength; dirY=mixedY/mixedLength; }
+  }
+  source.dragDirX=dirX; source.dragDirY=dirY;
   const targets=[...robots.filter(r=>!r.dragLock),...blocks.filter(o=>o!==source&&!o.dragLock)];
+  const candidates=[];
   for(const target of targets){
     const radius=source.r+(target.r||0.075);
     const hit=sweptCircleContact(oldX,oldY,source.x,source.y,target.x,target.y,radius);
-    const finalDistance=Math.hypot(target.x-source.x,target.y-source.y);
-    if(!hit && finalDistance>=radius) continue;
-    // Dragging is kinematic input: move the target ahead of the source and
-    // retain a capped impulse so it continues moving after pointer release.
-    const pushDistance=Math.max(0,radius-finalDistance)+Math.min(distance,0.12);
-    target.x=clamp(source.x+dirX*(radius+0.002),0.12,3.68);
-    target.y=clamp(source.y+dirY*(radius+0.002),0.12,3.68);
-    const speed=Math.min(2.4,0.45+distance*18);
-    target.vx=(target.vx||0)+dirX*speed;
-    target.vy=(target.vy||0)+dirY*speed;
-    const targetSpeed=Math.hypot(target.vx,target.vy);
-    if(targetSpeed>2.4){ target.vx*=2.4/targetSpeed; target.vy*=2.4/targetSpeed; }
-    queueDragImpact(source,target,(source.x+target.x)/2,(source.y+target.y)/2,dirX,dirY,
-      Math.max(0.4,pushDistance*12+speed*0.35));
+    const relX=target.x-source.x, relY=target.y-source.y;
+    const along=relX*dirX+relY*dirY;
+    const lateral=Math.abs(relX*dirY-relY*dirX);
+    const overlap=Math.hypot(relX,relY)<radius+0.001;
+    // Keep candidates on a narrow ray in front of the source. Once the first
+    // body is hit, later bodies form a push chain instead of sharing one point.
+    if(hit || overlap || (along>=0 && lateral<=radius+0.035)){
+      candidates.push({ target, radius, hit, overlap, lateral, along:hit&&along<0?0:along });
+    }
+  }
+  candidates.sort((a,b)=>a.along-b.along);
+  let engaged=false, previousCentre=0, previousRadius=source.r;
+  for(const entry of candidates){
+    const chainReach=previousCentre+previousRadius+entry.radius+0.001;
+    if(!engaged){
+      if(!entry.hit && !entry.overlap) continue;
+      engaged=true;
+    } else if(entry.along>chainReach+0.012 || entry.lateral>previousRadius+entry.radius+0.035){
+      continue;
+    }
+    const centreDistance=chainReach;
+    const target=entry.target, beforeX=target.x, beforeY=target.y;
+    target.x=clamp(source.x+dirX*centreDistance,0.12,3.68);
+    target.y=clamp(source.y+dirY*centreDistance,0.12,3.68);
+    // Kinematic push contact owns the target while it is in the chain. Do not
+    // accumulate velocity that would fight the next pointer position.
+    target.vx=0; target.vy=0;
+    const displacement=Math.hypot(target.x-beforeX,target.y-beforeY);
+    if(displacement>1e-5){
+      queueDragImpact(source,target,(source.x+target.x)/2,(source.y+target.y)/2,dirX,dirY,
+        Math.max(0.4,Math.min(2.4,displacement*16+distance*5)));
+    }
+    previousCentre=centreDistance;
+    previousRadius=entry.radius;
   }
 }
 function setObject(kind, idx, x, y){
@@ -1703,6 +1982,9 @@ function scenePreset(name){
 function getState(){
   const rState = r => ({
     x:+r.x.toFixed(4), y:+r.y.toFixed(4), th:+r.th.toFixed(4), v:+r.v.toFixed(4), w:+r.w.toFixed(4),
+    speed:+Math.hypot(r.vx,r.vy).toFixed(4), omega:+Number(r.omega||0).toFixed(4),
+    pitch:+Number(r.pitch||0).toFixed(4), roll:+Number(r.roll||0).toFixed(4), zG:+Number(r.zG||0).toFixed(4),
+    isStalled:!!r.isStalled, wedgedFront:!!r.wedgedFront, frontLoad:+Number(r.frontLoad||1).toFixed(3),
     vehicle:cloneVehicle(r.vehicle),
     onPlatform:onStage(r), hang:hangOn(r),
     state:r.fsm.state, action:r.fsm.action,
@@ -1747,6 +2029,8 @@ if (typeof module !== 'undefined' && module.exports){
     matchControl, beginPreparation, pauseMatch, resumeMatch, restartFor,
     setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset, consumeDragImpacts,
     onPlatform, onStage, hangOn, fullOn, fieldGray, distToNearestEdge,
+    stageHeightAt, computeRobotPose, momentInertia, closestPointOnRobot, robotFaceCos,
+    irHysteresis, valueHysteresis, graySpotSample, updateStall, applyCommandLatency,
     log, logFor, setSeed, enterSearchFor, toDoneFor, driveToward, rotateTo,
     SENSOR_PRESETS, SENSOR_LOGICAL_KEYS, DEFAULT_SENSOR_PROFILE, SENSOR_COMPAT_PROFILE, USER_SENSOR_PROFILE,
   };
@@ -2273,10 +2557,11 @@ function setViewMode(mode){
 function cameraRobotState(r){
   const v=r.vehicle||DEFAULT_VEHICLE;
   const on=onPlatform(r.x,r.y);
+  const zG=(r.zG!==undefined && r.zG!==null) ? Number(r.zG) : (on?0.06:0);
   return {
     x:Number(r.x)-CENTER,
     z:CENTER-Number(r.y),
-    worldY:(on?0.06:0)+Number(v.height||0.09)/2,
+    worldY:zG+Number(v.height||0.09)/2,
     th:Number(r.th)||0,
   };
 }
@@ -2304,7 +2589,8 @@ function stateLightName(state){
 }
 function robotWorldPosition(r,on){
   const v=r.vehicle||DEFAULT_VEHICLE;
-  return new THREE.Vector3(Number(r.x)-CENTER,(on?0.06:0)+Number(v.height||0.09)/2,CENTER-Number(r.y));
+  const zG=(r.zG!==undefined && r.zG!==null) ? Number(r.zG) : (on?0.06:0);
+  return new THREE.Vector3(Number(r.x)-CENTER,zG+Number(v.height||0.09)/2,CENTER-Number(r.y));
 }
 function visualPoseOutsideStage(r, isOn){
   const x=Number(r.x), y=Number(r.y);
@@ -2425,25 +2711,26 @@ function sync3D(){
   const syncVehicleVisual = (group, body, r, isOn) => {
     const v = r.vehicle || DEFAULT_VEHICLE;
     const pose=visualPoseForVehicle(r,isOn,body===botBodyGroup?'us':'them');
-    group.position.set(pose.x-CENTER, (isOn?0.06:0)+v.height/2, CENTER-pose.y);
+    // 台阶 3D 姿态: zG=重心平滑沉降(消除二值瞬切), pitch/roll=CORE 四轮采样姿态。
+    const zG=(r.zG!==undefined && r.zG!==null) ? Number(r.zG) : (isOn?0.06:0);
+    group.position.set(pose.x-CENTER, zG+v.height/2, CENTER-pose.y);
     group.rotation.y = r.th;
     group.userData.visualClamped=pose.clamped;
     if(body) body.scale.set(v.length/0.26, v.height/0.09, v.width/0.26);
-    // 视觉悬挂反馈（仅显示层）：速度/角速度越大，车体轻微俯仰和颠簸，
-    // 不修改 CORE 位姿，也不伪装成真机标定数据。
     const model=group.userData.model;
     if(model){
       const bump=isOn ? Math.sin(visualClock*26+r.th*3.1)*Math.min(0.012,Math.abs(r.v||0)*0.008) : 0;
       model.position.y=bump;
-      model.rotation.z=clamp(-(r.w||0)*0.012,-0.045,0.045);
-      model.rotation.x=clamp(-(r.v||0)*0.018,-0.035,0.035);
+      // 模型前向=+X: 俯仰(pitch)=rotation.z(车头上仰), 翻滚(roll)=rotation.x(左侧上抬)。
+      model.rotation.z = Number(r.pitch)||0;
+      model.rotation.x = Number(r.roll)||0;
     }
   };
   syncVehicleVisual(botGroup, botBodyGroup, US, on);
   const onT = onPlatform(THEM.x, THEM.y);
   syncVehicleVisual(themGroup, themBodyGroup, THEM, onT);
-  if(carFx.us.shadow?.object) carFx.us.shadow.object.position.y=(on?0.066:0.006);
-  if(carFx.them.shadow?.object) carFx.them.shadow.object.position.y=(onT?0.066:0.006);
+  if(carFx.us.shadow?.object) carFx.us.shadow.object.position.y=(US.zG!==undefined?Number(US.zG):(on?0.06:0))+0.006;
+  if(carFx.them.shadow?.object) carFx.them.shadow.object.position.y=(THEM.zG!==undefined?Number(THEM.zG):(onT?0.06:0))+0.006;
   carFx.us.status?.setState(stateLightName(US.fsm.state)); carFx.them.status?.setState(stateLightName(THEM.fsm.state));
   overheadHud.us?.update({state:US.fsm.state,v:US.v,omega:US.w,gray:US.rawSens},frameDt);
   overheadHud.them?.update({state:THEM.fsm.state,v:THEM.v,omega:THEM.w,gray:THEM.rawSens},frameDt);
@@ -2630,7 +2917,8 @@ function updateStateUI(){
   subTxt.textContent=subOf(US);
   themSub.textContent=subOf(THEM);
   scUs.textContent=scoreBoard.us; scTh.textContent=scoreBoard.them;
-  const match = gameEngine ? gameEngine.referee.state().match : null;
+  // 远程对战的裁判状态属于 sim_server，不使用页面本地 GameEngine 的旧时钟。
+  const match = remote && remote.mode && remote.match ? remote.match : (gameEngine ? gameEngine.referee.state().match : null);
   const matchTimer = match ? match.timer : US.fsm.timer;
   const shownTime = match && match.phase==='PREP' ? match.prepRemaining : matchTimer;
   const m=Math.floor(shownTime/60), s=Math.floor(shownTime%60);
@@ -2708,6 +2996,7 @@ for(const [k,lab,min,max,step] of paramDefs){
   l.querySelector('input').addEventListener('input',e=>{
     params[k]=+e.target.value;
     document.getElementById('v_'+k).textContent=params[k];
+    if(remote && remote.mode) api('/params',{[k]:params[k]});
   });
 }
 
@@ -2896,7 +3185,15 @@ vehicleImportFile.addEventListener('change',()=>{
 renderVehicleFields();
 
 // ---------- 控制 ----------
-document.getElementById('btnArm').addEventListener('click', arm);
+// 本地预览与远程对战有两个独立核心；远程模式下所有比赛控制必须发往 server。
+function controlMatch(remotePath, body, localAction){
+  if(!remote || !remote.mode) return localAction();
+  api(remotePath, body).then(result=>{
+    if(result && result.error) log('[远程控制] '+result.error,'warn');
+    else pollRemote();
+  });
+}
+document.getElementById('btnArm').addEventListener('click', ()=>controlMatch('/arm',undefined,arm));
 function clearVisualHistory(){
   replayHistory.length=0; replayCursor=-1; visualClock=0; replayScrub.value=0; replayScrub.max=0; replayLabel.textContent='实时';
   visualStageMemory.us=null; visualStageMemory.them=null;
@@ -2905,11 +3202,20 @@ function clearVisualHistory(){
   trails.us?.clear(); trails.them?.clear(); sensorFx?.clear(); collisionFx?.clear();
   for(const mark of tireMarks) mark?.dispose?.(); tireMarks=[];
 }
-document.getElementById('btnReset').addEventListener('click', ()=>{ logBox.innerHTML=''; resetAll(); clearVisualHistory(); setViewMode('free'); });
-document.getElementById('btnPause').addEventListener('click', ()=> gameEngine.referee.pause('UI'));
-document.getElementById('btnResume').addEventListener('click', ()=> gameEngine.referee.resume());
-document.getElementById('btnDebug').addEventListener('click', ()=> gameEngine.referee.restart(document.getElementById('refRole').value, 'debug'));
-document.getElementById('btnRestart').addEventListener('click', ()=> gameEngine.referee.restart(document.getElementById('refRole').value, 'restart'));
+document.getElementById('btnReset').addEventListener('click', ()=>{
+  if(remote && remote.mode) return resetRemoteMatch();
+  logBox.innerHTML=''; resetAll(); clearVisualHistory(); setViewMode('free');
+});
+document.getElementById('btnPause').addEventListener('click', ()=>controlMatch('/referee/pause',{reason:'UI'},()=>gameEngine.referee.pause('UI')));
+document.getElementById('btnResume').addEventListener('click', ()=>controlMatch('/referee/resume',{},()=>gameEngine.referee.resume()));
+document.getElementById('btnDebug').addEventListener('click', ()=>{
+  const role=document.getElementById('refRole').value;
+  controlMatch('/referee/restart',{role,kind:'debug'},()=>gameEngine.referee.restart(role,'debug'));
+});
+document.getElementById('btnRestart').addEventListener('click', ()=>{
+  const role=document.getElementById('refRole').value;
+  controlMatch('/referee/restart',{role,kind:'restart'},()=>gameEngine.referee.restart(role,'restart'));
+});
 document.getElementById('btnRotL').addEventListener('click', ()=>{ bot.th=norm(bot.th+0.26); });
 document.getElementById('btnRotR').addEventListener('click', ()=>{ bot.th=norm(bot.th-0.26); });
 document.getElementById('speedGrp').addEventListener('click', e=>{
@@ -2922,12 +3228,13 @@ document.addEventListener('keydown', e=>{
   if(e.key==='Enter') arm();
   if(e.key==='r'||e.key==='R'){ logBox.innerHTML=''; resetAll(); clearVisualHistory(); setViewMode('free'); }
 });
-document.getElementById('scCenter').onclick = ()=> scenePreset('center');
-document.getElementById('scEdge').onclick = ()=> scenePreset('edge');
-document.getElementById('scFloor').onclick = ()=> scenePreset('walkway');
-document.getElementById('scHang').onclick = ()=> scenePreset('hang');
-document.getElementById('scOppOn').onclick = ()=> scenePreset('opp_on');
-document.getElementById('scOppGo').onclick = ()=> scenePreset('opp_start');
+function applyScene(preset){ controlMatch('/scene',{preset},()=>scenePreset(preset)); }
+document.getElementById('scCenter').onclick = ()=> applyScene('center');
+document.getElementById('scEdge').onclick = ()=> applyScene('edge');
+document.getElementById('scFloor').onclick = ()=> applyScene('walkway');
+document.getElementById('scHang').onclick = ()=> applyScene('hang');
+document.getElementById('scOppOn').onclick = ()=> applyScene('opp_on');
+document.getElementById('scOppGo').onclick = ()=> applyScene('opp_start');
 document.querySelectorAll('#camToolbar [data-cam]').forEach(btn=>btn.addEventListener('click',()=>setViewMode(btn.dataset.cam)));
 document.querySelectorAll('#fxToolbar [data-fx]').forEach(btn=>btn.addEventListener('click',()=>setFxVisibility(btn.dataset.fx,!fxVisible[btn.dataset.fx])));
 const replayScrub=document.getElementById('replayScrub'), replayLabel=document.getElementById('replayLabel');
@@ -2954,7 +3261,7 @@ const API_BASE = (() => {
   const configured = window.SIM_API_BASE || query || 'http://127.0.0.1:8932';
   return String(configured).replace(/\/$/, '');
 })();
-let remote = { mode: false, timer: null, lastUpload: null, lastLogLen: 0, lastOutLen: 0 };
+let remote = { mode: false, timer: null, lastUpload: null, lastLogLen: 0, lastOutLen: 0, pollInFlight: false, startInFlight: false, match: null };
 const remoteStatus = document.getElementById('remoteStatus');
 const remoteOut = document.getElementById('remoteOut');
 const remoteOutWrap = document.getElementById('remoteOutWrap');
@@ -3058,26 +3365,70 @@ document.getElementById('importPy').addEventListener('change', async e => {
   }
   e.target.value = '';
 });
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function waitForRemoteStop(timeoutMs=5000){
+  const deadline = performance.now() + timeoutMs;
+  do {
+    const status = await api('/battle/status');
+    if (status.error) return { stopped:false, error:status.error };
+    if (!status.running) return { stopped:true };
+    await sleep(150);
+  } while (performance.now() < deadline);
+  return { stopped:false, error:'上一场对战仍在停止，请稍后再试' };
+}
+async function startRemoteBattle(payload){
+  let result = await api('/battle/start', payload);
+  if (result.ok || !/已有对战进行中/.test(result.error || '')) return result;
+
+  remoteStatus.textContent = '正在停止上一场对战…';
+  remoteStatus.style.color = '#ffd166';
+  await api('/battle/stop');
+  const stopped = await waitForRemoteStop();
+  if (!stopped.stopped) return { error: stopped.error || '无法停止上一场对战' };
+  return api('/battle/start', payload);
+}
+async function resetRemoteMatch(){
+  remoteStatus.textContent='正在停止远程对战…';
+  await api('/battle/stop');
+  const stopped=await waitForRemoteStop();
+  if(!stopped.stopped){ remoteStatus.textContent='重置失败: '+(stopped.error||'对战未停止'); return; }
+  const r=await api('/reset',{vehicles:{us:getVehicleFor('us'),them:getVehicleFor('them')}});
+  if(!r.ok){ remoteStatus.textContent='重置失败: '+(r.error||''); return; }
+  remote.mode=false; remote.match=null;
+  if(remote.timer) clearInterval(remote.timer);
+  remote.timer=null; logBox.innerHTML=''; clearVisualHistory(); setViewMode('free');
+  remoteStatus.textContent='已重置 (本地预览)';
+}
+function startRemotePolling(){
+  if (remote.timer) clearInterval(remote.timer);
+  remote.timer = setInterval(pollRemote, 250);
+  pollRemote();
+}
 document.getElementById('btnRemoteStart').addEventListener('click', async () => {
-  if (remote.mode) return;
+  if (remote.mode || remote.startInFlight) return;
+  remote.startInFlight = true;
   const us = document.getElementById('selUs').value || '@example';
   const them = document.getElementById('selThem').value || 'fsm';
-  const r = await api('/battle/start', {
-    us, them, seed: 42, maxSteps: 2400,
-    // 远程 server 与当前页面是两个核心实例，必须显式传车辆 profile，
-    // 否则远程对战会退回默认车身/速度，3D 本地预览与实际比赛不一致。
-    vehicles: { us: getVehicleFor('us'), them: getVehicleFor('them') },
-  });
-  if (!r.ok){ remoteStatus.textContent = '启动失败: ' + (r.error || ''); log('[远程] ' + (r.error || ''), 'warn'); return; }
-  remote.mode = true;
-  remote.lastLogLen = logEvents.length;
-  remote.lastOutLen = 0;
-  remoteOutWrap.style.display = 'block';
-  remoteOut.innerHTML = '';
-  remoteStatus.textContent = `对战进行中 ${r.us} vs ${r.them}`;
-  remoteStatus.style.color = '#ffd166';
-  log(`[远程] 对战开始: ${r.us} vs ${r.them} (轮询渲染中)`);
-  remote.timer = setInterval(pollRemote, 200);
+  try {
+    const r = await startRemoteBattle({
+      us, them, seed: 42, maxSteps: 2400,
+      // 远程 server 与当前页面是两个核心实例，必须显式传车辆 profile，
+      // 否则远程对战会退回默认车身/速度，3D 本地预览与实际比赛不一致。
+      vehicles: { us: getVehicleFor('us'), them: getVehicleFor('them') },
+    });
+    if (!r.ok){ remoteStatus.textContent = '启动失败: ' + (r.error || ''); log('[远程] ' + (r.error || ''), 'warn'); return; }
+    remote.mode = true;
+    remote.lastLogLen = logEvents.length;
+    remote.lastOutLen = 0;
+    remoteOutWrap.style.display = 'block';
+    remoteOut.innerHTML = '';
+    remoteStatus.textContent = `对战进行中 ${r.us} vs ${r.them}`;
+    remoteStatus.style.color = '#ffd166';
+    log(`[远程] 对战开始: ${r.us} vs ${r.them} (轮询渲染中)`);
+    startRemotePolling();
+  } finally {
+    remote.startInFlight = false;
+  }
 });
 document.getElementById('btnRemoteStop').addEventListener('click', async () => {
   await api('/battle/stop');
@@ -3087,8 +3438,12 @@ document.getElementById('btnRemoteStop').addEventListener('click', async () => {
   remoteStatus.textContent = '已停止 (本地模式)';
   log('[远程] 已停止, 回到本地模式', 'warn');
 });
-function pollRemote(){
-  Promise.all([api('/state'), api('/battle/status')]).then(([st, stt]) => {
+async function pollRemote(){
+  if (remote.pollInFlight) return;
+  remote.pollInFlight = true;
+  try {
+    const stt = await api('/battle/status');
+    const st = stt && stt.state;
     if (!st || !st.robots) return;
     // 用服务器状态覆盖双车(远程渲染)
      US.x = st.robots.us.x; US.y = st.robots.us.y; US.th = st.robots.us.th;
@@ -3103,8 +3458,10 @@ function pollRemote(){
      if (st.sensors && st.sensors.them) THEM.sens = { ...st.sensors.them };
      if (st.rawSensors && st.rawSensors.them) THEM.rawSens = { ...st.rawSensors.them };
      if (st.sensorLayout && st.sensorLayout.them) THEM.sensorLayout = { ...st.sensorLayout.them };
-    US.fsm.scores.us = st.scores.us; THEM.fsm.scores.us = st.scores.them;
-    US.fsm.timer = st.timer;
+     scoreBoard.us = st.scores.us; scoreBoard.them = st.scores.them;
+     US.fsm.scores.us = st.scores.us; THEM.fsm.scores.us = st.scores.them;
+     US.fsm.timer = st.timer;
+     remote.match = st.match || null;
     if (stt){
       // 日志增量显示(服务器 logTail → 主日志)
       for (const e of stt.logTail || []){
@@ -3129,24 +3486,28 @@ function pollRemote(){
         remoteStatus.style.color = '#4da3ff';
       }
     }
-  }).catch(() => {});
+  } finally {
+    remote.pollInFlight = false;
+  }
 }
 // ---------- 主循环 ----------
 let last = performance.now();
+let lastUiPaint = 0;
 function loop(now){
   const dt = Math.min((now-last)/1000, 0.05) * params.simSpeed;
   last = now;
   frameDt = dt;
   if (!remote.mode) gameEngine.step(dt); // 3D GameEngine: FSM/RobotAPI + 规则裁判 + 物理桥
-  else if (physicsBridge) physicsBridge.step(dt); // 远程对战时服务器负责规则推进
+  // 远程对战的规则和物理均由 sim_server 推进；此处只渲染其状态，
+  // 避免浏览器侧 Rapier 每帧重复计算并与网络快照相互抢占。
   sync3D();
   updateCam();          // 应用相机状态(左键拖拽旋转/右键平移/滚轮缩放/双击复位)
   carFx.us.dust?.update(dt); carFx.them.dust?.update(dt); sensorFx?.update(dt); collisionFx?.update(dt);
   for(let i=tireMarks.length-1;i>=0;i--){ tireMarks[i]?.update(dt); if(tireMarks[i]?.object && !tireMarks[i].object.visible){ tireMarks[i].dispose?.(); tireMarks.splice(i,1); } }
   if(replayHistory.length){ replayScrub.max=Math.max(0,replayHistory.length-1); if(replayCursor<0) replayScrub.value=replayHistory.length-1; else updateReplayGhost(); }
   if(renderPipeline && renderPipeline.render) renderPipeline.render(dt); else renderer.render(scene,camera);
-  updateSensorUI();
-  updateStateUI();
+  // 文本/传感器面板逐帧改 DOM 会导致远程对战掉帧；10Hz 对读数仍足够实时。
+  if(now-lastUiPaint>=100){ updateSensorUI(); updateStateUI(); lastUiPaint=now; }
   requestAnimationFrame(loop);
 }
 

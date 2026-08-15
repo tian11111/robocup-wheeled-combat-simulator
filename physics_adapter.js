@@ -181,9 +181,11 @@
   }
   function worldPosition(state, height, stepHeight){
     const on = !!(state && state.onPlatform);
+    // 台阶 3D 姿态: CORE 提供连续 zG(重心高度)时优先使用, 消除 0/0.06 二值瞬切。
+    const base = (state && state.zG !== undefined && state.zG !== null) ? finite(state.zG, 0) : (on ? stepHeight : 0);
     return {
       x:finite(state && state.x, CENTER) - CENTER,
-      y:(on ? stepHeight : 0) + height / 2,
+      y:base + height / 2,
       z:CENTER - finite(state && state.y, CENTER),
     };
   }

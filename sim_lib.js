@@ -84,7 +84,13 @@ function spawnPolicy(cmd, role, onLog){
     try { child.stdin.write(JSON.stringify(obs) + '\n'); }
     catch (e) { clearTimeout(t); finish(null); }
   });
-  policy.kill = () => { try { child.kill(); } catch (e) {} };
+  policy.kill = () => {
+    // 取消时立刻释放正在等待子进程动作的 Promise；否则远程“停止”只能
+    // 等待 actionTimeout，连续两台车的等待会让下一场启动看似卡死。
+    policy.alive = false;
+    while (policy.waiters.length) policy.waiters.shift()(null);
+    try { child.kill(); } catch (e) {}
+  };
   return policy;
 }
 
@@ -153,6 +159,10 @@ async function runBattle(opts){
   const themCmd = resolveController(opts.them);
   const usPol  = usCmd  && usCmd  !== 'fsm' ? spawnPolicy(usCmd,  '我方', onLog) : null;
   const themPol = themCmd && themCmd !== 'fsm' ? spawnPolicy(themCmd, '对手', onLog) : null;
+  const stopPolicies = () => { if (usPol) usPol.kill(); if (themPol) themPol.kill(); };
+  // GUI 后台会话保存这个句柄，使 /battle/stop 能直接终止策略进程，
+  // 而不是仅在下一帧规则循环中被动检查 abort 标记。
+  if (opts.onPolicies) opts.onPolicies({ stop: stopPolicies });
   arm();
 
   const trace = [];
@@ -206,8 +216,7 @@ async function runBattle(opts){
     if (steps % traceEvery === 0) rec(getState());
     if (opts.onProgress && steps % Math.ceil(maxSteps / 10) === 0) opts.onProgress(steps, getState());
   }
-  if (usPol) usPol.kill();
-  if (themPol) themPol.kill();
+  stopPolicies();
 
   const st = getState();
   return {

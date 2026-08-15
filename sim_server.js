@@ -54,7 +54,7 @@ function snapshotReward(){
 const ROBOTS_DIR = path.join(__dirname, 'robots');
 const REGISTRY_FILE = path.join(__dirname, 'sim_robots.json');
 if (!fs.existsSync(ROBOTS_DIR)) fs.mkdirSync(ROBOTS_DIR);
-let battleSession = { running: false, abort: false, startedAt: 0, result: null, error: null, usName: '', themName: '', output: [] };
+let battleSession = { running: false, abort: false, stop: null, startedAt: 0, result: null, error: null, usName: '', themName: '', output: [] };
 
 // ---------- AI 批量评测任务 ----------
 // 核心是单例，因此本机服务同一时刻只运行一个评测任务；任务本身异步执行，
@@ -220,8 +220,8 @@ function registryAdd(name, cmd, desc){
 function registryList(){
   try { return JSON.parse(fs.readFileSync(REGISTRY_FILE, 'utf8')); } catch (e) { return {}; }
 }
-function battleStatus(){
-  const s = getState();
+function battleStatus(state){
+  const s = state || getState();
   return {
     running: battleSession.running,
     startedAt: battleSession.startedAt,
@@ -231,6 +231,9 @@ function battleStatus(){
     doneReason: (battleSession.result && battleSession.result.doneReason) || battleSession.error || '',
     logTail: getLog().slice(-25),
     output: battleSession.output.slice(-60),   // 子进程输出(对手/我方程序 stderr 等)
+    // GUI 远程模式只需要一次请求：这里带上同一时刻的规则状态，避免 /state
+    // 与 /battle/status 两次完整序列化/往返造成渲染卡顿。
+    state: s,
   };
 }
 
@@ -524,7 +527,7 @@ const server = http.createServer(async (req, res) => {
       resetAll({ seed: b.seed, params: b.params, vehicles: b.vehicles });
       scoreBase = { us: scoreBoard.us, them: scoreBoard.them };
       battleSession = {
-        running: true, abort: false, startedAt: Date.now(), result: null, error: null,
+        running: true, abort: false, stop: null, startedAt: Date.now(), result: null, error: null,
         usName: b.us || 'fsm', themName: b.them || 'fsm', output: [],
       };
       runBattle({
@@ -536,6 +539,7 @@ const server = http.createServer(async (req, res) => {
         actionTimeout: b.actionTimeout,
         traceEvery: b.traceEvery,
         shouldAbort: () => battleSession.abort,
+        onPolicies: controls => { battleSession.stop = controls.stop; },
         onLog: m => {
           battleSession.output.push(m);
           if (battleSession.output.length > 200) battleSession.output.shift();
@@ -543,14 +547,17 @@ const server = http.createServer(async (req, res) => {
       }).then(r => {
         battleSession.result = r;
         battleSession.running = false;
+        battleSession.stop = null;
       }).catch(e => {
         battleSession.error = String(e && e.message || e);
         battleSession.running = false;
+        battleSession.stop = null;
       });
       return json(res, 200, { ok: true, started: true, us: battleSession.usName, them: battleSession.themName });
     }
     if (req.method === 'POST' && u.pathname === '/battle/stop') {
       battleSession.abort = true;
+      if (battleSession.stop) battleSession.stop();
       return json(res, 200, { ok: true, abortRequested: true });
     }
     if (req.method === 'GET' && u.pathname === '/battle/status') {

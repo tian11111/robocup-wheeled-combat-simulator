@@ -394,16 +394,16 @@ console.log('== 场景 27: 掉台能量块仍可碰撞，拖拽块可推开实�
   const carX=T.US.x;
   T.setObject('buff',1,1.60,2.0);
   const carEvents=T.consumeDragImpacts();
-  assert(T.US.x>carX+0.05 && Math.hypot(T.US.vx,T.US.vy)>0.1 && carEvents.some(e=>e.target==='us'),
-    `拖拽块应推开车辆并发出事件, 实际 x=${T.US.x.toFixed(3)} speed=${Math.hypot(T.US.vx,T.US.vy).toFixed(3)}`);
+  assert(T.US.x>carX+0.05 && Math.hypot(T.US.x-source.x,T.US.y-source.y)>=source.r+T.US.r && carEvents.some(e=>e.target==='us'),
+    `拖拽块应推开车辆并保持间隙, 实际 x=${T.US.x.toFixed(3)} gap=${Math.hypot(T.US.x-source.x,T.US.y-source.y).toFixed(3)}`);
 
   source.x=1.15; source.y=1.3; source.vx=source.vy=0;
   fallen.x=1.45; fallen.y=1.3; fallen.vx=fallen.vy=0;
   const blockX=fallen.x;
   T.setObject('buff',1,1.60,1.3);
   const blockEvents=T.consumeDragImpacts();
-  assert(fallen.x>blockX+0.05 && Math.hypot(fallen.vx,fallen.vy)>0.1 && blockEvents.some(e=>e.target==='buff'),
-    `拖拽块应推开另一能量块并发出事件, 实际 x=${fallen.x.toFixed(3)} speed=${Math.hypot(fallen.vx,fallen.vy).toFixed(3)}`);
+  assert(fallen.x>blockX+0.05 && Math.hypot(fallen.x-source.x,fallen.y-source.y)>=source.r+fallen.r && blockEvents.some(e=>e.target==='buff'),
+    `拖拽块应推开另一能量块并保持间隙, 实际 x=${fallen.x.toFixed(3)} gap=${Math.hypot(fallen.x-source.x,fallen.y-source.y).toFixed(3)}`);
   source.dragLock=false;
 }
 

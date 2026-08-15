@@ -109,8 +109,8 @@ const carX=api.US.x;
 setObject('buff',0,1.60,1.9);
 const carEvents=consumeDragImpacts();
 check('drag block pushes a robot and emits an impact',
-      api.US.x>carX+0.05 && Math.hypot(api.US.vx,api.US.vy)>0.1 && carEvents.some(e=>e.target==='us'),
-      `car x=${api.US.x.toFixed(3)} speed=${Math.hypot(api.US.vx,api.US.vy).toFixed(3)} events=${carEvents.length}`);
+      api.US.x>carX+0.05 && Math.hypot(api.US.x-source.x,api.US.y-source.y)>=source.r+api.US.r && carEvents.some(e=>e.target==='us'),
+      `car x=${api.US.x.toFixed(3)} gap=${Math.hypot(api.US.x-source.x,api.US.y-source.y).toFixed(3)} events=${carEvents.length}`);
 
 source.x=1.15; source.y=1.3; source.vx=source.vy=0;
 target.x=1.45; target.y=1.3; target.vx=target.vy=0;
@@ -118,8 +118,23 @@ const blockX=target.x;
 setObject('buff',0,1.60,1.3);
 const blockEvents=consumeDragImpacts();
 check('drag block pushes another block and emits an impact',
-      target.x>blockX+0.05 && Math.hypot(target.vx,target.vy)>0.1 && blockEvents.some(e=>e.target==='buff'),
-      `block x=${target.x.toFixed(3)} speed=${Math.hypot(target.vx,target.vy).toFixed(3)} events=${blockEvents.length}`);
+      target.x>blockX+0.05 && Math.hypot(target.x-source.x,target.y-source.y)>=source.r+target.r && blockEvents.some(e=>e.target==='buff'),
+      `block x=${target.x.toFixed(3)} gap=${Math.hypot(target.x-source.x,target.y-source.y).toFixed(3)} events=${blockEvents.length}`);
 source.dragLock=false;
+
+// Two blocks in one drag ray form a stable chain rather than being assigned the
+// same point ahead of the source.
+resetAll({ seed: 3 });
+const chainSource=buffs[0], chainMiddle=buffs[1], chainTail=api.deb;
+chainSource.x=1.00; chainSource.y=1.90; chainSource.vx=chainSource.vy=0; chainSource.dragLock=true;
+chainMiddle.x=1.18; chainMiddle.y=1.90; chainMiddle.vx=chainMiddle.vy=0;
+chainTail.x=1.30; chainTail.y=1.90; chainTail.vx=chainTail.vy=0;
+setObject('buff',0,1.14,1.90);
+const sourceMiddle=Math.hypot(chainSource.x-chainMiddle.x,chainSource.y-chainMiddle.y);
+const middleTail=Math.hypot(chainMiddle.x-chainTail.x,chainMiddle.y-chainTail.y);
+check('drag chain keeps every block separated',
+      sourceMiddle>=chainSource.r+chainMiddle.r && middleTail>=chainMiddle.r+chainTail.r,
+      `gaps source-middle=${sourceMiddle.toFixed(4)} middle-tail=${middleTail.toFixed(4)}`);
+chainSource.dragLock=false;
 console.log(`final: ${pass} passed / ${fail} failed`);
 process.exit(fail ? 1 : 0);
