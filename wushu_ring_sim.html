@@ -393,6 +393,8 @@ const params = {
   graySpotRadius: 0.025,    // 灰度近地光斑采样半径 (m)
   BLOCK_STICK_SPEED: 0.02,  // 能量块库仑静摩擦"粘住"阈值 (m/s)
   BLOCK_MU_K: 0.5,          // 能量块库仑动摩擦系数 (无量纲)
+  // null 保留经确定性回归验证的速度相关恢复公式；真实遥测标定后才可传 0~0.9 覆盖。
+  COLLISION_RESTITUTION: null,
 };
 
 // ---------- 可复现随机 ----------
@@ -504,8 +506,72 @@ const other = r => r===US ? THEM : US;
 const dirName = a=> { const d=norm(a-Math.PI/2); if(Math.abs(d)<0.4)return '南'; if(Math.abs(norm(a))<0.4)return '东'; if(Math.abs(d-Math.PI)<0.4||Math.abs(d+Math.PI)<0.4)return '北'; return '西'; };
 
 // ---------- 场地灰度模型 ----------
+// 默认保留手绘模型，实测时可装入一个覆盖擂台 [EL,ER]^2 的灰度表。
+// 表使用 0~1000、行从 yMin(南)到 yMax(北)、列从 xMin(西)到 xMax(东)。
+let fieldGrayMap=null;
+function grayNumber(value, name){
+  const n=Number(value);
+  if(!Number.isFinite(n)) throw new Error(`灰度表 ${name} 必须是有限数`);
+  return clamp(n,0,1000);
+}
+function normalizeFieldGrayMap(input){
+  const source=Array.isArray(input) ? { values:input } : input;
+  if(!source || typeof source!=='object' || Array.isArray(source)) throw new Error('灰度表必须是二维数组或对象');
+  const values=source.values===undefined ? source.data : source.values;
+  let width=Number(source.width), height=Number(source.height), flat=[];
+  if(Array.isArray(values) && values.length && Array.isArray(values[0])){
+    height=values.length;
+    width=values[0].length;
+    if(!Number.isInteger(width) || width<2 || values.some(row=>!Array.isArray(row)||row.length!==width)){
+      throw new Error('二维灰度表每行必须等长，且宽高至少为 2');
+    }
+    for(const row of values) for(const value of row) flat.push(grayNumber(value,'values'));
+  } else if(Array.isArray(values)){
+    if(!Number.isInteger(width)||!Number.isInteger(height)||width<2||height<2||values.length!==width*height){
+      throw new Error('扁平灰度表需要 width、height，且 values 长度必须等于 width*height');
+    }
+    flat=values.map(value=>grayNumber(value,'values'));
+  } else throw new Error('灰度表缺少 values 二维数组或扁平数组');
+  if(width>256 || height>256) throw new Error('灰度表最大为 256×256');
+  const rawBounds=source.bounds&&typeof source.bounds==='object' ? source.bounds : {};
+  const xMin=Number.isFinite(Number(rawBounds.xMin)) ? Number(rawBounds.xMin) : EL;
+  const xMax=Number.isFinite(Number(rawBounds.xMax)) ? Number(rawBounds.xMax) : ER;
+  const yMin=Number.isFinite(Number(rawBounds.yMin)) ? Number(rawBounds.yMin) : EL;
+  const yMax=Number.isFinite(Number(rawBounds.yMax)) ? Number(rawBounds.yMax) : ER;
+  if(!(xMax>xMin) || !(yMax>yMin)) throw new Error('灰度表 bounds 必须满足 xMax>xMin、yMax>yMin');
+  return {
+    id:String(source.id||'field-gray-grid').slice(0,80), width, height, values:flat,
+    bounds:{xMin,xMax,yMin,yMax}, interpolation:source.interpolation==='nearest'?'nearest':'bilinear',
+  };
+}
+function getFieldGrayInfo(){
+  if(!fieldGrayMap) return { mode:'hand_drawn', id:'fieldGray-default', bounds:{xMin:EL,xMax:ER,yMin:EL,yMax:ER} };
+  const {id,width,height,bounds,interpolation}=fieldGrayMap;
+  return { mode:'grid', id, width, height, bounds:{...bounds}, interpolation };
+}
+function getFieldGrayMap(){
+  if(!fieldGrayMap) return null;
+  const {id,width,height,values,bounds,interpolation}=fieldGrayMap;
+  return { id,width,height,values:values.slice(),bounds:{...bounds},interpolation };
+}
+function setFieldGrayMap(input){
+  fieldGrayMap=input===null || input===undefined ? null : normalizeFieldGrayMap(input);
+  return getFieldGrayInfo();
+}
+function sampleFieldGrayMap(map,x,y){
+  const {width,height,values,bounds,interpolation}=map;
+  const u=clamp((x-bounds.xMin)/(bounds.xMax-bounds.xMin),0,1)*(width-1);
+  const v=clamp((y-bounds.yMin)/(bounds.yMax-bounds.yMin),0,1)*(height-1);
+  if(interpolation==='nearest') return values[Math.round(v)*width+Math.round(u)];
+  const x0=Math.floor(u), y0=Math.floor(v), x1=Math.min(width-1,x0+1), y1=Math.min(height-1,y0+1);
+  const fx=u-x0, fy=v-y0;
+  const a=values[y0*width+x0]*(1-fx)+values[y0*width+x1]*fx;
+  const b=values[y1*width+x0]*(1-fx)+values[y1*width+x1]*fx;
+  return a*(1-fy)+b*fy;
+}
 function fieldGray(x,y){
   if(x<EL||x>ER||y<EL||y>ER) return 0;                        // 走道≈0
+  if(fieldGrayMap) return sampleFieldGrayMap(fieldGrayMap,x,y);
   const dx=Math.abs(x-CENTER)/HALF, dy=Math.abs(y-CENTER)/HALF;
   const t=Math.max(dx,dy);                                    // 0=中心 1=整圈黑边
   let g = 300 + 700*(1-t);                                    // 中心≈1000, 黑带≈300
@@ -927,6 +993,52 @@ function findTargetFor(r){
   }
   return best;
 }
+// ---------- SimVision ----------
+// 接口保持同步：真实 YOLO/相机线程应在外部缓存最新检测，再由 classify(context)
+// 返回当前帧结果。这样 CORE 的确定性步进不等待网络、摄像头或 Promise。
+function targetKindForVision(obj){
+  if(obj&&obj.kind==='buff') return 'buff';
+  if(obj&&obj.kind==='debuff') return 'debuff';
+  return 'opponent';
+}
+function normalizeVisionDetection(result, fallbackSource){
+  const raw=result&&typeof result==='object' ? result : {};
+  const alias={ bonus:'buff', gain:'buff', penalty:'debuff', enemy:'opponent', robot:'opponent', none:'unknown', miss:'unknown' };
+  let label=String(raw.label||raw.kind||raw.className||'unknown').toLowerCase();
+  label=alias[label]||label;
+  if(!['buff','debuff','opponent','unknown'].includes(label)) label='unknown';
+  const confidence=Number.isFinite(Number(raw.confidence)) ? clamp(Number(raw.confidence),0,1) : (label==='unknown'?0:1);
+  return { label, confidence, source:String(raw.source||fallbackSource||'sim-vision').slice(0,80) };
+}
+const DEFAULT_SIM_VISION=Object.freeze({
+  id:'classifyRate',
+  classify(context){
+    // 保留旧实现的一次 rng() 调用和阈值语义，默认确定性轨迹不变。
+    const ok=rng()*100<params.classifyRate;
+    return ok
+      ? { label:targetKindForVision(context.target), confidence:clamp(Number(params.classifyRate)/100,0,1), source:'classifyRate' }
+      : { label:'unknown', confidence:0, source:'classifyRate' };
+  },
+});
+let simVision=DEFAULT_SIM_VISION;
+function getSimVisionInfo(){ return { id:String(simVision.id||'custom'), mode:simVision===DEFAULT_SIM_VISION?'default':'custom', synchronous:true }; }
+function setSimVision(adapter){
+  if(adapter===null || adapter===undefined){ simVision=DEFAULT_SIM_VISION; return getSimVisionInfo(); }
+  if(!adapter || typeof adapter.classify!=='function') throw new Error('SimVision 必须提供同步 classify(context) 函数');
+  simVision={ id:String(adapter.id||'custom-sim-vision').slice(0,80), classify:adapter.classify };
+  return getSimVisionInfo();
+}
+function classifyTargetFor(r,target){
+  const obj=target&&target.obj;
+  const context={
+    t:r.fsm.simT, role:r===US?'us':'them',
+    robot:{x:r.x,y:r.y,th:r.th,state:r.fsm.state},
+    target:obj?{kind:targetKindForVision(obj),name:obj.name||'',x:obj.x,y:obj.y,d:target.d,rel:target.rel}:null,
+    opponent:{x:other(r).x,y:other(r).y,th:other(r).th},
+  };
+  try { return normalizeVisionDetection(simVision.classify(context),simVision.id); }
+  catch(error){ return { label:'unknown', confidence:0, source:`${simVision.id||'custom'}:error` }; }
+}
 function searchTick(r, dt){
   const sc = r.fsm.scan;
   switch(sc.phase){
@@ -969,11 +1081,13 @@ function searchTick(r, dt){
       sc.t += dt;
       if(sc.t>0.5){
         const t=sc.target;
-        const ok = rng()*100 < params.classifyRate;
-        if(ok){
-          if(t.obj.kind==='buff'){ logFor(r, `[fsm] 视觉分类 → 增益块 → SCORE_BLOCK`); r.fsm.state=S.SCORE; r.v=0; r.w=0; }
-          else if(t.obj.kind==='debuff'){ logFor(r, `[fsm] 视觉分类 → 减益块 → 绕行规避`); sc.phase='evade'; sc.t=0; sc.side=rng()<0.5?1:-1; }
-          else { logFor(r, `[fsm] 视觉分类 → 对手 → ATTACK`); r.fsm.state=S.ATTACK; r.v=0; r.w=0; }
+        const detection=classifyTargetFor(r,t);
+        if(detection.label==='buff'){
+          logFor(r, `[fsm] 视觉分类 → 增益块 → SCORE_BLOCK`); r.fsm.state=S.SCORE; r.v=0; r.w=0;
+        } else if(detection.label==='debuff'){
+          logFor(r, `[fsm] 视觉分类 → 减益块 → 绕行规避`); sc.phase='evade'; sc.t=0; sc.side=rng()<0.5?1:-1;
+        } else if(detection.label==='opponent'){
+          logFor(r, `[fsm] 视觉分类 → 对手 → ATTACK`); r.fsm.state=S.ATTACK; r.v=0; r.w=0;
         } else {
           if(r.sens.f > params.IR_TRIGGER){
             logFor(r, `[fsm] 识别不到 + 前向持续 → 判定为对手 → ATTACK`); r.fsm.state=S.ATTACK; r.v=0; r.w=0;
@@ -1156,6 +1270,23 @@ function sweptCircleContact(ax, ay, bx, by, cx, cy, radius){
   if(dx*nx+dy*ny<=1e-9 && c>=-1e-9) return null;
   return { qx, qy, nx, ny, d, t, penetrating:false };
 }
+// 双方都在本帧移动时，先转为相对位移 (A-B) 再复用圆扫掠，避免按更新顺序
+// 把另一台车错误地当作静态目标。返回的是世界坐标下双方首次接触位置。
+function sweptRobotPairContact(a0, a1, b0, b1, radius){
+  const initialD=Math.hypot(a0.x-b0.x,a0.y-b0.y);
+  // 起帧已重叠而本帧分开时，不能把车拉回旧接触点。
+  if(initialD < radius-1e-9) return null;
+  const hit=sweptCircleContact(
+    a0.x-b0.x,a0.y-b0.y,a1.x-b1.x,a1.y-b1.y,0,0,radius
+  );
+  if(!hit) return null;
+  const t=hit.t;
+  return {
+    ...hit,
+    ax:a0.x+(a1.x-a0.x)*t, ay:a0.y+(a1.y-a0.y)*t,
+    bx:b0.x+(b1.x-b0.x)*t, by:b0.y+(b1.y-b0.y)*t,
+  };
+}
 function bodyMass(o){
   const configured=o && o.vehicle ? o.vehicle.mass : o && o.mass;
   return Math.max(0.05, Number.isFinite(Number(configured)) ? Number(configured) : (o && o.kind ? 0.30 : 1));
@@ -1308,6 +1439,78 @@ function settleBlockPairs(){
   }
   for(const block of blocks) if(!block.dragLock) keepBlockInsideFence(block);
 }
+// 每个物理步只处理一次 US/THEM 对。碰撞与各车积分分离后，冲量、分离、
+// 偏心力矩和楔入判定都有唯一的接触法线与接触点，不依赖 robots 遍历顺序。
+function resolveRobotPair(a, b, a0, b0){
+  const R=(a.r||BODY)+(b.r||BODY);
+  let dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy);
+  const swept=d>=R ? sweptRobotPairContact(a0,a,b0,b,R) : null;
+  if(!(d<R) && !swept) return false;
+
+  let nx, ny, overlap=0;
+  if(swept && !(d<R)){
+    // 帧末可能已经从对方另一侧穿出，必须使用首次接触法线而不是帧末反向法线。
+    nx=swept.nx; ny=swept.ny;
+  } else if(d>1e-9){
+    nx=dx/d; ny=dy/d;
+    overlap=Math.max(0,R-d);
+  } else {
+    // 完全重合时优先按相对速度选法线；静止重合才回退到上一帧几何方向。
+    const rvx=a.vx-b.vx, rvy=a.vy-b.vy, speed=Math.hypot(rvx,rvy);
+    const pdx=b0.x-a0.x, pdy=b0.y-a0.y, previousD=Math.hypot(pdx,pdy);
+    nx=speed>1e-9 ? rvx/speed : (previousD>1e-9 ? pdx/previousD : 1);
+    ny=speed>1e-9 ? rvy/speed : (previousD>1e-9 ? pdy/previousD : 0);
+    overlap=R;
+  }
+  if(swept && !(d<R)){
+    // 双方回退到同一首次接触时刻，保留微小间隙以避免下一帧数值抖动。
+    a.x=swept.ax-nx*0.0005; a.y=swept.ay-ny*0.0005;
+    b.x=swept.bx+nx*0.0005; b.y=swept.by+ny*0.0005;
+  } else {
+    separatePair(a,b,nx,ny,overlap);
+  }
+
+  const avn=a.vx*nx+a.vy*ny;
+  const bvn=b.vx*nx+b.vy*ny;
+  if(avn<=bvn+0.02) return true;
+  const rel=avn-bvn;
+  const configuredE=params.COLLISION_RESTITUTION===null || params.COLLISION_RESTITUTION===undefined
+    ? NaN
+    : Number(params.COLLISION_RESTITUTION);
+  const restitution=Number.isFinite(configuredE)
+    ? clamp(configuredE,0,0.9)
+    : clamp(0.2+rel*0.15,0.2,0.45);
+  // pushFactor 是两台车共同的接触属性，取几何平均避免 US/THEM 遍历顺序偏置。
+  const pushA=clamp(Number(a.vehicle?.pushFactor)||1,0.1,3);
+  const pushB=clamp(Number(b.vehicle?.pushFactor)||1,0.1,3);
+  const push=Math.sqrt(pushA*pushB);
+  const invA=1/bodyMass(a), invB=1/bodyMass(b);
+  const impulse=rel*(1+restitution)*push/(invA+invB);
+  a.vx-=nx*impulse*invA; a.vy-=ny*impulse*invA;
+  b.vx+=nx*impulse*invB; b.vy+=ny*impulse*invB;
+
+  // 偏心接触点力臂 r×J：一对实体只各累加一次角冲量。
+  const cpA=closestPointOnRobot(a,b.x,b.y);
+  applyContactTorque(a,-nx*impulse,-ny*impulse,cpA.x-a.x,cpA.y-a.y);
+  const cpB=closestPointOnRobot(b,a.x,a.y);
+  applyContactTorque(b,nx*impulse,ny*impulse,cpB.x-b.x,cpB.y-b.y);
+
+  // 切向摩擦保留既有强度，但现在对称地只施加一次。
+  const tx=-ny, ty=nx;
+  const tangent=(a.vx*tx+a.vy*ty)-(b.vx*tx+b.vy*ty);
+  const friction=tangent*0.2;
+  a.vx-=tx*friction; a.vy-=ty*friction;
+  b.vx+=tx*friction; b.vy+=ty*friction;
+
+  // 铲子楔入：铲刃较高的车被垫起，下一帧前轮驱动载荷下降。
+  const facing=Math.abs(norm(a.th-b.th));
+  if(facing>Math.PI*0.6){
+    const aBlade=(Number(a.zG)||0)+(Number(a.vehicle.shovelHeight)||0);
+    const bBlade=(Number(b.zG)||0)+(Number(b.vehicle.shovelHeight)||0);
+    if(Math.abs(aBlade-bBlade)>0.004) (aBlade>bBlade ? a : b).wedgedFront=true;
+  }
+  return true;
+}
 function motionFor(r, dt){
   const vehicle = r.vehicle || DEFAULT_VEHICLE;
   // 控制指令限幅 (保持原有 {v,w} 接口不变)
@@ -1384,68 +1587,13 @@ function motionFor(r, dt){
   // Blocks exchange a small impulse too, including blocks that left the stage.
   // A dragged source is handled directly by pushDraggedBlock below.
   settleBlockPairs();
-  // 对另一台车: 恢复系数 e=0.3 的法向交换 + 切向摩擦 + 对称分离 + 偏心力矩 + 铲子楔入
-  const o = other(r);
-  const dx=o.x-r.x, dy=o.y-r.y, d=Math.hypot(dx,dy)||0.001;
-  const R = r.r + o.r;
-  const swept=sweptCircleContact(px,py,r.x,r.y,o.x,o.y,R);
-  if(d < R || swept){
-    const nx=d<R ? dx/d : swept.nx, ny=d<R ? dy/d : swept.ny;
-    const overlap = d<R ? R-d : 0;
-    if(swept && !(d<R)){
-      r.x=swept.qx-nx*0.0005; r.y=swept.qy-ny*0.0005;
-    }
-    r.x -= nx*overlap*0.5; r.y -= ny*overlap*0.5;
-    o.x += nx*overlap*0.5; o.y += ny*overlap*0.5;
-    const rv = r.vx*nx + r.vy*ny;
-    const ov = o.vx*nx + o.vy*ny;
-    if(rv > ov + 0.02){                       // 相对法向速度阈值, 防抖动
-      // 2026-08-14 动态恢复系数: 低速推挤柔和(E=0.2) / 高速撞击明显弹开(E 大)
-      const rel = rv - ov;
-      const E = clamp(0.2 + rel*0.15, 0.2, 0.45);
-      const invR = 1/Math.max(0.05, Number(r.vehicle?.mass)||1);
-      const invO = 1/Math.max(0.05, Number(o.vehicle?.mass)||1);
-      const push = clamp(Number(r.vehicle?.pushFactor)||1, 0.1, 3);
-      const impulse = rel*(1+E)*push/(invR+invO);
-      r.vx -= nx*impulse*invR; r.vy -= ny*impulse*invR;
-      o.vx += nx*impulse*invO; o.vy += ny*impulse*invO;
-      // 偏心力矩: 两车各自接触点力臂产生 Δω (撞角打转, 不再只交换线速度)
-      const cpR = closestPointOnRobot(r, o.x, o.y);
-      applyContactTorque(r, -nx*impulse, -ny*impulse, cpR.x - r.x, cpR.y - r.y);
-      const cpO = closestPointOnRobot(o, r.x, r.y);
-      applyContactTorque(o, nx*impulse, ny*impulse, cpO.x - o.x, cpO.y - o.y);
-      // 切向摩擦: 碰撞时两车侧向速度相互衰减(车身打滑感)
-      const tx=-ny, ty=nx;
-      const rt = r.vx*tx + r.vy*ty;
-      const ot = o.vx*tx + o.vy*ty;
-      const ft = (rt-ot)*0.2;
-      r.vx -= tx*ft; r.vy -= ty*ft;
-      o.vx += tx*ft; o.vy += ty*ft;
-      // 铲子楔入 (Shovel Wedging): 正面对冲时, 铲刃更低的一方切入对手底盘,
-      // 被挑车辆前轮法向正压力 N→0 → 前轮驱动推力丧失(实车被铲起推下擂台)。
-      const facing = Math.abs(norm(r.th - o.th));
-      if(facing > Math.PI*0.6){
-        const rBlade = (Number(r.zG)||0) + (Number(r.vehicle.shovelHeight)||0);
-        const oBlade = (Number(o.zG)||0) + (Number(o.vehicle.shovelHeight)||0);
-        if(Math.abs(rBlade - oBlade) > 0.004){
-          const upper = rBlade > oBlade ? r : o;   // 铲刃更高的一方被垫起
-          upper.wedgedFront = true;
-        }
-      }
-    }
-  }
-
-  // 堵转/电流过载检测
-  updateStall(r, dt);
-
-  // 台阶 3D 姿态 (4 轮采样 → pitch/roll/zG 平滑沉降)
-  computeRobotPose(r, dt);
-
-  // 前轮载荷恢复: 楔入解除后平滑回升到 1 (被挑车辆恢复推力)
-  const targetLoad = r.wedgedFront ? 0 : 1;
-  r.frontLoad = (Number(r.frontLoad)||1) + (targetLoad - (Number(r.frontLoad)||1))*(1 - Math.exp(-8*dt));
 }
-function motion(dt){ motionFor(US, dt); }
+function finishRobotMotion(r, dt){
+  updateStall(r,dt);
+  const targetLoad=r.wedgedFront ? 0 : 1;
+  r.frontLoad=(Number(r.frontLoad)||1)+(targetLoad-(Number(r.frontLoad)||1))*(1-Math.exp(-8*dt));
+}
+function motion(dt){ motionFor(US,dt); computeRobotPose(US,dt); finishRobotMotion(US,dt); }
 
 // ---------- 计分 / 掉台判定 (全局) ----------
 // 2026-08-14 规则修正: 能量块被推下台后**本场不再参与**(out, 静止留在台外),
@@ -1644,9 +1792,15 @@ function stepSimExt(d, acts){
   }
   // 每步先清空楔入标记, 由本帧碰撞重新判定 (碰撞只在车-车接触时置位)
   for(const r of robots){ r.wedgedFront = false; }
+  // 记录双方同一时刻的起始位姿，供统一 pair resolver 做相对扫掠。
+  const previousPos=new Map(robots.map(r=>[r,{x:r.x,y:r.y}]));
   for(const r of robots){
     if(r.fsm.armed || r.fsm.manual) motionFor(r, d);
   }
+  // 先完成双方独立积分，再只解析这一对实体一次；静止车仍是有效碰撞体。
+  for(const r of robots) computeRobotPose(r,d);
+  resolveRobotPair(US,THEM,previousPos.get(US),previousPos.get(THEM));
+  for(const r of robots) finishRobotMotion(r,d);
   objFallCheckAll(d);
   updateScoreClock(d);
   updateInactivity(d);
@@ -1684,6 +1838,8 @@ function startManual(){
 function resetAll(opts){
   opts = opts || {};
   if(opts.params) Object.assign(params, opts.params);
+  // 灰度表是场地配置而非车辆参数；未传时保留当前表，便于固定多 seed 评测复用。
+  if(Object.prototype.hasOwnProperty.call(opts,'fieldGray')) setFieldGrayMap(opts.fieldGray);
   // 每台车的物理/动力参数独立保存；reset 不会悄悄恢复默认值，
   // 只有显式传入 vehicles.us / vehicles.them 时才替换对应配置。
   // 这样 GUI、HTTP API 和批量对战都能复用同一套车辆 profile。
@@ -1861,6 +2017,7 @@ function getState(){
     rawSensors:{ us: rawSensOf(US), them: rawSensOf(THEM) },
     sensorCompat:{ us: sensOf(US), them: sensOf(THEM) },
     sensorLayout:{ us:cloneSensorProfile(US.sensorLayout), them:cloneSensorProfile(THEM.sensorLayout) },
+    perception:{ fieldGray:getFieldGrayInfo(), vision:getSimVisionInfo() },
     objects:{
       buffs: buffs.map(b=>({ x:+b.x.toFixed(4), y:+b.y.toFixed(4), onPlatform:onPlatform(b.x,b.y), out:!!b.out })),
       debuff:{ x:+deb.x.toFixed(4), y:+deb.y.toFixed(4), onPlatform:onPlatform(deb.x,deb.y), out:!!deb.out },
@@ -1878,6 +2035,7 @@ if (typeof module !== 'undefined' && module.exports){
     resetAll, arm, armFor, startManual, stepSim, stepSimExt, getState, getLog,
     matchControl, beginPreparation, pauseMatch, resumeMatch, restartFor,
     setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset, consumeDragImpacts,
+    setFieldGrayMap, getFieldGrayMap, getFieldGrayInfo, setSimVision, getSimVisionInfo, classifyTargetFor,
     onPlatform, onStage, hangOn, fullOn, fieldGray, distToNearestEdge,
     stageHeightAt, computeRobotPose, momentInertia, closestPointOnRobot, robotFaceCos,
     irHysteresis, valueHysteresis, graySpotSample, updateStall, applyCommandLatency,

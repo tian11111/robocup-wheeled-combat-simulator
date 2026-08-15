@@ -26,11 +26,16 @@
 | `sim_server.js` | 无头 HTTP API（供 AI Agent 链接）+ `/battle/run` 子进程对战 |
 | `sim_battle.js` | CLI 对战（`node sim_battle.js --us "python robot_adapter.py example_robot.py" --them fsm`） |
 | `sim_env.py` | Python 客户端（gym 风格，仅标准库） |
+| `sim_runner.py` | AI 本机评测入口：自动服务生命周期、固定 seed 对比与 `.sim_runs` 归档 |
+| `sim_runner_selftest.py` | `sim_runner` 的车辆 JSON、服务自动启动与自比较回归 |
+| `sim_calibrate.js` | 真实遥测最小二乘标定：输出参数建议与样本/RMSE，不自动改核心 |
+| `sim_calibrate_selftest.js` | 标定器的合成轨迹回归 |
+| `fidelity.json` | 子系统保真度的可审计状态来源，服务通过 `GET /fidelity` 返回 |
 | `sim_ai_selftest.js` | 本机 AI API 冒烟测试（含后台对战互斥与会话控制） |
 | `sim_lib_selftest.js` | CORE 提取、带空格路径命令解析、子进程迟到动作隔离回归 |
 | `robot_adapter.py` | 小车程序适配器：`python robot_adapter.py your_program.py` |
 | `example_robot.py` | 示例小车决策程序（`decide(obs)` 参考写法） |
-| `sim_selftest.js` | 状态机、规则边界与裁判阶段自测（27 场景） |
+| `sim_selftest.js` | 状态机、规则边界、可插拔感知与裁判阶段自测（29 场景） |
 
 ## 核心设计
 
@@ -69,6 +74,40 @@
 `sensors` 保留旧逻辑别名；当前车辆真实通道在 `rawSensors`，通道类型/位置/朝向在 `sensorLayout`。
 本车只有一枚铲前红外，兼容层会把它同时映射为 `sFL/sFR`，真实策略应读取 `rawSensors.shovel_front`。
 无头/API 默认使用 `legacy14`，保证旧策略和确定性回归不变；3D 页面默认给我方应用本车 11 路 profile。
+
+### 可加载场地灰度表与 SimVision
+
+默认 `fieldGray()` 是手绘工程模型。真实采集到擂台灰度后，可加载一张 2D 表替代它：行从南侧 `yMin` 到北侧
+`yMax`，列从西侧 `xMin` 到东侧 `xMax`，值域是 `0..1000`。二维数组最简格式如下；也可使用带
+`id`、`bounds` 和 `interpolation: 'bilinear'|'nearest'` 的对象。平铺数组时必须同时提供 `width`、`height`。
+
+```json
+{
+  "id": "yellow-field-2026-08-15",
+  "values": [[300, 420, 300], [420, 1000, 420], [300, 420, 300]],
+  "interpolation": "bilinear"
+}
+```
+
+`POST /field-gray` 接收 `{ "map": <表> }`，`POST /field-gray` 加 `{ "reset": true }` 回到手绘模型；
+`GET /field-gray?values=1` 可回读当前表。`POST /reset`、`POST /battle/run`、`POST /battle/start` 和
+`POST /api/v1/evaluations` 都可带 `fieldGray:<表>`，保证固定 seed 对比使用相同场地。
+
+视觉分类的统一接口是同步 `SimVision`：真实 YOLO/相机线程必须先在外部维护最新检测缓存，CORE 每帧只读取该缓存，
+绝不等待 Promise、相机或网络。浏览器/嵌入方可调用：
+
+```js
+window.__SIM_CORE.setSimVision({
+  id: 'yolo-cache',
+  classify(context) {
+    return { label: 'buff', confidence: 0.93, source: 'camera-0' };
+  },
+});
+```
+
+标准 `label` 仅为 `buff`、`debuff`、`opponent`、`unknown`；传 `null` 恢复默认 `classifyRate`。接口不能通过
+HTTP 传函数，因此 Node/浏览器集成方负责安装该同步适配器。加载灰度表或安装视觉缓存都**不会**自动修改
+`fidelity.json`：只有有可审计的真实采样/视觉验证证据时，才能人工更新相应保真度状态。
 
 ### 自定义小车参数
 
@@ -129,7 +168,7 @@
 | 特性 | 说明 |
 |---|---|
 | **轮式驱动 + 滑移** | 速度在车身坐标系分解为纵向 `vF` 与侧向 `vL`：纵向按 `accelK` 向指令收敛，侧向按 `latFrictionK` 衰减（侧偏抗力，产生侧滑感）；指令横摆瞬时响应，碰撞打转以独立 `spinOmega` 状态按 `angDamping` 衰减后叠加 |
-| **偏心力矩（撞角打转）** | 碰撞冲量不再只交换质心线速度：以车身矩形上离对方最近的点作接触点，力臂 `r×J` 产生角冲量 `Δω`，撞角/侧面撞击自然打转 |
+| **偏心力矩（撞角打转）** | 每帧 US/THEM pair 只解析一次：双方先独立积分，再以相对运动扫掠取得唯一接触点；冲量、切向摩擦和 `r×J` 角冲量对称施加，撞角/侧面撞击自然打转 |
 | **台阶 3D 姿态** | 4 轮位置采样台阶高度，最小二乘拟合平面 → 连续 `pitch`/`roll`/`zG`（重心平滑沉降，一阶惯性），消除上下台阶 0/0.06 二值瞬切 |
 | **能量块库仑摩擦** | 低速低于 `BLOCK_STICK_SPEED` 直接粘住归零，消除无限微滑；高速库仑动摩擦 `BLOCK_MU_K` + 指数背压 |
 | **传感器非理想特性** | 数字红外施密特迟滞（`D_on`/`D_off` 双阈值防临界抖动）；灰度单点 → 近地圆形区域加权采样；红外命中目标按光束-表面法线夹角余弦 `cosθ` 衰减（对手矩形车身，能量块圆近似 cosθ≈1） |
@@ -146,12 +185,91 @@
 | `IR_HYST_BAND` | 0.10 | 数字红外施密特迟滞带宽（围绕 `IR_TRIGGER`） |
 | `graySpotRadius` | 0.025 | 灰度近地光斑采样半径（m） |
 | `BLOCK_STICK_SPEED` / `BLOCK_MU_K` | 0.02 / 0.5 | 能量块库仑静摩擦粘住阈值 / 动摩擦系数 |
+| `COLLISION_RESTITUTION` | `null` | `null` 时保留既有速度相关恢复公式；真机标定后传 `0~0.9` 才固定为该恢复系数 |
 
 新增车辆 profile 字段（`vehicle`，未填沿用默认）：`wheelBase`(0.16)、`trackWidth`(0.18)、`latFrictionK`(8)、`angDamping`(3)、`shovelHeight`(0.015)。
 
 状态输出 `getState().robots.<role>` 新增：`speed`(实际线速度)、`omega`(实际横摆角速度)、`pitch`/`roll`/`zG`(台阶姿态)、`isStalled`、`wedgedFront`、`frontLoad`。3D 页面与 Rapier 桥已读取 `zG` 做连续抬升、`pitch/roll` 做车身倾转（仅显示层，不改变 CORE 规则判分）。
 
 规则计分层已覆盖：双方同帧掉台不计分、另一方已在台下时掉台不计分、读秒按双方台上/台下状态切换重新计时、能量块按最后接触者计分并在下台后本场报废、连续静止超过 10 秒触发消极比赛 +1。
+
+### 真实遥测标定与保真度
+
+`sim_calibrate.js` 是离线工具，输入必须是按秒递增的真实遥测 JSON，位置单位 m、角度 rad、速度 m/s。它不会修改 `wushu_ring_sim.html`、车辆 profile 或运行中的服务，只在 `calibration/` 写出带 SHA-256、样本数、RMSE 与建议 patch 的结果文件。该目录被 Git 忽略，原始遥测也应按队伍的数据管理规范单独保存。
+
+最小输入结构如下；`trials` 也可写作旧名 `runs`：
+
+```json
+{
+  "schemaVersion": 1,
+  "vehicle": { "id": "yellow-2026" },
+  "capture": { "source": "2026-08-15 test", "operator": "team" },
+  "trials": [
+    {
+      "id": "side-slip-01", "kind": "lateral_coast",
+      "frames": [
+        { "t": 0.00, "robot": { "x": 1.0, "y": 1.0, "th": 0.0 }, "command": { "v": 0, "w": 0 } },
+        { "t": 0.05, "robot": { "x": 1.0, "y": 1.04, "th": 0.0 }, "command": { "v": 0, "w": 0 } }
+      ]
+    },
+    {
+      "id": "block-slide-01", "kind": "block_push",
+      "frames": [
+        { "t": 0.00, "block": { "x": 1.0, "y": 1.0 } },
+        { "t": 0.05, "block": { "x": 1.08, "y": 1.0 } }
+      ]
+    },
+    {
+      "id": "wall-01", "kind": "collision", "wall": "east",
+      "impact": {
+        "pre": { "robot": { "vx": 1.0, "vy": 0.0 } },
+        "post": { "robot": { "vx": -0.3, "vy": 0.0 } }
+      }
+    },
+    {
+      "id": "stall-01", "kind": "stall",
+      "frames": [
+        { "t": 0.00, "robot": { "speed": 0.02 }, "command": { "v": 0.6 }, "stalled": true },
+        { "t": 0.05, "robot": { "speed": 0.09 }, "command": { "v": 0.6 }, "stalled": false }
+      ]
+    }
+  ]
+}
+```
+
+支持的 `kind`、用途和最少有效样本为：
+
+| `kind` | 必需数据 | 拟合值 | 最少有效样本 |
+|---|---|---|---|
+| `lateral_coast` | `robot{x,y,th}` 的无指令侧滑帧 | `vehicle.latFrictionK` | 4 个相邻速度衰减对 |
+| `angular_coast` | `robot{x,y,th}` 的无横摆指令帧 | `vehicle.angDamping` | 4 个相邻角速度衰减对 |
+| `block_push` | 推离后滑行的 `block{x,y}` 帧 | `params.BLOCK_MU_K` | 4 个相邻减速对 |
+| `collision` | `normal{x,y}` 或 `wall` 加 `impact.pre/post`；也可提供含 `impactIndex` 的双车位姿帧 | `params.COLLISION_RESTITUTION` | 3 个有效碰撞 |
+| `stall` | `robot.speed`、非零 `command.v`、真实 `stalled` 布尔标签 | `params.STALL_SPEED` | 6 个正反标签速度样本 |
+| `mount` | 登台过程的 `robot{x,y,th}` 帧 | 不直接拟合 | 记录为验证证据 |
+
+碰撞法线由我方指向对手/墙面；`wall` 可为 `east`、`west`、`north`、`south`。对于对冲，可用 `normal` 指定或让工具在 `impactIndex` 处从双车位置推导。每条 `frames` 的时间戳必须严格递增。缺数据或存在错误方向的碰撞样本时，工具会报告“未标定”，不会生成伪精确值。
+
+运行：
+
+```bash
+node sim_calibrate.js --input telemetry.json
+node sim_calibrate.js --input telemetry.json --out calibration/yellow-session-01.json
+node sim_calibrate.js --input telemetry.json --update-fidelity
+node sim_calibrate_selftest.js
+```
+
+`--update-fidelity` 只会更新数据完整的子系统：`friction` 需要同时拟合 `latFrictionK` 与 `BLOCK_MU_K`；`collision` 需要同时拟合 `angDamping` 与 `COLLISION_RESTITUTION`；`stall` 需要有效堵转正反标签。所有其他状态保持原样。结果必须再跑固定五个 seed 回归并做新的真机试验；在此之前，`meanNetScore` 仍只是策略筛选指标。
+
+无头服务提供：
+
+```text
+GET /fidelity          完整保真度、每项证据与当前 coreHash
+GET /api/v1/fidelity   同一接口别名
+GET /health            fidelitySummary 的紧凑状态汇总
+```
+
+保真度状态值为 `calibrated`（已标定）、`hand_drawn`（手绘/工程假设）、`random_stub`（随机桩）、`uncalibrated`（未标定）和 `verified`（规则回归已验证）。`fidelity.json` 是唯一审计来源；它不会因一次普通评测、参数扫描或脚本生成结果而自动变绿。
 
 # 快速开始
 
@@ -173,6 +291,12 @@ node sim_battle.js --vehicles vehicles.json --us @example --them fsm --seed 42
 # Python 客户端
 "C:/Users/Neco/AppData/Local/Programs/Python/Python312/python.exe" sim_env.py          # 跑一集
 "C:/Users/Neco/AppData/Local/Programs/Python/Python312/python.exe" sim_env.py --sweep  # 扫参
+
+# AI 优先评测入口（无需手动启动 sim_server）
+python sim_runner.py doctor
+python sim_runner.py eval --candidate example_robot.py
+python sim_runner.py compare --candidate example_robot.py --baseline fsm
+python sim_runner_selftest.py
 ```
 
 3D 视角操作：左键拖拽空白=旋转视角（点车身/方块=拖拽移动）、右键=平移、滚轮=缩放、双击=复位视角。左上角“自由 / 鸟瞰 / 跟车 / 台沿特写”按钮会切换预设镜头；按钮区域与画布拖拽事件隔离，点击不会被切回自由视角。镜头控制器使用 Three.js 世界坐标，跟车和台沿焦点会随车辆实时更新。
@@ -234,7 +358,9 @@ curl http://127.0.0.1:8932/api/v1/evaluations/<id>
 
 | 端点 | 请求体 | 说明 |
 |---|---|---|
-| `POST /reset` | `{seed, params, scene, vehicles, manual}` | 重置并进入 `PREP`（seed 固定可复现）；`vehicles` 为 `{us:{...},them:{...}}` |
+| `GET /field-gray` | `?values=1` 可选 | 返回当前场地灰度表元数据；加 `values=1` 回传完整表 |
+| `POST /field-gray` | `{map}` 或 `{reset:true}` | 加载实测灰度表，或恢复默认手绘模型；核心忙时返回 `409` |
+| `POST /reset` | `{seed, params, scene, fieldGray, vehicles, manual}` | 重置并进入 `PREP`（seed 固定可复现）；`fieldGray` 可为二维/平铺灰度表 |
 | `POST /arm` | — | 发令（双车 FSM 开跑） |
 | `POST /step` | `{dt, action:{v,w}}` | 单步（action 控制我方，对手 FSM） |
 | `POST /step2` | `{dt, us:{v,w}, them:{v,w}}` | 分别控制两车（null=该车 FSM） |
@@ -242,11 +368,11 @@ curl http://127.0.0.1:8932/api/v1/evaluations/<id>
 | `GET /vehicle?role=us` | — | 读取一台车当前 profile |
 | `POST /vehicle` | `{role:'us', vehicle:{length:0.32, width:0.24, maxSpeed:1.2}}` | 修改单台车 profile，立即影响碰撞/运动 |
 | `POST /scene` | `{preset} / {us:{x,y,th}, them:{x,y,th}, vehicles?, buffs, debuff}` | 摆场景；`robot/opp` 旧字段仍兼容，`vehicles` 可同时更新双车 profile |
-| `POST /battle/run` | `{us, them, seed, params, vehicles, dt, maxSteps, actionTimeout, traceEvery}` | 跑一整场；`vehicles` 为双车 profile；us/them 为 `'fsm'` 或子进程命令；返回含轨迹 `trace`（双车位姿采样，可分析/回放） |
-| `POST /battle/start` | `{us, them, seed?, params?, vehicles?, dt?, maxSteps?, realtime?}` | 启动后台远程对战，返回 `controlToken`；默认实时 20Hz |
+| `POST /battle/run` | `{us, them, seed, params, fieldGray, vehicles, dt, maxSteps, actionTimeout, traceEvery}` | 跑一整场；`fieldGray` 与车辆 profile 会在开局一起固定；us/them 为 `'fsm'` 或子进程命令；返回含轨迹 `trace` |
+| `POST /battle/start` | `{us, them, seed?, params?, fieldGray?, vehicles?, dt?, maxSteps?, realtime?}` | 启动后台远程对战，返回 `controlToken`；默认实时 20Hz |
 | `POST /battle/control` | `{token, command, ...}` | 持 `/battle/start` 返回的令牌控制进行中的后台对战；`command` 为 `arm/pause/resume/restart/scene/params` |
 | `POST /battle/stop` | — | 请求停止后台对战并终止其策略子进程 |
-| `POST /api/v1/evaluations` | `{us, them, candidate?, seeds[], params?, vehicles?, scene?, includeTrace?, realtime?}` | 异步多 seed 评测，返回 `id`；候选可直接提交 Python `code` |
+| `POST /api/v1/evaluations` | `{us, them, candidate?, seeds[], params?, fieldGray?, vehicles?, scene?, includeTrace?, realtime?}` | 异步多 seed 评测，返回 `id`；候选可直接提交 Python `code` |
 | `GET /api/v1/evaluations/:id` | — | 查询评测进度、逐 seed 结果和汇总指标 |
 | `DELETE /api/v1/evaluations/:id` | — | 请求取消正在运行的评测 |
 | `GET /state` | — | 全量状态（双车传感器/FSM/比分/日志） |
@@ -258,7 +384,8 @@ curl http://127.0.0.1:8932/api/v1/evaluations/<id>
 
 返回的 `state` 关键字段：`robots.us/them`（x,y,th,v,w,vehicle,onPlatform,hang,state,action,armed,manual,timer）、
 `sensors.us/them`（旧逻辑别名）、`rawSensors.us/them`（profile 的真实动态通道）、
-`sensorLayout.us/them`（通道类型/位置/朝向）、`scores{us,them}`、`done/doneReason`。
+`sensorLayout.us/them`（通道类型/位置/朝向）、`perception.fieldGray/vision`（当前感知实现元数据）、
+`scores{us,them}`、`done/doneReason`。
 `/step` 额外返回 `reward`（本步得分增量）与 `done`，可直接做 gym 式循环。
 
 比赛核心是单例。批量评测、`/battle/run` 或后台 `/battle/start` 占用期间，通用状态修改接口会返回 `409`；后台远程局必须改用带 `controlToken` 的 `/battle/control`。这样可防止 AI、浏览器和人工调试请求互相串改同一局物理状态。
@@ -307,12 +434,22 @@ obs 结构：
 
 ## AI Agent 迭代工作流
 
-1. 启动 `node sim_server.js`；
-2. 先读 `/api/v1/health` 和 `/api/v1/schema`，记录 `coreHash` 与动作/观测契约；
-3. 用固定 seed 集提交 `/api/v1/evaluations` 跑基线；
-4. 修改 `decide(obs)` 或参数，再提交下一版候选，比较 `meanNetScore/winRate/mountRate`；
-5. 对最优 seed 使用 `includeTrace:true`，查看轨迹和 `logTail` 复现决策；
-6. 需要可视化时打开 `wushu_ring_sim_3d.html`，在 3D 场景中看实时行为和裁判阶段。
+优先使用 `sim_runner.py`，它只编排现有 HTTP API，不改变 `decide(obs)` 或规则核心：
+
+```bash
+# 未启动服务时会临时启动；已有服务会被复用且绝不被 runner 关闭
+python sim_runner.py eval --candidate candidate.py
+
+# 基线可为 fsm 或另一份 Python 策略；两组使用完全相同的 seed/车辆/参数/对手
+python sim_runner.py compare --candidate candidate.py --baseline baseline.py --trace
+
+# 单车 profile 自动包装成 {"us": profile}；也可传 {"us":...,"them":...}
+python sim_runner.py eval --candidate candidate.py --vehicles vehicle_profiles/robocup_wheeled_combat_11.json
+```
+
+默认固定 seed 集为 `42,7,21,100,123`，默认 `realtime=false`，因此适合快速、可复现的决策筛选。`--params`、`--vehicles` 支持内联 JSON 或 JSON 文件，`--opponent` 可选 `fsm`、`@注册名` 或子进程命令；实车线程时序验证必须显式传 `--realtime`。
+
+每次 `eval/compare` 会写入 `.sim_runs/<UTC-实验名>/result.json`：含请求参数、候选策略 SHA-256、`coreHash`、车辆 profile、种子、完整服务端结果及执行时间。该目录被 Git 忽略，便于 AI 比较策略版本或按结果文件复现。需要可视化时，再打开 `wushu_ring_sim_3d.html` 观察轨迹与裁判阶段。
 
 Python 客户端也提供等价封装：
 

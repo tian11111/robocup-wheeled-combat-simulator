@@ -6,7 +6,7 @@
 
 - **规则核心唯一来源**暂在 `wushu_ring_sim.html` 的 `<script>` CORE 块（`CORE-BEGIN` ~ `CORE-END` 之间），无 DOM 依赖；`wushu_ring_sim_3d.html` 是唯一网页入口，GameEngine/Referee/SensorAPI/RobotAPI/PhysicsAdapter 在其上编排。
 - 双车同构：`US`(我方) 与 `THEM`(对手) 共用同一套 FSM，但每台车可独立配置传感器 profile（数量/类型/布局）；计分板 `scoreBoard{us,them}` 共享。
-- 改完 CORE 后必须跑：`node sim_selftest.js`（26 个确定性场景）确认没破坏状态机，再 `node sim_dragtest.js` 和 `node build_3d.js` 同步 3D 版。
+- 改完 CORE 后必须跑：`node sim_selftest.js`（29 个确定性场景）确认没破坏状态机，再 `node sim_dragtest.js` 和 `node build_3d.js` 同步 3D 版。
 - 无头服务每次启动从 HTML 实时提取 CORE，无需重启构建。
 
 ## 常用命令（Git Bash）

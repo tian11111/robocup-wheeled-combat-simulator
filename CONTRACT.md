@@ -137,14 +137,14 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 | WAIT_START→MOUNT_RING | 同 | 登台用 CLIMB 模式（铲前悬空不误刹） |
 | _find_wall（前冲找墙/触发丢失） | 前冲找墙/触发丢失 | 铲前二值映射必须保留"有反射→无反射"的骑沿事件 |
 | RECOVER | 同 | 危机门控：`(在台上或前红外悬空) and safety.crisis()` |
-| SEARCH 视觉分类 | classifyRate 概率模拟 | 实车视觉就位后替换 classifyRate，接口不变 |
+| SEARCH 视觉分类 | 默认 `classifyRate` 概率模拟；可装同步 SimVision 缓存适配器 | 只接受 `buff/debuff/opponent/unknown` 标准标签；真实视觉异步更新必须在 CORE 外缓存，接口不变 |
 | 掉台灰度判定 | 仿真几何判定 | 仿真 CORE 走道灰度=0（fieldGray）；SimDriver 映射走道→ADC 1260（不触发实车 fall_risk 300，2026-08-12 从 600 改）——掉台恢复由几何+危机门控驱动 |
 
 ## 8. 测试契约
 
 | 约束 | 说明 |
 |---|---|
-| 必跑回归 | `node sim_selftest.js`（**27 个确定性场景 1-27**，必须全绿）+ `node sim_dragtest.js`（拖拽语义 11 项）；AI 接口改动另跑 `node sim_lib_selftest.js` 与 `node sim_ai_selftest.js` |
+| 必跑回归 | `node sim_selftest.js`（**29 个确定性场景 1-29**，必须全绿）+ `node sim_dragtest.js`（拖拽语义 11 项）；AI 接口改动另跑 `node sim_lib_selftest.js` 与 `node sim_ai_selftest.js` |
 | 确定性 | `resetAll({seed})` 后噪声/识别/能量块摆放可复现（mulberry32）；评估用固定种子集 |
 | 桥验证 | 实车侧改动后：`node sim_battle.js --us "python robot_adapter.py D:/.../tools/sim_robot_main.py" --them fsm --seed 42` 跑通一场 |
 | 语法 | 实车侧代码保持 Python 3.7 兼容（树莓派系统 python3） |
@@ -157,6 +157,23 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 - **比分口径**：不设单场硬标准（策略层随机波动），用**多次运行统计**（≥5 seed 的平均净胜/胜率）对比改动前后
 - **决策等价**：同 obs → 同动作（子进程协议确定性；实车线程联调使用 `realtime:true` 保证同步）
 - **物理保真边界**：以第 3/6/7 节差异表为准（传感器量程/视觉 stub/台阶近似）——真机标定后逐项复核替换；**仿真器不承诺与真机逐帧一致**，只承诺"决策输入语义对齐"
+
+### 8.1 标定与保真度审计
+
+`sim_calibrate.js` 只从真实遥测 JSON 计算参数建议：`vehicle.latFrictionK`、`vehicle.angDamping`、`params.BLOCK_MU_K`、`params.COLLISION_RESTITUTION` 和 `params.STALL_SPEED`。它以样本数、RMSE 和遥测 SHA-256 写入本机 `calibration/`，**不直接改 CORE 或 profile**。只有人工复核后显式传 `--update-fidelity`，且完整样本条件满足时，`fidelity.json` 中相应子系统才可标记为 `calibrated`。
+
+`GET /fidelity` 返回这份文件和当前 `coreHash`；`GET /health` 返回紧凑汇总。`fieldGray=hand_drawn`、`vision=random_stub`、未完成的摩擦/碰撞/堵转均必须如实报告。一次固定 seed 评测、一次网页观察或缺标签的轨迹，都不是标定证据，不能将 `meanNetScore` 宣称为真机成绩。
+
+### 8.2 可插拔感知契约
+
+`setFieldGrayMap()` 接受 `0..1000` 的二维灰度表，行顺序为南→北、列顺序为西→东；可选 `bounds` 与
+`bilinear/nearest` 插值。`POST /field-gray`、`resetAll({fieldGray})`、对战和评测请求使用同一表结构，未传
+`fieldGray` 时保留当前表，显式 `null` 才恢复手绘模型。场地外的逻辑灰度仍固定为 0。
+
+`setSimVision({id, classify(context)})` 的 `classify` **必须同步**返回标准检测 `{label, confidence, source}`。
+真实视觉线程/YOLO 可以异步，但只能在外部刷新一个“最新结果”缓存，CORE 读取该缓存时不得引入时序等待或额外随机数。
+默认适配器保持原有一次 `rng() < classifyRate` 的行为，以维持既有固定 seed 轨迹。加载灰度表、接入视觉缓存本身
+不构成标定；`fidelity.json` 仍须在真实采样和人工复核后更新。
 
 ## 9. 环境约束
 
@@ -179,7 +196,10 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 - [ ] 实车 actuator 动作的 `_on_stage_live` 灰度确认依赖 SimDriver 分段映射，标定后需用实车采样复核
 - [ ] 视觉（buff/debuff 分类）待实车 YOLO 就位后替换 `classifyRate`
 - [x] **文件夹导入**（2026-08-12）：`POST /import-dir {name,dir,entry}` 直接引用本地文件夹入口程序（不复制，改代码即时生效），自动探测 `tools/sim_robot_main.py→main.py`；`robot_adapter.py` 自动把入口目录加入 sys.path（多文件 import 可用）；3D GUI 加"📁 导入代码文件夹"
-- [x] **动力学与传感非理想特性重构**（2026）：保留 `{v,w}` 接口与 `US/THEM/blocks/vehicle` 结构不变，原生 ES6、零外部依赖、沿用 `rng()` 确定性。①轮式驱动滑移（纵向 `accelK` 收敛 + 侧向 `latFrictionK` 衰减 + 碰撞打转 `spinOmega` 独立衰减叠加）②偏心力矩 `r×J` 撞角打转③台阶 4 轮采样 pitch/roll/zG 连续姿态（消除二值瞬切）④能量块库仑摩擦（`BLOCK_STICK_SPEED` 粘住消微滑）⑤数字红外施密特迟滞 + 灰度近地光斑 + 红外入射角 `cosθ` 衰减⑥铲子楔入（`shovelHeight` 判定，被挑车 `frontLoad→0` 推力骤降）⑦堵转过流 `isStalled`⑧指令延迟环形队列 `cmdLatencyFrames`（默认 0=零回归）。`getState().robots.<role>` 新增 `speed/omega/pitch/roll/zG/isStalled/wedgedFront/frontLoad`；3D/Rapier 读取 `zG/pitch/roll` 仅作显示。selftest 27 场景 + dragtest 10 项全绿。
+- [x] **动力学与传感非理想特性重构**（2026）：保留 `{v,w}` 接口与 `US/THEM/blocks/vehicle` 结构不变，原生 ES6、零外部依赖、沿用 `rng()` 确定性。①轮式驱动滑移（纵向 `accelK` 收敛 + 侧向 `latFrictionK` 衰减 + 碰撞打转 `spinOmega` 独立衰减叠加）②偏心力矩 `r×J` 撞角打转③台阶 4 轮采样 pitch/roll/zG 连续姿态（消除二值瞬切）④能量块库仑摩擦（`BLOCK_STICK_SPEED` 粘住消微滑）⑤数字红外施密特迟滞 + 灰度近地光斑 + 红外入射角 `cosθ` 衰减⑥铲子楔入（`shovelHeight` 判定，被挑车 `frontLoad→0` 推力骤降）⑦堵转过流 `isStalled`⑧指令延迟环形队列 `cmdLatencyFrames`（默认 0=零回归）。`getState().robots.<role>` 新增 `speed/omega/pitch/roll/zG/isStalled/wedgedFront/frontLoad`；3D/Rapier 读取 `zG/pitch/roll` 仅作显示。selftest 28 场景 + dragtest 11 项全绿。
+- [x] **P1 车车碰撞单遍处理**（2026-08-15）：`motionFor()` 只做各车独立积分；`resolveRobotPair()` 在双车均完成积分后以相对位移扫掠解析唯一接触点，统一执行质量加权分离、冲量、角冲量、切向摩擦和铲子楔入。场景 28 固化同步对冲不穿透与 `e=0` 单次冲量结果。
+- [x] **P0 标定/验证闭环工具**（2026-08-15）：`sim_calibrate.js` 对真实遥测执行最小二乘拟合、输出 RMSE/样本数/建议 patch；`fidelity.json` + `GET /fidelity` 如实公布子系统状态。仓库初始仍是 `friction/collision/stall=uncalibrated`，必须录入真机遥测后才能更新为已标定。
+- [x] **P2 可插拔感知层**（2026-08-15）：`fieldGray()` 可加载最高 256×256 的实测表（双线性/最近邻），通过 `/field-gray` 与 reset/评测/对战请求固定复现实验；SimVision 统一为同步缓存接口和标准标签，默认 `classifyRate` 行为不变。场景 29 固化表采样、状态元数据与插件回退。真实场地/视觉尚未载入，因此保真度仍是 `hand_drawn/random_stub`。
 
 ## 11. 3D 渲染约束（GUI 层）
 

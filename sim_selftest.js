@@ -9,7 +9,7 @@ global.document={getElementById:()=>({addEventListener:()=>{}}),addEventListener
 global.window={addEventListener:()=>{}};
 global.navigator={};
 
-eval(script + "\n;global.__T = global.__T || { fs, fs2, bot, opp, US, THEM, robots, blocks, buffs, deb, params, arm, resetAll, startManual, stepSim, stepSimExt, getState, getLog, setPose, setPoseFor, setObject, scenePreset, setVehicleFor, getVehicleFor, onPlatform, onStage, hangOn, fullOn, fieldGray, distToNearestEdge, toDoneFor, enterSearchFor, beginPreparation, pauseMatch, resumeMatch, restartFor, consumeDragImpacts };");
+eval(script + "\n;global.__T = global.__T || { fs, fs2, bot, opp, US, THEM, robots, blocks, buffs, deb, params, arm, resetAll, startManual, stepSim, stepSimExt, getState, getLog, setPose, setPoseFor, setObject, scenePreset, setVehicleFor, getVehicleFor, setFieldGrayMap, getFieldGrayMap, getFieldGrayInfo, setSimVision, getSimVisionInfo, classifyTargetFor, onPlatform, onStage, hangOn, fullOn, fieldGray, distToNearestEdge, toDoneFor, enterSearchFor, beginPreparation, pauseMatch, resumeMatch, restartFor, consumeDragImpacts };");
 const T = global.__T;
 let failures = 0;
 const assert = (cond, msg)=>{ if(cond) console.log(`  ✓ ${msg}`); else { failures++; console.log(`  ✗ FAIL: ${msg}`); } };
@@ -405,6 +405,73 @@ console.log('== 场景 27: 掉台能量块仍可碰撞，拖拽块可推开实�
   assert(fallen.x>blockX+0.05 && Math.hypot(fallen.x-source.x,fallen.y-source.y)>=source.r+fallen.r && blockEvents.some(e=>e.target==='buff'),
     `拖拽块应推开另一能量块并保持间隙, 实际 x=${fallen.x.toFixed(3)} gap=${Math.hypot(fallen.x-source.x,fallen.y-source.y).toFixed(3)}`);
   source.dragLock=false;
+}
+
+console.log('== 场景 28: 双车同步对冲只解一次且不穿过 ==');
+{
+  resetScene(43);
+  const oldRestitution=T.params.COLLISION_RESTITUTION;
+  const beforeUs=T.getVehicleFor('us'), beforeThem=T.getVehicleFor('them');
+  T.setVehicleFor('us',{maxSpeed:3,accelK:40,mass:1,pushFactor:1});
+  T.setVehicleFor('them',{maxSpeed:3,accelK:40,mass:1,pushFactor:1});
+  // 本帧两车各移动约 0.2m，若顺序处理或缺少相对扫掠会直接互相越过。
+  T.setPoseFor(T.US,1.70,1.90,0); T.setPoseFor(T.THEM,2.10,1.90,Math.PI);
+  T.params.COLLISION_RESTITUTION=0;
+  T.stepSimExt(0.1,{us:{v:2,w:0},them:{v:2,w:0}});
+  const gap=Math.hypot(T.THEM.x-T.US.x,T.THEM.y-T.US.y);
+  const minGap=T.US.r+T.THEM.r;
+  assert(gap>=minGap-1e-6 && T.US.x<T.THEM.x,
+    `同步对冲不得互相穿过, 实际 gap=${gap.toFixed(4)} min=${minGap.toFixed(4)}`);
+  assert(Math.abs(T.US.vx)<1e-6 && Math.abs(T.THEM.vx)<1e-6,
+    `e=0 等质量对冲应在一次冲量后共同静止, 实际 vx=${T.US.vx.toFixed(6)}/${T.THEM.vx.toFixed(6)}`);
+  // 小车半径 4cm 时，同一 100ms 步会在帧末完全越过彼此；必须回退到首次接触法线。
+  resetScene(44);
+  T.setVehicleFor('us',{length:0.08,width:0.08,frontExtent:0.04,rearExtent:0.04,sideExtent:0.04,
+    collisionRadius:0.04,maxSpeed:3,accelK:40,mass:1,pushFactor:1});
+  T.setVehicleFor('them',{length:0.08,width:0.08,frontExtent:0.04,rearExtent:0.04,sideExtent:0.04,
+    collisionRadius:0.04,maxSpeed:3,accelK:40,mass:1,pushFactor:1});
+  T.setPoseFor(T.US,1.50,1.90,0); T.setPoseFor(T.THEM,2.00,1.90,Math.PI);
+  T.stepSimExt(0.1,{us:{v:3,w:0},them:{v:3,w:0}});
+  const sweptGap=Math.hypot(T.THEM.x-T.US.x,T.THEM.y-T.US.y);
+  assert(T.US.x<T.THEM.x && sweptGap>=T.US.r+T.THEM.r-1e-6,
+    `高速扫掠对冲应回退至首次接触点, 实际 gap=${sweptGap.toFixed(4)} 位置=${T.US.x.toFixed(3)}/${T.THEM.x.toFixed(3)}`);
+  T.params.COLLISION_RESTITUTION=oldRestitution;
+  T.setVehicleFor('us',beforeUs); T.setVehicleFor('them',beforeThem);
+}
+
+console.log('== 场景 29: 实测灰度表与同步 SimVision 插件 ==');
+{
+  T.setFieldGrayMap({
+    id:'selftest-grid',
+    values:[[100,300],[500,900]],
+    interpolation:'bilinear',
+  });
+  const grayBounds=T.getFieldGrayInfo().bounds;
+  assert(T.fieldGray(grayBounds.xMin,grayBounds.yMin)===100 && T.fieldGray(grayBounds.xMax,grayBounds.yMin)===300,
+    '灰度表应按南到北、西到东正确采样底边');
+  assert(T.fieldGray(grayBounds.xMin,grayBounds.yMax)===500 && T.fieldGray(grayBounds.xMax,grayBounds.yMax)===900,
+    '灰度表应按南到北、西到东正确采样顶边');
+  assert(Math.abs(T.fieldGray(1.9,1.9)-450)<1e-9,
+    `双线性插值中心应为 450, 实际 ${T.fieldGray(1.9,1.9)}`);
+  assert(T.getState().perception.fieldGray.mode==='grid' && T.getFieldGrayInfo().id==='selftest-grid',
+    '状态应报告当前实测灰度表元数据');
+  T.setFieldGrayMap(null);
+  const defaultBounds=T.getFieldGrayInfo().bounds;
+  assert(T.getState().perception.fieldGray.mode==='hand_drawn' && T.fieldGray(defaultBounds.xMin,defaultBounds.yMin)===300,
+    '清除灰度表后应恢复默认手绘场地');
+
+  T.setSimVision({
+    id:'selftest-vision',
+    classify:()=>({label:'debuff',confidence:0.91,source:'fixture'}),
+  });
+  const detection=T.classifyTargetFor(T.US,{obj:T.buffs[0],d:0.2,rel:'左前'});
+  assert(detection.label==='debuff' && detection.confidence===0.91 && detection.source==='fixture',
+    '自定义 SimVision 应输出标准化检测结果');
+  assert(T.getState().perception.vision.mode==='custom' && T.getSimVisionInfo().synchronous===true,
+    '状态应报告同步自定义视觉插件');
+  T.setSimVision(null);
+  assert(T.getState().perception.vision.id==='classifyRate',
+    '清除视觉插件后应恢复默认 classifyRate');
 }
 
 console.log(failures===0 ? '\n全部通过 ✔' : `\n${failures} 项失败 ✘`);

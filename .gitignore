@@ -4,6 +4,8 @@ __pycache__/
 _*.log
 .pytest_cache/
 .mypy_cache/
+.sim_runs/
+calibration/*.json
 .venv/
 node_modules/
 *.tmp

@@ -4,6 +4,8 @@
 
 > 这是**决策逻辑仿真**。台阶、传感器、摩擦与碰撞均为可调的简化模型，不能替代实车标定。
 
+> 给 Codex 等本机 AI 的克隆后部署、评测和改动约束见 [AI_QUICKSTART.md](AI_QUICKSTART.md)。
+
 ![3D 仿真器运行界面](docs/assets/simulator-overview.png)
 
 ## 功能
@@ -14,6 +16,8 @@
 - 每台车独立的底盘尺寸、动力学参数、传感器数量、类型和布局。
 - Python `decide(obs) -> {"v", "w"}` 策略热插拔，可直接导入本地实车代码目录。
 - HTTP API 与多 seed 批量评估，适合本机 AI/Codex 迭代策略。
+- `sim_runner.py` 一条命令完成本机服务启动、固定 seed 评测、候选对比与结果落盘。
+- `sim_calibrate.js` 用真实遥测拟合关键物理参数，并通过 `/fidelity` 公开子系统标定边界。
 
 ## 快速开始
 
@@ -42,6 +46,53 @@ http://127.0.0.1:8931/wushu_ring_sim_3d.html
 ```
 
 页面上的“导入代码文件夹”和“远程对战”依赖 `8932` 服务；如果它没有启动，静态 3D 场景仍可使用，但无法运行 Python 策略。
+
+### AI 一条命令评测
+
+策略迭代不需要打开网页或手动启动服务。`sim_runner.py` 会复用已有 `sim_server`；若本机服务未启动，则临时启动并在评测结束后关闭自己启动的那一个：
+
+```powershell
+# 检查 Node、Python、服务、coreHash 和当前比赛核心是否被占用
+python sim_runner.py doctor
+
+# 对 candidate.py 与 fsm 在固定五个 seed 上快速评测
+python sim_runner.py eval --candidate candidate.py
+
+# 用相同车辆、参数、对手和 seed 集对比候选与基线
+python sim_runner.py compare --candidate candidate.py --baseline fsm
+```
+
+`--params` 与 `--vehicles` 均可传内联 JSON 或 JSON 文件；单车 profile 会自动作为我方 profile 使用。每次 `eval/compare` 都把请求、策略 SHA-256、`coreHash` 和完整结果保存到 `.sim_runs/`，该目录不会提交到 Git。默认是快速确定性评测；实车线程时序验证时附加 `--realtime`。
+
+### 真实遥测标定
+
+仿真评分在完成相应真机标定前不能当作真机成绩。将推块、撞墙/对冲、滑移、堵转和登台的真实位姿遥测整理为 JSON 后运行：
+
+```powershell
+# 只生成带样本数和 RMSE 的建议，不改任何配置
+node sim_calibrate.js --input telemetry/session-01.json
+
+# 人工复核结果后，显式登记满足完整样本条件的子系统
+node sim_calibrate.js --input telemetry/session-01.json --update-fidelity
+
+# 查看当前哪些部分是已标定、手绘、随机桩或未标定
+Invoke-RestMethod http://127.0.0.1:8932/fidelity
+```
+
+结果会写入本机 `calibration/`（不提交到 Git），包含遥测 SHA-256、样本数、RMSE 和可直接传给 `--params` / 车辆 profile 的建议 patch。它不会自动改 CORE，也不会在数据不足时猜参数。完整 JSON 格式与验收条件见 [SIMULATOR.md](SIMULATOR.md)。
+
+### 加载实测场地灰度
+
+实测灰度表可以按南到北的行、按西到东的列组织成 `0..1000` 二维 JSON，并在任何一组固定 seed 前加载：
+
+```powershell
+$map = @{ id = 'field-measurement-01'; values = @(@(300, 420, 300), @(420, 1000, 420), @(300, 420, 300)); interpolation = 'bilinear' }
+Invoke-RestMethod http://127.0.0.1:8932/field-gray -Method Post -ContentType 'application/json' -Body (@{ map = $map } | ConvertTo-Json -Depth 6)
+```
+
+`GET /field-gray?values=1` 可回读当前表，`POST /field-gray` 加 `{ "reset": true }` 恢复手绘默认值。灰度表会被
+`/reset`、`/battle/run`、`/battle/start` 和多 seed 评测请求接受为 `fieldGray`，便于可复现对比。加载数据不代表
+自动完成物理标定；视觉也仍默认是 `classifyRate` 随机桩，详见 [SIMULATOR.md](SIMULATOR.md)。
 
 ### 仅查看 3D 场景
 
@@ -103,6 +154,7 @@ https://<your-account>.github.io/<repository>/wushu_ring_sim_3d.html?api=http://
 # 规则核心和拖拽交互回归
 node sim_selftest.js
 node sim_dragtest.js
+node sim_calibrate_selftest.js
 
 # 从模板同步生成唯一 3D 页面
 node build_3d.js
@@ -113,6 +165,10 @@ node sim_battle.js --us fsm --them fsm --seed 42
 # 启动 AI HTTP API 后，用 Python 跑一局或扫参
 python sim_env.py
 python sim_env.py --sweep
+
+# 本机 AI 一条命令评测与回归
+python sim_runner.py eval --candidate example_robot.py
+python sim_runner_selftest.py
 ```
 
 Windows 上如果 `python` 不在 PATH，请使用你的 Python 解释器完整路径。
@@ -126,6 +182,10 @@ Windows 上如果 `python` 不在 PATH，请使用你的 Python 解释器完整�
 | `wushu_ring_sim.html` | 确定性规则核心的唯一来源。 |
 | `sim_server.js` | 本机 HTTP API、文件夹导入、远程对战与评估服务。 |
 | `sim_lib.js` | 策略子进程桥、观测构造和对战运行器。 |
+| `sim_runner.py` | AI 优先的服务编排、固定 seed 评测、策略对比与结果归档。 |
+| `sim_calibrate.js` | 真实遥测的最小二乘标定工具，只输出可审计的参数建议。 |
+| `fidelity.json` | 当前物理/传感器子系统的保真度状态与证据。 |
+| `AI_QUICKSTART.md` | AI 克隆项目后的部署、仿真迭代和验收入口。 |
 | `SIMULATOR.md` | API、策略协议、传感器与详细使用说明。 |
 
 ## 开发说明

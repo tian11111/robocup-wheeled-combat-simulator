@@ -35,12 +35,29 @@ const { loadCore, runBattle } = require('./sim_lib');
 
 const PORT = parseInt(process.argv[2] || process.env.SIM_PORT || '8932', 10);
 const api = loadCore(__dirname);
-const { resetAll, arm, startManual, stepSim, stepSimExt, getState, getLog, setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset, params, scoreBoard, US, THEM,
+const { resetAll, arm, startManual, stepSim, stepSimExt, getState, getLog, setParams, setVehicleFor, getVehicleFor, setFieldGrayMap, getFieldGrayMap, getFieldGrayInfo, setPose, setPoseFor, setObject, scenePreset, params, scoreBoard, US, THEM,
   beginPreparation, pauseMatch, resumeMatch, restartFor } = api;
 const SERVER_STARTED_AT = new Date().toISOString();
 const CORE_HASH = crypto.createHash('sha256')
   .update(fs.readFileSync(path.join(__dirname, 'wushu_ring_sim.html'), 'utf8'))
   .digest('hex').slice(0, 16);
+const FIDELITY_FILE = path.join(__dirname, 'fidelity.json');
+
+function fidelitySnapshot(){
+  try {
+    const fidelity = JSON.parse(fs.readFileSync(FIDELITY_FILE, 'utf8'));
+    const subsystems = fidelity && fidelity.subsystems && typeof fidelity.subsystems === 'object' ? fidelity.subsystems : {};
+    const byStatus = {};
+    for (const [name, detail] of Object.entries(subsystems)){
+      const status = detail && detail.status || 'unknown';
+      if (!byStatus[status]) byStatus[status] = [];
+      byStatus[status].push(name);
+    }
+    return { available: true, updatedAt: fidelity.updatedAt || null, byStatus, fidelity };
+  } catch (error) {
+    return { available: false, error: `无法读取 fidelity.json: ${error.message}`, byStatus: {} };
+  }
+}
 
 // ---------- 计分基准(每步返回奖励增量) ----------
 let scoreBase = { us: 0, them: 0 };
@@ -313,7 +330,7 @@ const server = http.createServer(async (req, res) => {
         version: '2026',
         apiVersion: 'v1',
         core: '3D GameEngine; rules CORE compatibility source',
-        endpoints: ['GET /health', 'GET /schema', 'POST /reset', 'POST /arm', 'POST /step', 'POST /step2', 'POST /params', 'GET /vehicle', 'POST /vehicle', 'POST /scene', 'POST /battle/run', 'POST /battle/start', 'POST /battle/control', 'POST /battle/stop', 'GET /battle/status', 'POST /api/v1/evaluations', 'GET /api/v1/evaluations/:id', 'DELETE /api/v1/evaluations/:id', 'GET /state', 'GET /log', 'GET /referee/state', 'POST /referee/pause', 'POST /referee/resume', 'POST /referee/restart'],
+        endpoints: ['GET /health', 'GET /fidelity', 'GET/POST /field-gray', 'GET /schema', 'POST /reset', 'POST /arm', 'POST /step', 'POST /step2', 'POST /params', 'GET /vehicle', 'POST /vehicle', 'POST /scene', 'POST /battle/run', 'POST /battle/start', 'POST /battle/control', 'POST /battle/stop', 'GET /battle/status', 'POST /api/v1/evaluations', 'GET /api/v1/evaluations/:id', 'DELETE /api/v1/evaluations/:id', 'GET /state', 'GET /log', 'GET /referee/state', 'POST /referee/pause', 'POST /referee/resume', 'POST /referee/restart'],
         state: getState().robots.us.state,
       });
     }
@@ -329,18 +346,49 @@ const server = http.createServer(async (req, res) => {
         state: getState().robots.us.state,
         evaluationBusy: evaluationBusy(),
         coreBusy: !!coreBusyReason(),
+        fidelitySummary: fidelitySnapshot().byStatus,
+        fieldGray: getFieldGrayInfo(),
         endpoints: {
           schema: '/api/v1/schema',
           evaluate: '/api/v1/evaluations',
           state: '/state',
+          fidelity: '/fidelity',
+          fieldGray: '/field-gray',
         },
       });
+    }
+    if (req.method === 'GET' && (u.pathname === '/fidelity' || u.pathname === '/api/v1/fidelity')) {
+      const snapshot = fidelitySnapshot();
+      return json(res, snapshot.available ? 200 : 503, {
+        ok: snapshot.available,
+        coreHash: CORE_HASH,
+        updatedAt: snapshot.updatedAt || null,
+        summary: snapshot.byStatus,
+        fidelity: snapshot.fidelity || null,
+        error: snapshot.error || null,
+      });
+    }
+    if (req.method === 'GET' && (u.pathname === '/field-gray' || u.pathname === '/api/v1/field-gray')) {
+      const includeValues = u.searchParams.get('values') === '1';
+      return json(res, 200, { ok:true, fieldGray:getFieldGrayInfo(), map:includeValues ? getFieldGrayMap() : undefined });
+    }
+    if (req.method === 'POST' && (u.pathname === '/field-gray' || u.pathname === '/api/v1/field-gray')) {
+      if (rejectWhenCoreBusy(res)) return;
+      const b = await readBody(req);
+      const map = b.reset === true || b.map === null ? null : (b.map === undefined ? b : b.map);
+      const fieldGray = setFieldGrayMap(map);
+      return json(res, 200, { ok:true, fieldGray, state:getState() });
     }
     if (req.method === 'GET' && (u.pathname === '/schema' || u.pathname === '/api/v1/schema')) {
       return json(res, 200, {
         apiVersion: 'v1',
         coreHash: CORE_HASH,
         deterministic: { seed: true, fixedSeedSet: EVAL_SEEDS },
+        fidelity: { endpoint: '/fidelity', statuses: ['calibrated', 'hand_drawn', 'random_stub', 'uncalibrated', 'verified'] },
+        perception: {
+          fieldGray: { endpoint:'/field-gray', reset:'POST {"reset":true}', map:'POST {id?, values, width?, height?, bounds?, interpolation?}' },
+          vision: { interface:'core.setSimVision({id, classify(context)}) -> {label, confidence, source}', labels:['buff','debuff','opponent','unknown'] },
+        },
         action: {
           type: 'object',
           fields: {
@@ -367,7 +415,8 @@ const server = http.createServer(async (req, res) => {
             realtime: 'boolean? (默认 false，实车线程联调时设 true)',
             params: 'object?',
             vehicles: '{us?,them?}',
-            scene: 'object?'
+            scene: 'object?',
+            fieldGray: '二维/扁平灰度表对象?'
           },
           resultMetrics: ['meanNetScore', 'winRate', 'drawRate', 'mountRate', 'bestNetScore', 'worstNetScore'],
         },
@@ -400,6 +449,7 @@ const server = http.createServer(async (req, res) => {
       const opts = {
         params: b.params,
         scene: b.scene,
+        fieldGray: b.fieldGray,
         vehicles: b.vehicles,
         dt: Number.isFinite(Number(b.dt)) ? Math.max(0.01, Math.min(0.2, Number(b.dt))) : 0.05,
         maxSteps: Number.isFinite(Number(b.maxSteps)) ? Math.max(1, Math.min(20000, Math.floor(Number(b.maxSteps)))) : 2400,
@@ -438,7 +488,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && u.pathname === '/reset') {
       if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
-      resetAll({ seed: b.seed ?? params.seed, params: b.params, scene: b.scene, vehicles: b.vehicles });
+      resetAll({ seed: b.seed ?? params.seed, params: b.params, scene: b.scene, fieldGray: b.fieldGray, vehicles: b.vehicles });
       if (b.manual) startManual();
       scoreBase = { us: scoreBoard.us, them: scoreBoard.them };
       return json(res, 200, { ok: true, state: getState() });
@@ -503,6 +553,7 @@ const server = http.createServer(async (req, res) => {
           seed: b.seed,
           params: b.params,
           scene: b.scene,          // 预设场景(如 {preset:'center'} 车放台上中心)
+          fieldGray: b.fieldGray,
           vehicles: b.vehicles,
           dt: b.dt, maxSteps: b.maxSteps,
           us: b.us ?? 'fsm', them: b.them ?? 'fsm',
@@ -572,7 +623,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && u.pathname === '/battle/start') {
       const b = await readBody(req);
       if (rejectWhenCoreBusy(res)) return;
-      resetAll({ seed: b.seed, params: b.params, vehicles: b.vehicles });
+      resetAll({ seed: b.seed, params: b.params, fieldGray: b.fieldGray, vehicles: b.vehicles });
       scoreBase = { us: scoreBoard.us, them: scoreBoard.them };
       battleSession = {
         running: true, abort: false, stop: null, controlToken: crypto.randomBytes(24).toString('hex'), startedAt: Date.now(), result: null, error: null,
@@ -581,6 +632,7 @@ const server = http.createServer(async (req, res) => {
       runBattle({
         api,
         seed: b.seed, params: b.params,
+        fieldGray: b.fieldGray,
         vehicles: b.vehicles,
         dt: b.dt, maxSteps: b.maxSteps || 2400,
         us: b.us ?? 'fsm', them: b.them ?? 'fsm',

@@ -226,7 +226,7 @@ function resolveController(spec){
 }
 
 // ---------- 对战运行器 ----------
-// opts: { api, seed, params, scene, vehicles:{us:{...},them:{...}}, dt, maxSteps,
+// opts: { api, seed, params, scene, fieldGray, vehicles:{us:{...},them:{...}}, dt, maxSteps,
 //         us: 'fsm'|cmd|@name, them: 'fsm'|cmd|@name,
 //         actionTimeout, traceEvery, realtime, shouldAbort, onLog, onProgress }
 async function runBattle(opts){
@@ -239,7 +239,7 @@ async function runBattle(opts){
   const realtime = opts.realtime !== false;
   const shouldAbort = opts.shouldAbort || (() => false);
 
-  resetAll({ seed: opts.seed, params: opts.params, scene: opts.scene, vehicles: opts.vehicles });
+  resetAll({ seed: opts.seed, params: opts.params, scene: opts.scene, fieldGray: opts.fieldGray, vehicles: opts.vehicles });
   const usCmd = resolveController(opts.us);
   const themCmd = resolveController(opts.them);
   const usPol  = usCmd  && usCmd  !== 'fsm' ? spawnPolicy(usCmd,  '我方', onLog) : null;

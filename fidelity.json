@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-08-15T00:00:00.000Z",
+  "subsystems": {
+    "rules": {
+      "status": "verified",
+      "label": "已验证",
+      "evidence": "node sim_selftest.js 的确定性规则回归；不代表真机物理标定。"
+    },
+    "fieldGray": {
+      "status": "hand_drawn",
+      "label": "手绘",
+      "evidence": "fieldGray() 为程序化场地灰度函数，尚未载入实测灰度表。"
+    },
+    "vision": {
+      "status": "random_stub",
+      "label": "随机桩",
+      "evidence": "classifyRate 为确定性随机识别概率，尚未接入真机视觉结果。"
+    },
+    "friction": {
+      "status": "uncalibrated",
+      "label": "未标定",
+      "parameters": ["vehicle.latFrictionK", "params.BLOCK_MU_K"],
+      "evidence": "等待横向滑移与能量块滑行/推块遥测。"
+    },
+    "collision": {
+      "status": "uncalibrated",
+      "label": "未标定",
+      "parameters": ["vehicle.angDamping", "params.COLLISION_RESTITUTION"],
+      "evidence": "等待撞墙、偏心对冲与正面对冲遥测。"
+    },
+    "stall": {
+      "status": "uncalibrated",
+      "label": "未标定",
+      "parameters": ["params.STALL_SPEED"],
+      "evidence": "等待带真实堵转标签的命令/速度遥测。"
+    },
+    "mount": {
+      "status": "hand_drawn",
+      "label": "手绘",
+      "evidence": "6cm 台阶与登台门槛来自规则/工程假设，等待真机登台轨迹验证。"
+    }
+  }
+}
