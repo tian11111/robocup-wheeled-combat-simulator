@@ -12,7 +12,8 @@
     --st-attack:#ff5b5b; --st-score:#3ddc84; --st-recover:#b07bff; --st-done:#5a6472;
   }
   *{box-sizing:border-box; margin:0; padding:0;}
-  html,body{background:var(--bg); color:var(--txt); font-family:"Microsoft YaHei","PingFang SC",sans-serif; font-size:13px;}
+  html,body{height:100%; background:var(--bg); color:var(--txt); font-family:"Microsoft YaHei","PingFang SC",sans-serif; font-size:13px; overflow:hidden;}
+  body{display:flex; flex-direction:column; min-height:100vh;}
   header{
     display:flex; align-items:center; gap:14px; padding:10px 16px;
     background:linear-gradient(180deg,#202834,#1a2028); border-bottom:1px solid var(--line);
@@ -27,10 +28,10 @@
     padding:3px 8px; border-radius:4px; white-space:nowrap;
   }
   header .ver{margin-left:auto; color:var(--muted); font-size:11px; white-space:nowrap;}
-  .main{display:flex; gap:12px; padding:12px; align-items:flex-start;}
-  .left{flex:0 0 auto;}
+  .main{display:grid; grid-template-columns:minmax(480px,1.18fr) minmax(460px,.82fr); gap:12px; padding:12px; flex:1 1 auto; min-height:0; overflow:hidden;}
+  .left{min-width:0; min-height:0; display:flex; flex-direction:column;}
   #cv{
-    width:800px; height:800px; background:#2a3038; border:1px solid var(--line);
+    width:100%; height:auto; flex:1 1 auto; min-height:0; background:#2a3038; border:1px solid var(--line);
     border-radius:6px; overflow:hidden; position:relative; cursor:grab;
   }
   #cv canvas{display:block;}
@@ -38,34 +39,42 @@
     display:none; position:absolute; inset:0; color:#ff9f9f; font-size:14px;
     background:rgba(20,23,28,.92); padding:30px; line-height:1.9; z-index:9;
   }
-  .hint{color:var(--muted); font-size:11px; margin-top:6px; line-height:1.7;}
-  .right{flex:1 1 300px; display:flex; flex-direction:column; gap:10px; min-width:280px;}
-  .panel{background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px 12px;}
+  .hint{color:var(--muted); font-size:10.5px; margin-top:6px; line-height:1.55; flex:0 0 auto;}
+  .right{min-width:0; min-height:0; overflow:hidden; display:grid; grid-template-rows:125px minmax(120px,1fr) minmax(130px,1fr) minmax(220px,1.35fr); gap:10px;}
+  .panel{background:rgba(30,36,44,.84); border:1px solid rgba(86,101,119,.62); border-radius:6px; padding:9px 11px; min-height:0; backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); box-shadow:0 8px 24px rgba(0,0,0,.18);}
   .panel h3{font-size:12px; color:var(--muted); margin-bottom:6px; letter-spacing:1px; font-weight:normal;}
-  .st-row{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;}
-  .st-row .lab{color:var(--muted); width:64px;}
-  #stateBadge{font-size:16px; font-weight:bold; padding:2px 10px; border-radius:4px; letter-spacing:1px;}
-  #actionText{font-size:14px; font-weight:bold; color:#fff;}
-  #subText{color:var(--muted); font-size:12px;}
-  .scores{display:flex; gap:14px; margin-top:6px; color:var(--txt); font-size:13px; flex-wrap:wrap;}
-  .scores b{font-size:16px; color:#fff;}
-  .fsm-chain{color:var(--muted); font-size:10.5px; margin-top:6px; letter-spacing:.3px; line-height:1.8;}
+  .status-panel{display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); column-gap:12px; row-gap:4px; align-content:start; overflow:hidden;}
+  .status-panel .st-row{display:flex; align-items:center; gap:6px; flex-wrap:nowrap; min-width:0; margin:0;}
+  .status-panel .st-row:nth-child(3), .status-panel .scores, .status-panel .fsm-chain{grid-column:1 / -1;}
+  .st-row .lab{color:var(--muted); width:52px; flex:0 0 auto; font-size:11px;}
+  #stateBadge,#themBadge{font-size:12px; line-height:1.15; font-weight:bold; padding:3px 6px; border-radius:4px; letter-spacing:.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  #actionText{font-size:12px; font-weight:bold; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  #subText,#themSub{color:var(--muted); font-size:10.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .scores{display:flex; gap:12px; margin-top:0; color:var(--txt); font-size:11.5px; flex-wrap:wrap;}
+  .scores b{font-size:14px; color:#fff;}
+  .fsm-chain{color:var(--muted); font-size:9.5px; margin-top:0; letter-spacing:.15px; line-height:1.35; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .log-panel,.sensor-panel{display:flex; flex-direction:column; overflow:hidden;}
   #log{
-    height:190px; overflow-y:auto; font-family:Consolas,monospace; font-size:11.5px; line-height:1.75;
+    flex:1 1 auto; min-height:0; overflow-y:auto; font-family:Consolas,monospace; font-size:11px; line-height:1.65;
     background:#14181e; border:1px solid var(--line); border-radius:4px; padding:6px 8px;
   }
   #log .t{color:#5a6472;}
   #log .fsm{color:#7fd4ff;}
   #log .score{color:#ffd166;}
   #log .warn{color:#ff9f9f;}
-  #sensors{display:grid; grid-template-columns:1fr 1fr; gap:3px 10px;}
+  #sensors{display:grid; grid-template-columns:1fr 1fr; gap:2px 10px; overflow-y:auto; min-height:0;}
   .sen{display:flex; align-items:center; gap:6px; font-size:11.5px; padding:1px 0;}
   .sen .nm{color:var(--muted); width:74px; flex:0 0 auto;}
   .sen .val{font-family:Consolas,monospace; min-width:44px; text-align:right;}
   .sen .bar{flex:1; height:6px; background:#14181e; border-radius:3px; overflow:hidden;}
   .sen .bar i{display:block; height:100%; border-radius:3px; transition:background .1s;}
-  .bottom{display:flex; gap:12px; padding:0 12px 14px; flex-wrap:wrap;}
-  .bottom .panel{flex:1 1 320px;}
+  .right-tools{min-height:0; display:flex; flex-direction:column; overflow:hidden;}
+  .tool-tabs{display:flex; gap:4px; flex:0 0 auto; padding:4px; background:#171c22; border:1px solid var(--line); border-bottom:0; border-radius:5px 5px 0 0;}
+  .tool-tab{padding:5px 10px; color:var(--muted); background:transparent; border-color:transparent; font-size:11px;}
+  .tool-tab.active{color:#fff; background:#2d6fae; border-color:#4da3ff;}
+  .tool-pane{display:none; min-height:0; overflow:auto; border:1px solid var(--line); border-radius:0 0 5px 5px; background:rgba(18,23,29,.62); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);}
+  .tool-pane.active{display:flex; flex:1 1 auto; flex-direction:column;}
+  .tool-panel{min-height:100%; border:0; border-radius:0; overflow:auto;}
   .sliders{display:grid; grid-template-columns:repeat(auto-fill,minmax(215px,1fr)); gap:6px 14px;}
   .sliders label{display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--muted); white-space:nowrap;}
   .sliders input[type=range]{flex:1; min-width:60px; accent-color:var(--acc);}
@@ -74,6 +83,22 @@
   .vehicle-fields label{display:flex; align-items:center; gap:6px; color:var(--muted); font-size:11.5px;}
   .vehicle-fields input{width:82px; margin-left:auto; padding:3px 5px; background:#14181e; color:var(--txt); border:1px solid var(--line); border-radius:3px; font-family:Consolas,monospace;}
   .vehicle-actions{display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-top:8px;}
+  .sensor-editor{margin-top:10px; padding-top:8px; border-top:1px solid var(--line);}
+  .sensor-editor-head{display:flex; align-items:center; gap:7px; flex-wrap:wrap; color:var(--muted); font-size:11.5px;}
+  .sensor-editor-head select,.sensor-editor-head input,.sensor-editor button{padding:3px 5px; background:#14181e; color:var(--txt); border:1px solid var(--line); border-radius:3px; font-size:11px;}
+  .sensor-editor-head input{width:52px; font-family:Consolas,monospace;}
+  #selUs,#selThem{width:180px; min-width:180px; max-width:240px; flex:0 1 190px; padding:4px 7px; background:#14181e; color:var(--txt); border:1px solid var(--line); border-radius:4px; font-size:11px;}
+  .sensor-editor button{cursor:pointer;}
+  .sensor-editor button:hover{border-color:var(--acc); color:#fff;}
+  .sensor-editor-status{color:var(--muted); font-size:10.5px;}
+  .sensor-channel-scroll{margin-top:6px; max-height:250px; overflow:auto; border:1px solid var(--line); border-radius:4px; background:#181d23;}
+  .sensor-channel-head,.sensor-channel-row{min-width:870px; display:grid; grid-template-columns:105px 105px 105px 68px 68px 68px 68px 68px 34px; gap:4px; align-items:center; padding:4px 5px;}
+  .sensor-channel-head{position:sticky; top:0; z-index:1; color:var(--muted); background:#252d37; font-size:10px;}
+  .sensor-channel-row{border-top:1px solid rgba(51,61,73,.55);}
+  .sensor-channel-row input,.sensor-channel-row select{width:100%; box-sizing:border-box; padding:3px 4px; background:#14181e; color:var(--txt); border:1px solid var(--line); border-radius:3px; font:10.5px Consolas,monospace;}
+  .sensor-channel-row select{font-family:inherit;}
+  .sensor-channel-row button{padding:2px 6px; color:#ffb0b0; border-color:#75444a;}
+  .sensor-editor-note{margin-top:5px; color:var(--muted); font-size:10.5px; line-height:1.5;}
   .ctrl-row{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px;}
   button{
     background:var(--panel2); color:var(--txt); border:1px solid var(--line); border-radius:4px;
@@ -90,6 +115,30 @@
   .sep{width:1px; height:20px; background:var(--line);}
   .scene-btns{margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;}
   .scene-btns .cap{color:var(--muted); font-size:11px; margin-right:2px;}
+  #cvOverlay{position:absolute; inset:8px; pointer-events:none; z-index:5;}
+  #camToolbar{display:flex; gap:4px; flex-wrap:wrap; pointer-events:auto; width:max-content; max-width:100%; padding:4px; border:1px solid rgba(122,143,165,.48); border-radius:5px; background:rgba(15,20,26,.62); backdrop-filter:blur(8px);}
+  #camToolbar button{padding:3px 7px; font-size:10.5px; background:rgba(37,45,55,.82);}
+  #camToolbar button.active{background:#2d6fae; border-color:#64b4ff;}
+  #fxToolbar{display:flex; gap:4px; flex-wrap:wrap; pointer-events:auto; width:max-content; max-width:100%; margin-top:5px; padding:4px; border:1px solid rgba(122,143,165,.42); border-radius:5px; background:rgba(15,20,26,.56); backdrop-filter:blur(8px);}
+  #fxToolbar .fx-label{color:#aab8c7; font-size:10px; padding:3px 2px 3px 1px;}
+  #fxToolbar button{padding:3px 7px; font-size:10.5px; background:rgba(37,45,55,.82); color:#9aa8b7;}
+  #fxToolbar button.active{background:#245f89; border-color:#64b4ff; color:#fff;}
+  #fxToolbar button.off{background:rgba(31,35,41,.78); border-color:#46515e; color:#687582;}
+  #replayBar{position:absolute; left:0; right:0; bottom:0; display:flex; gap:6px; align-items:center; pointer-events:auto; padding:5px 7px; border:1px solid rgba(122,143,165,.42); border-radius:5px; background:rgba(15,20,26,.68); backdrop-filter:blur(8px); color:var(--muted); font-size:10.5px;}
+  #replayBar input[type=range]{flex:1; min-width:80px; accent-color:#ffd166;}
+  #replayBar button{padding:3px 7px; font-size:10.5px;}
+  #replayLabel{white-space:nowrap; font-family:Consolas,monospace;}
+  @media (max-width:1150px){
+    html,body{overflow:auto;}
+    .main{grid-template-columns:1fr; overflow:visible;}
+    #cv{height:min(72vw,66vh); min-height:420px;}
+    .right{overflow:visible; grid-template-rows:auto auto auto auto;}
+  }
+  @media (max-height:680px) and (min-width:1151px){
+    .right{grid-template-rows:112px minmax(105px,1fr) minmax(115px,1fr) minmax(190px,1.25fr);}
+    .status-panel{row-gap:2px;}
+    .fsm-chain{display:none;}
+  }
 </style>
 </head>
 <body>
@@ -103,7 +152,29 @@
 
 <div class="main">
   <div class="left">
-    <div id="cv"><div id="loadErr"></div></div>
+    <div id="cv">
+      <div id="loadErr"></div>
+      <div id="cvOverlay">
+        <div id="camToolbar" aria-label="战术镜头">
+          <button type="button" data-cam="free" class="active">自由</button>
+          <button type="button" data-cam="top">鸟瞰</button>
+          <button type="button" data-cam="chase">跟车</button>
+          <button type="button" data-cam="edge">台沿特写</button>
+        </div>
+        <div id="fxToolbar" aria-label="显示效果开关">
+          <span class="fx-label">显示</span>
+          <button type="button" data-fx="hud" class="active">HUD</button>
+          <button type="button" data-fx="trails" class="active">轨迹</button>
+          <button type="button" data-fx="vectors" class="active">矢量</button>
+          <button type="button" data-fx="scan" class="off">扫描</button>
+          <button type="button" data-fx="collisions" class="active">碰撞</button>
+        </div>
+        <div id="replayBar">
+          <span>回放</span><input id="replayScrub" type="range" min="0" max="0" value="0" step="1" title="拖动查看最近 3 秒轨迹">
+          <span id="replayLabel">实时</span><button id="btnSlowReplay" type="button">0.2x 精彩慢放</button>
+        </div>
+      </div>
+    </div>
     <div class="hint">
       🖱 左键拖拽空白: 旋转视角 · 左键点选车身/方块: 拖拽移动 · 右键: 平移 · 滚轮: 缩放 · 双击: 复位视角<br>
       ⌨ Enter: 发令(arm 双车) · R: 重置 · 旋转车头用下方 ⟲⟳ 按钮<br>
@@ -112,7 +183,7 @@
   </div>
 
   <div class="right">
-    <div class="panel">
+    <div class="panel status-panel">
       <div class="st-row"><span class="lab">我方状态</span><span id="stateBadge">WAIT_START</span><span id="subText"></span></div>
       <div class="st-row"><span class="lab">对手状态</span><span id="themBadge">WAIT_START</span><span id="themSub"></span></div>
       <div class="st-row"><span class="lab">当前动作</span><span id="actionText">等待发令</span></div>
@@ -125,26 +196,26 @@
       <div class="fsm-chain">双车同算法: WAIT_START → MOUNT_RING(姿态确认→倒车登台→失败前冲找墙→换面→正冲备选) → SEARCH(对角IR→转向→视觉分类) → ATTACK / SCORE_BLOCK / 绕行 → RECOVER(屁股朝擂台→登台→贴边回中→计数超限) → FINISHED</div>
     </div>
 
-    <div class="panel">
+    <div class="panel log-panel">
       <h3>事件日志 [fsm]</h3>
       <div id="log"></div>
     </div>
 
-    <div class="panel">
-      <h3 style="display:flex; align-items:center; gap:8px;">传感器 (14 路 · 灰度≈1000台上白/300黑带/0走道 · 红外0~1)
+    <div class="panel sensor-panel">
+      <h3 style="display:flex; align-items:center; gap:8px;">传感器（按车辆 profile 动态）
         <select id="sensSel"><option value="us">我方</option><option value="them">对手</option></select>
+        <span id="sensorMeta" class="cap"></span>
       </h3>
       <div id="sensors"></div>
     </div>
-  </div>
-</div>
-
-<div class="bottom">
-  <div class="panel">
-    <h3>参数 (实时生效)</h3>
-    <div class="sliders" id="sliders"></div>
-  </div>
-  <div class="panel">
+    <div class="right-tools">
+      <div class="tool-tabs" role="tablist" aria-label="设置面板">
+        <button class="tool-tab active" data-pane="settingsVehicle" type="button">车辆 / 传感器</button>
+        <button class="tool-tab" data-pane="settingsMatch" type="button">比赛控制</button>
+        <button class="tool-tab" data-pane="settingsParams" type="button">参数调节</button>
+      </div>
+      <div class="tool-pane active" id="settingsVehicle">
+       <div class="panel tool-panel">
     <h3>自定义小车参数（每辆车独立）</h3>
     <div class="ctrl-row" style="margin-top:0;">
       <span class="cap">编辑对象</span>
@@ -152,15 +223,37 @@
       <span id="vehicleProfileName" class="cap"></span>
     </div>
     <div id="vehicleFields" class="vehicle-fields" style="margin-top:8px;"></div>
+    <div class="sensor-editor">
+      <div class="sensor-editor-head">
+        <span>传感器配置</span>
+        <select id="sensorPreset" title="选择内置传感器 profile">
+          <option value="wheeledCombat11">本车 11 路</option>
+          <option value="legacy14">兼容 14 路</option>
+          <option value="custom">自定义</option>
+        </select>
+        <span>数量</span>
+        <input id="sensorCount" type="number" min="0" max="64" step="1" value="0" title="传感器通道数量">
+        <button id="btnSensorCount" type="button">应用数量</button>
+        <button id="btnSensorAdd" type="button">＋添加通道</button>
+        <span id="sensorEditorStatus" class="sensor-editor-status"></span>
+      </div>
+      <div class="sensor-channel-scroll">
+        <div class="sensor-channel-head"><span>ID</span><span>名称</span><span>类型</span><span>前向 m</span><span>左侧 m</span><span>角度 rad</span><span>量程 m</span><span>半视角 rad</span><span></span></div>
+        <div id="sensorChannelFields"></div>
+      </div>
+      <div class="sensor-editor-note">数量决定真实通道数；类型和坐标决定传感器模型。兼容别名只用于旧策略，新策略请读取 rawSensors / sensorLayout。</div>
+    </div>
     <div class="vehicle-actions">
-      <button id="btnVehicleDefault">恢复默认</button>
+      <button id="btnVehicleDefault">恢复默认车身</button>
       <button id="btnVehicleCopy">复制 JSON</button>
       <button id="btnVehicleImport">导入 JSON</button>
       <input id="vehicleImportFile" type="file" accept=".json,application/json" style="display:none">
       <span class="hint" style="margin:0;">尺寸/碰撞单位 m；速度 m/s；转速 rad/s；修改后立即影响碰撞和运动。</span>
     </div>
-  </div>
-  <div class="panel">
+       </div>
+      </div>
+      <div class="tool-pane" id="settingsMatch">
+       <div class="panel tool-panel">
     <h3>控制 / 场景</h3>
     <div class="ctrl-row">
       <button class="primary" id="btnArm">▶ 发令 (arm)</button>
@@ -214,6 +307,15 @@
       <div style="color:var(--muted); font-size:11px; margin-bottom:4px;">小车程序输出面板 (子进程 stdout/stderr/事件)</div>
       <div id="remoteOut" style="height:110px; overflow-y:auto; font-family:Consolas,monospace; font-size:11px; line-height:1.7; background:#14181e; border:1px solid var(--line); border-radius:4px; padding:6px 8px; color:#9fd0ff;"></div>
     </div>
+       </div>
+      </div>
+      <div class="tool-pane" id="settingsParams">
+       <div class="panel tool-panel">
+        <h3>参数 (实时生效)</h3>
+        <div class="sliders" id="sliders"></div>
+       </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -224,6 +326,8 @@
     document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"><\/script>');
   }
 </script>
+<script src="visual_effects.js"></script>
+<script src="visual_hud.js"></script>
 
 <script>
 "use strict";
@@ -245,8 +349,10 @@
     params, US, THEM, robots, scoreBoard,
     resetAll, arm, startManual, stepSim, stepSimExt, getState, getLog,
     matchControl, beginPreparation, pauseMatch, resumeMatch, restartFor,
-    setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset,
+    setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset, consumeDragImpacts,
   };
+  // 3D 主页面默认展示用户提供的实车布局；无头/API 仍保持 legacy14 兼容默认。
+  setVehicleFor('us', { id:'robocup-wheeled-combat', sensors:'wheeledCombat11' });
 </script>
 
 <script>
@@ -269,15 +375,26 @@ onLog = (e) => {
 
 // ---------- three.js 场景 ----------
 let renderer, scene, camera, botGroup, themGroup, botBodyGroup, themBodyGroup, buffMeshes, debMesh, startZoneGroup;
-let physicsBridge = null, gameEngine = null, pickMeshes = [], coneMat = {};
+let physicsBridge = null, gameEngine = null, pickMeshes = [], coneMat = {}, sensorConeLayoutId='';
+let renderPipeline = null, visualState = null, cameraController = null;
+let sensorVisuals = { us:null, them:null }, sensorFx = null, collisionFx = null;
+let carFx = { us:{}, them:{} }, trails = {}, velocityVectors = {}, overheadHud = {};
+const fxVisible = { hud:true, trails:true, vectors:true, scan:false, collisions:true };
+let frameDt = 0.016, visualClock = 0, trailClock = 0, sensorClock = 0;
+let replayHistory = [], replayCursor = -1, replaySlowTimer = 0, tireMarks = [], replayGhost = {us:null,them:null};
+const visualStageMemory = { us:null, them:null };
+let lastDragImpactFx = -10;
+const MAX_REPLAY_HISTORY = 180; // 最近约 3 秒，供复盘/慢放使用
 
 function showPhysicsStatus(){
   if(!physicsStatus || !physicsBridge) return;
   const s = physicsBridge.status();
-  physicsStatus.textContent = s.ready ? `物理层: Rapier 3D · 台阶 ${Math.round(s.stepHeight*100)}cm` : '物理层: 规则登台回退';
-  physicsStatus.style.color = s.ready ? '#9fe8b4' : '#ffd166';
-  physicsStatus.style.background = s.ready ? '#153322' : '#3a3013';
-  physicsStatus.style.borderColor = s.ready ? '#2b7045' : '#6b5516';
+  if(s.loading) physicsStatus.textContent = '物理层: Rapier3D WASM 加载中…';
+  else if(s.ready) physicsStatus.textContent = `物理层: Rapier 3D WASM · 台阶 ${Math.round(s.stepHeight*100)}cm · 接触 ${s.contacts||0}`;
+  else physicsStatus.textContent = s.error ? '物理层: 规则登台回退（WASM 不可用）' : '物理层: 规则登台回退';
+  physicsStatus.style.color = s.ready ? '#9fe8b4' : s.loading ? '#9fd0ff' : '#ffd166';
+  physicsStatus.style.background = s.ready ? '#153322' : s.loading ? '#15324a' : '#3a3013';
+  physicsStatus.style.borderColor = s.ready ? '#2b7045' : s.loading ? '#2d6fae' : '#6b5516';
 }
 
 function makeGlyphTexture(glyph, color){
@@ -348,17 +465,17 @@ function makeStartZone({x, y, w, h, color, edge, label, text, halo, arrowDir}){
 function makeGroundTexture(){
   const c = document.createElement('canvas'); c.width = c.height = 512;
   const g = c.getContext('2d');
-  // 场外(底台顶面) 深色
-  g.fillStyle = '#15171a'; g.fillRect(0,0,512,512);
+  // 场外底台顶面使用蓝灰石墨色，和黑色围栏拉开明度；走道仍保持比赛规则的黑色观感。
+  g.fillStyle = '#70757a'; g.fillRect(0,0,512,512);
   // 场内走道 (规则: 黑色, 宽 70cm; 加噪点纹理让黑色有质感, 3.8m → 389px)
-  g.fillStyle = '#20242a'; g.fillRect(61,61,389,389);
+  g.fillStyle = '#5d6268'; g.fillRect(61,61,389,389);
   for (let i = 0; i < 400; i++){          // 走道细微噪点(水泥感)
-    const v = 34 + Math.floor(Math.random() * 14);
-    g.fillStyle = 'rgb(' + v + ',' + (v+2) + ',' + (v+6) + ')';
+    const v = 82 + Math.floor(Math.random() * 20);
+    g.fillStyle = 'rgb(' + v + ',' + (v+4) + ',' + (v+10) + ')';
     g.fillRect(61 + Math.random() * 389, 61 + Math.random() * 389, 1.4, 1.4);
   }
-  // 围栏线(黑)
-  g.strokeStyle = '#0e0f11'; g.lineWidth = 6;
+  // 围栏线(黑)，使用一圈蓝灰内缘避免和走道完全糊成一片。
+  g.strokeStyle = '#565b60'; g.lineWidth = 6;
   g.strokeRect(61,61,389,389);
   // 出发区保留一层纹理底色；实际显示由独立彩色平面、边框和箭头强化，
   // 即使材质/光照/低视角变化也不会消失。
@@ -369,14 +486,75 @@ function makeGroundTexture(){
 function makeRingTexture(){
   const c = document.createElement('canvas'); c.width = c.height = 512;
   const g = c.getContext('2d');
-  const grd = g.createRadialGradient(256,256,8, 256,256,362);
-  grd.addColorStop(0,'#ffffff'); grd.addColorStop(0.5,'#f3f1ea'); grd.addColorStop(1,'#3a3a3a');
-  g.fillStyle = grd; g.fillRect(0,0,512,512);
+  // 擂台底色：以方形 Chebyshev 距离从四个外角纯黑渐变到中心纯白，
+  // 不用径向渐变，保证四角确实为 0 灰度且四条边的梯度一致。
+  const image = g.createImageData(c.width, c.height);
+  for(let y=0;y<c.height;y++){
+    const ny = Math.abs((y/(c.height-1))*2-1);
+    for(let x=0;x<c.width;x++){
+      const nx = Math.abs((x/(c.width-1))*2-1);
+      const d = Math.max(nx, ny);
+      const t = Math.max(0, Math.min(1, 1-d));
+      // 中心和边角使用精确端点，中间略作平滑避免出现带状阶梯。
+      const smooth = t*t*(3-2*t);
+      const value = Math.round(smooth*255);
+      const i=(y*c.width+x)*4;
+      image.data[i]=value; image.data[i+1]=value; image.data[i+2]=value; image.data[i+3]=255;
+    }
+  }
+  g.putImageData(image,0,0);
   g.fillStyle = 'rgba(190,40,40,0.85)'; g.fillRect(256-64,256-64,128,128);
   g.fillStyle = '#fff'; g.font = 'bold 110px "KaiTi","STKaiti",serif';
   g.textAlign='center'; g.textBaseline='middle';
   g.fillText('武', 256, 268);
   return new THREE.CanvasTexture(c);
+}
+// PBR helper：优先使用内存程序化法线/粗糙度贴图，缺少 VisualEffects 时
+// 退回 MeshStandardMaterial，确保双击 HTML、GitHub Pages 和离线环境都能显示。
+function makePBRMaterial(options){
+  const o = options || {};
+  const base = {
+    color:o.color == null ? 0xffffff : o.color,
+    roughness:o.roughness == null ? 0.72 : o.roughness,
+    metalness:o.metalness == null ? 0.08 : o.metalness,
+    emissive:o.emissive,
+    emissiveIntensity:o.emissiveIntensity,
+    map:o.map,
+  };
+  if(window.VisualEffects && VisualEffects.createProceduralMaps && VisualEffects.createPBRMaterial){
+    const maps=VisualEffects.createProceduralMaps({
+      THREE, color:base.color, roughness:base.roughness,
+      normalStrength:o.normalStrength == null ? 1.15 : o.normalStrength,
+      normalScale:o.normalScale == null ? 0.42 : o.normalScale,
+      repeat:o.repeat == null ? 2 : o.repeat,
+      seed:o.seed == null ? 23 : o.seed,
+    });
+    const mat=VisualEffects.createPBRMaterial({
+      THREE, maps, map:o.map, color:base.color,
+      roughness:base.roughness, metalness:base.metalness,
+      emissive:o.emissive, emissiveIntensity:o.emissiveIntensity,
+      physical:o.physical !== false,
+    });
+    if(mat) return mat;
+  }
+  return new THREE.MeshStandardMaterial(base);
+}
+function makeRingPBR(){
+  const map=makeRingTexture();
+  if(window.VisualEffects && VisualEffects.createProceduralMaps && VisualEffects.createPBRMaterial){
+    const maps=VisualEffects.createProceduralMaps({THREE,color:0xf0eee7,roughness:0.78,normalStrength:0.8,repeat:3,seed:31});
+    const mat=VisualEffects.createPBRMaterial({THREE,maps,map,color:0xffffff,roughness:0.78,metalness:0.04});
+    if(mat) return mat;
+  }
+  return new THREE.MeshStandardMaterial({map,roughness:0.8});
+}
+function makeContactShadow(target, size, opacity){
+  if(!window.VisualEffects || !VisualEffects.createContactShadow) return null;
+  return VisualEffects.createContactShadow({THREE,scene,target,size:size||0.42,opacity:opacity==null?0.28:opacity,y:0.006,followRotation:true});
+}
+function makeAODecal(size, opacity){
+  if(!window.VisualEffects || !VisualEffects.createAODecal) return null;
+  return VisualEffects.createAODecal({THREE,scene,size:size||2.35,opacity:opacity==null?0.16:opacity,y:0.004});
 }
 function makeCone(color, halfAngle, range){
   const r = range * Math.tan(halfAngle);
@@ -391,33 +569,89 @@ function alignCone(mesh, dir){
   mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
 }
 
+function sensorLayoutKey(r){
+  const p=r && r.sensorLayout;
+  return String(p && p.id || 'none')+':'+((p && p.channels)||[]).map(c=>c.id).join('|');
+}
+function rebuildSensorCones(){
+  if(!botGroup || !themGroup) return;
+  coneMat={};
+  const sensorColor = ch => ch.type==='gray' ? 0xffd166 : (ch.type==='ir_edge' ? 0xff9f43 : (ch.type==='ir_ground' ? 0x65d9ff : 0x35d07f));
+  const buildFor=(role, root, robot)=>{
+    for(const child of [...root.children]) if(child.userData && child.userData.sensorRoot) root.remove(child);
+    const sensorRoot=new THREE.Group(); sensorRoot.userData.sensorRoot=true;
+    const entries=[];
+    for(const ch of (robot.sensorLayout?.channels || [])){
+      const color=sensorColor(ch), half=Number(ch.fov)||0.35, range=Number(ch.range)||0.9;
+      const dir=new THREE.Vector3(Math.cos(Number(ch.angle)||0),0,-Math.sin(Number(ch.angle)||0));
+      const origin=new THREE.Vector3(Number(ch.forward)||0,0.022,-(Number(ch.lateral)||0));
+      let cone=null, edge=null;
+      if(ch.type!=='gray'){
+        cone=makeCone(color,half,range);
+        alignCone(cone,dir); cone.position.copy(origin); cone.userData.sensorCone=true;
+        cone.material.opacity=0.065; cone.visible=sensorsVisible;
+        edge=new THREE.LineSegments(new THREE.EdgesGeometry(cone.geometry),new THREE.LineBasicMaterial({color,transparent:true,opacity:0.72,depthWrite:false}));
+        edge.position.copy(cone.position); edge.quaternion.copy(cone.quaternion); edge.visible=sensorsVisible; edge.userData.sensorCone=true;
+        sensorRoot.add(cone,edge);
+      }
+      const ripple=new THREE.Mesh(new THREE.RingGeometry(0.018,0.028,18),new THREE.MeshBasicMaterial({color,transparent:true,opacity:0,depthWrite:false,side:THREE.DoubleSide,blending:THREE.AdditiveBlending}));
+      ripple.rotation.x=-Math.PI/2; ripple.position.copy(origin); ripple.position.y=0.006; ripple.visible=false; ripple.userData.sensorRipple=true;
+      sensorRoot.add(ripple);
+      entries.push({id:ch.id,type:ch.type,range,origin,cone,edge,ripple,phase:0,active:false});
+      if(role==='us' && cone) coneMat[ch.id]={material:cone.material,edgeMaterial:edge.material,sensorId:ch.id,type:ch.type,ripple};
+    }
+    root.add(sensorRoot); sensorVisuals[role]={root:sensorRoot,entries};
+  };
+  buildFor('us',botGroup,US); buildFor('them',themGroup,THEM);
+  sensorConeLayoutId=sensorLayoutKey(US)+':'+sensorLayoutKey(THEM);
+  window.__sensorCones=[...(sensorVisuals.us?.entries||[]),...(sensorVisuals.them?.entries||[])].flatMap(x=>[x.cone,x.edge]).filter(Boolean);
+}
+
 function init3D(){
   renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
   renderer.setSize(cv.clientWidth, cv.clientHeight);
+  if(window.VisualEffects && VisualEffects.configureRenderer) VisualEffects.configureRenderer(renderer,{THREE,exposure:1.08,shadowType:'pcf',physicallyCorrectLights:true});
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  if(renderer.shadowMap && renderer.shadowMap.autoUpdate!==undefined) renderer.shadowMap.autoUpdate=true;
   cv.appendChild(renderer.domElement);
 
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x2a3038);
-  scene.fog = new THREE.Fog(0x2a3038, 24, 42);
+  // 场外采用蓝灰竞技场环境，和黑色围栏/走道形成层次；远处雾色与背景一致。
+  scene.background = new THREE.Color(0x5e6267);
+  scene.fog = new THREE.Fog(0x5e6267, 24, 42);
 
   camera = new THREE.PerspectiveCamera(55, cv.clientWidth/cv.clientHeight, 0.05, 60);
 
-  // 灯光 (黑走道需要足够亮度; 关闭 castShadow——黑地面上的阴影=死黑, 无层次)
-  const amb = new THREE.AmbientLight(0xffffff, 1.25);
+  // 灯光：环境/半球保证黑色走道仍有细节，主光开启软阴影与接触阴影。
+  const amb = new THREE.AmbientLight(0xffffff, 0.82);
   scene.add(amb);
-  const hemi = new THREE.HemisphereLight(0xe8eef5, 0x555c66, 0.65);
+  const hemi = new THREE.HemisphereLight(0xe8eef5, 0x27303a, 0.82);
   scene.add(hemi);
-  const sun = new THREE.DirectionalLight(0xffffff, 1.0);
-  sun.position.set(5, 8, 4);
+  const sun = new THREE.DirectionalLight(0xffffff, 1.55);
+  sun.position.set(5, 8, 4); sun.castShadow=true;
+  sun.shadow.mapSize.set(2048,2048);
+  sun.shadow.camera.left=-3.2; sun.shadow.camera.right=3.2;
+  sun.shadow.camera.top=3.2; sun.shadow.camera.bottom=-3.2;
+  sun.shadow.camera.near=0.1; sun.shadow.camera.far=14;
   scene.add(sun);
+  const rim = new THREE.DirectionalLight(0x79a9ff,0.32); rim.position.set(-4,3,-5); scene.add(rim);
+
+  // 场地外环境地板：底台下方再铺一层大面积石墨蓝灰，避免场地边缘直接融入黑墙。
+  const outerFloor = new THREE.Mesh(
+    new THREE.PlaneGeometry(10, 10),
+    makePBRMaterial({color:0x74787d,roughness:0.92,metalness:0.02,normalStrength:0.7,repeat:5,seed:39,emissive:0x202124,emissiveIntensity:0.1})
+  );
+  outerFloor.rotation.x = -Math.PI/2;
+  outerFloor.position.y = -0.51;
+  outerFloor.receiveShadow = true;
+  scene.add(outerFloor);
 
   // 地面 (加微弱自发光, 避免阴影区/擂台周围死黑)
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(5.2, 5.2),
-    new THREE.MeshStandardMaterial({ map: makeGroundTexture(), roughness: 0.95, emissive: 0x222222, emissiveIntensity: 0.3 })
+    makePBRMaterial({map:makeGroundTexture(),color:0x74787d,roughness:0.94,metalness:0.02,normalStrength:0.85,repeat:3,seed:41,emissive:0x202124,emissiveIntensity:0.1})
   );
   ground.rotation.x = -Math.PI/2;
   ground.receiveShadow = true;
@@ -438,15 +672,29 @@ function init3D(){
   // 场地底台 (规则: 底端平台 50cm — 整个场地架在 50cm 高深色基座上)
   const base = new THREE.Mesh(
     new THREE.BoxGeometry(4.3, 0.5, 4.3),
-    new THREE.MeshStandardMaterial({ color: 0x131619, roughness: 0.95, emissive: 0x111111, emissiveIntensity: 0.25 })
+    makePBRMaterial({color:0x41464b,roughness:0.86,metalness:0.08,normalStrength:0.6,repeat:2,seed:43,emissive:0x202124,emissiveIntensity:0.16})
   );
   base.position.y = -0.249;   // 顶面 y=0.001, 脱离地面平面(防 z-fighting)
   base.receiveShadow = true;
   scene.add(base);
+  // 底台下方的浅色护边和描边，给低视角增加平台层次。
+  const baseSkirt = new THREE.Mesh(
+    new THREE.BoxGeometry(4.56, 0.13, 4.56),
+    makePBRMaterial({color:0x5b6065,roughness:0.78,metalness:0.12,normalStrength:0.55,repeat:2,seed:44,emissive:0x26282b,emissiveIntensity:0.12})
+  );
+  baseSkirt.position.y = -0.565;
+  baseSkirt.receiveShadow = true;
+  scene.add(baseSkirt);
+  const baseSkirtEdge = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(4.57, 0.132, 4.57)),
+    new THREE.LineBasicMaterial({color:0xb2b5b9,transparent:true,opacity:0.58})
+  );
+  baseSkirtEdge.position.copy(baseSkirt.position);
+  scene.add(baseSkirtEdge);
 
   // 围栏 (规则: 黑色, 高 20cm; 提亮材质+亮灰边缘线保证在黑走道上可见)
-  const fenceMat = new THREE.MeshStandardMaterial({ color: 0x2a2e35, roughness: 0.7 });
-  const fenceEdgeMat = new THREE.LineBasicMaterial({ color: 0xaab4bd, transparent: true, opacity: 0.5 });
+  const fenceMat = makePBRMaterial({color:0x5a5f64,roughness:0.72,metalness:0.18,normalStrength:0.75,repeat:2,seed:47});
+  const fenceEdgeMat = new THREE.LineBasicMaterial({ color: 0xd0d3d5, transparent: true, opacity: 0.58 });
   const mkFence = (w, h, d, x, z) => {
     const f = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), fenceMat);
     f.position.set(x, h/2 + 0.001, z);  // 底面抬离地面(防 z-fighting)
@@ -464,12 +712,12 @@ function init3D(){
 
   // 擂台 (2.4×2.4, 高6cm): 深色侧壁 + 顶部渐变纹理 + 边缘高光线(强调高度感)
   const ringMat = [
-    new THREE.MeshStandardMaterial({ color:0x565c64, roughness:0.75 }),
-    new THREE.MeshStandardMaterial({ color:0x565c64, roughness:0.75 }),
-    new THREE.MeshStandardMaterial({ map: makeRingTexture(), roughness: 0.8 }),
-    new THREE.MeshStandardMaterial({ color:0xb9bec4 }),
-    new THREE.MeshStandardMaterial({ color:0x565c64, roughness:0.75 }),
-    new THREE.MeshStandardMaterial({ color:0x565c64, roughness:0.75 }),
+    makePBRMaterial({color:0x565c64,roughness:0.74,metalness:0.22,normalStrength:0.7,repeat:2,seed:51}),
+    makePBRMaterial({color:0x565c64,roughness:0.74,metalness:0.22,normalStrength:0.7,repeat:2,seed:52}),
+    makeRingPBR(),
+    makePBRMaterial({color:0xb9bec4,roughness:0.42,metalness:0.72,normalStrength:0.45,repeat:2,seed:53}),
+    makePBRMaterial({color:0x565c64,roughness:0.74,metalness:0.22,normalStrength:0.7,repeat:2,seed:54}),
+    makePBRMaterial({color:0x565c64,roughness:0.74,metalness:0.22,normalStrength:0.7,repeat:2,seed:55}),
   ];
   const ring = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.06, 2.4), ringMat);
   ring.position.y = 0.031;  // 底面 y=0.001, 脱离地面平面(防 z-fighting)
@@ -484,6 +732,7 @@ function init3D(){
   skirt.position.y = 0.0305;
   skirt.receiveShadow = true;
   scene.add(skirt);
+  const ringAO=makeAODecal(2.36,0.20); if(ringAO) ringAO.object.position.y=0.006;
   // 顶部边缘高光线
   const edgeGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(2.402, 0.062, 2.402));
   const edgeLine = new THREE.LineSegments(edgeGeo,
@@ -496,23 +745,36 @@ function init3D(){
   themGroup = new THREE.Group();
   const buildCar = (bodyColor, headColor) => {
     const g = new THREE.Group();
+    const model = new THREE.Group();
     const body = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.09, 0.26),
-      new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.5 }));
+      makePBRMaterial({color:bodyColor,roughness:0.42,metalness:0.42,normalStrength:0.72,repeat:2,seed:61}));
+    const armor = new THREE.Mesh(new THREE.BoxGeometry(0.20,0.025,0.22),
+      makePBRMaterial({color:0x202a36,roughness:0.34,metalness:0.72,normalStrength:0.55,repeat:2,seed:62}));
+    armor.position.set(-0.015,0.058,0);
     const nose = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.07, 0.20),
-      new THREE.MeshStandardMaterial({ color: headColor }));
+      makePBRMaterial({color:headColor,roughness:0.3,metalness:0.36,normalStrength:0.55,repeat:2,seed:63,emissive:headColor,emissiveIntensity:0.05}));
     nose.position.x = 0.17;
     const shovel = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.035, 0.24),
-      new THREE.MeshStandardMaterial({ color: 0x8f9aa6, roughness: 0.6 }));
+      makePBRMaterial({color:0x8f9aa6,roughness:0.28,metalness:0.82,normalStrength:0.45,repeat:3,seed:67}));
     shovel.position.set(0.20, -0.025, 0);
-    const wheelGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.035, 14);
-    const wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
-    const wl = new THREE.Mesh(wheelGeo, wheelMat); wl.rotation.x = Math.PI/2; wl.position.set(0, -0.05, 0.14);
-    const wr = new THREE.Mesh(wheelGeo, wheelMat); wr.rotation.x = Math.PI/2; wr.position.set(0, -0.05, -0.14);
+    // 铲刃斜切线：保留简单碰撞盒，视觉上用高光刃口表达金属倒角。
+    const bladeEdge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(0.045,0.038,0.245)),new THREE.LineBasicMaterial({color:0xdce7f2,transparent:true,opacity:0.76}));
+    bladeEdge.position.copy(shovel.position);
+    const wheelGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.035, 18);
+    const wheelMat = makePBRMaterial({color:0x16191d,roughness:0.88,metalness:0.06,normalStrength:1.3,repeat:4,seed:69});
+    const hubMat = makePBRMaterial({color:0xb7c4d1,roughness:0.26,metalness:0.86,normalStrength:0.4,repeat:2,seed:70});
+    const wheels=[];
+    for(const x of [-0.085,0.085]) for(const z of [-0.135,0.135]){
+      const w=new THREE.Mesh(wheelGeo,wheelMat); w.rotation.x=Math.PI/2; w.position.set(x,-0.05,z); wheels.push(w);
+      const hub=new THREE.Mesh(new THREE.CylinderGeometry(0.015,0.015,0.038,12),hubMat); hub.rotation.x=Math.PI/2; hub.position.copy(w.position); wheels.push(hub);
+    }
     const head = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.13, 12),
-      new THREE.MeshStandardMaterial({ color: headColor, emissive: headColor }));
+      makePBRMaterial({color:headColor,roughness:0.28,metalness:0.18,emissive:headColor,emissiveIntensity:1.1,physical:true}));
     head.rotation.z = -Math.PI/2; head.position.set(0.18, 0.075, 0);
-    g.add(body, nose, shovel, wl, wr, head);
+    model.add(body,armor,nose,shovel,bladeEdge,...wheels,head);
+    g.add(model);
     g.traverse(o => { if(o.isMesh) o.castShadow = true; });
+    g.userData.model=model;
     return g;
   };
   botBodyGroup = buildCar(0xeceff3, 0x4da3ff);                            // 我方车身
@@ -521,40 +783,35 @@ function init3D(){
   themGroup.add(themBodyGroup);
   scene.add(botGroup);
   scene.add(themGroup);
-  // ---- 传感器锥体 (机器人子对象, 随车头旋转) ----
-  const U = new THREE.Vector3(0,1,0);
-  const coneDefs = [
-    ['dLF','#35d07f',0.55,1.6, new THREE.Vector3(Math.cos(-Math.PI/4),0,Math.sin(-Math.PI/4))],
-    ['dRF','#35d07f',0.55,1.6, new THREE.Vector3(Math.cos( Math.PI/4),0,Math.sin( Math.PI/4))],
-    ['dLB','#35d07f',0.55,1.6, new THREE.Vector3(Math.cos( 3*Math.PI/4),0,Math.sin( 3*Math.PI/4))],
-    ['dRB','#35d07f',0.55,1.6, new THREE.Vector3(Math.cos(-3*Math.PI/4),0,Math.sin(-3*Math.PI/4))],
-    ['f',  '#4da3ff',0.40,2.2, new THREE.Vector3(1,0,0)],
-    ['r',  '#b07bff',0.70,1.3, new THREE.Vector3(-1,0,0)],
-  ];
-  for(const [k,col,half,rg,dir] of coneDefs){
-    const cone = makeCone(col, half, rg);
-    alignCone(cone, dir);
-    cone.position.y = 0.02;
-    cone.visible = false;          // 2026-08-14: 传感器线默认隐藏(用户要求), 按钮切换
-    botGroup.add(cone);
-    coneMat[k] = cone.material;
-  }
-  const shovelDir = new THREE.Vector3(1,0,0);
-  for(const zOff of [0.06, -0.06]){
-    const sc = makeCone('#ff9f43', 0.30, 0.9);
-    alignCone(sc, shovelDir);
-    sc.position.set(0.14, 0.005, zOff);
-    sc.visible = false;            // 同上
-    botGroup.add(sc);
-  }
-  window.__sensorCones = botGroup.children.filter(c => c.geometry && c.geometry.type === 'ConeGeometry');
+  replayGhost.us=new THREE.Mesh(new THREE.BoxGeometry(0.32,0.11,0.32),new THREE.MeshBasicMaterial({color:0x4da3ff,transparent:true,opacity:0.38,wireframe:true,depthWrite:false}));
+  replayGhost.them=new THREE.Mesh(new THREE.BoxGeometry(0.32,0.11,0.32),new THREE.MeshBasicMaterial({color:0xff5b5b,transparent:true,opacity:0.38,wireframe:true,depthWrite:false}));
+  replayGhost.us.visible=false; replayGhost.them.visible=false; scene.add(replayGhost.us,replayGhost.them);
+  // 车底软接触阴影、状态灯、车顶 HUD、速度矢量和 2~3 秒轨迹。
+  carFx.us.shadow=makeContactShadow(botGroup,0.48,0.34);
+  carFx.them.shadow=makeContactShadow(themGroup,0.48,0.30);
+  carFx.us.status=VisualEffects.createStatusLight({THREE,parent:botGroup,position:{x:0,y:0.13,z:0},state:'search',color:0x3a9dff,radius:0.025,lightIntensity:0.5});
+  carFx.them.status=VisualEffects.createStatusLight({THREE,parent:themGroup,position:{x:0,y:0.13,z:0},state:'search',color:0xff334d,radius:0.025,lightIntensity:0.5});
+  overheadHud.us=VisualHUD.createOverheadHUD({THREE,scene,target:botGroup,worldWidth:0.58,heightOffset:0.28});
+  overheadHud.them=VisualHUD.createOverheadHUD({THREE,scene,target:themGroup,worldWidth:0.58,heightOffset:0.28});
+  trails.us=VisualHUD.createTrail({THREE,scene,target:botGroup,color:0x4da3ff,duration:2.8,yOffset:0.008});
+  trails.them=VisualHUD.createTrail({THREE,scene,target:themGroup,color:0xff5b5b,duration:2.8,yOffset:0.008});
+  velocityVectors.us=VisualHUD.createVelocityVector({THREE,parent:botGroup,frontAxis:{x:1,y:0,z:0},color:0x55c8ff,angularColor:0xffbf5b});
+  velocityVectors.them=VisualHUD.createVelocityVector({THREE,parent:themGroup,frontAxis:{x:1,y:0,z:0},color:0xff6b7dff,angularColor:0xff9d5bff});
+  carFx.us.dust=VisualEffects.createDustEmitter({THREE,scene,maxParticles:120,color:0xb69a7a,size:0.035,opacity:0.42});
+  carFx.them.dust=VisualEffects.createDustEmitter({THREE,scene,maxParticles:120,color:0x8e9baa,size:0.035,opacity:0.38});
+  cameraController=VisualHUD.createCameraController({THREE,camera,target:botGroup,center:{x:0,y:0.25,z:0},ringHalfSize:1.2,topHeight:5.2,chaseDistance:1.45,chaseHeight:0.78,edgeDistance:1.05,edgeHeight:0.72,smoothing:7});
+  sensorFx=VisualHUD.createSensorFeedback({THREE,scene,maxWaves:40,maxSpots:40});
+  collisionFx=VisualHUD.createSensorFeedback({THREE,scene,maxWaves:28,maxSpots:28});
+  sensorFx.setVisible(fxVisible.scan); collisionFx.setVisible(fxVisible.collisions);
+  // ---- 传感器锥体 (按我方车辆 profile 动态生成, 随车头旋转) ----
+  rebuildSensorCones();
 
   // ---- 对手 / 能量块 ----
   buffMeshes = [];
   for(const b of buffs){
     const m = new THREE.Mesh(
       new THREE.BoxGeometry(0.18, 0.18, 0.18),
-      new THREE.MeshStandardMaterial({ map: makeGlyphTexture('+','#fff'), color: 0x37c26a, roughness: 0.6 })
+      makePBRMaterial({map:makeGlyphTexture('+','#fff'),color:0x37c26a,roughness:0.38,metalness:0.32,normalStrength:0.5,repeat:2,seed:81,emissive:0x0f5a2c,emissiveIntensity:0.42})
     );
     m.castShadow = true;
     scene.add(m);
@@ -562,10 +819,14 @@ function init3D(){
   }
   debMesh = new THREE.Mesh(
     new THREE.BoxGeometry(0.18, 0.18, 0.18),
-    new THREE.MeshStandardMaterial({ map: makeGlyphTexture('−','#fff'), color: 0xe04848, roughness: 0.6 })
+    makePBRMaterial({map:makeGlyphTexture('−','#fff'),color:0xe04848,roughness:0.38,metalness:0.32,normalStrength:0.5,repeat:2,seed:83,emissive:0x6d171d,emissiveIntensity:0.48})
   );
   debMesh.castShadow = true;
   scene.add(debMesh);
+  for(const m of [...buffMeshes,debMesh]){
+    const glow=VisualEffects.createGlowSprite({THREE,parent:scene,color:m===debMesh?0xff364f:0x45ff9a,size:0.34,opacity:0.48});
+    m.userData.glow=glow;
+  }
 
   // ---- 拾取目标: 真实可见网格 (点车身/方块=拖拽, 点空白/地面/擂台=转视角) ----
   const pickKinds = ['bot', 'opp', 'buff0', 'buff1', 'debuff'];
@@ -574,13 +835,38 @@ function init3D(){
 
   // 相机初始视角 (斜一点, 能看出擂台高度)
   camState = { yaw: Math.PI/4, pitch: 0.70, dist: 5.4, tx: 0, ty: 0.3, tz: 0 };
+  renderPipeline=VisualEffects.createBloom({THREE,renderer,scene,camera,strength:0.42,radius:0.28,threshold:0.82});
   updateCam();
 }
 
 // ---------- 相机 (手动轨道) ----------
 let camState = null;
 let camMode = null;   // 'orbit' | 'pan' | null
+let viewMode = 'free'; // free / top / chase / edge
+function setViewMode(mode){
+  const key=String(mode||'free').toLowerCase();
+  viewMode=['free','top','chase','edge'].includes(key)?key:'free';
+  if(cameraController) cameraController.setMode(viewMode==='free'?'manual':viewMode,{snap:true});
+  if(viewMode==='free' && camera?.up?.set) camera.up.set(0,1,0);
+  document.querySelectorAll('#camToolbar [data-cam]').forEach(b=>b.classList.toggle('active',b.dataset.cam===viewMode));
+  return viewMode;
+}
+function cameraRobotState(r){
+  const v=r.vehicle||DEFAULT_VEHICLE;
+  const on=onPlatform(r.x,r.y);
+  const zG=(r.zG!==undefined && r.zG!==null) ? Number(r.zG) : (on?0.06:0);
+  return {
+    x:Number(r.x)-CENTER,
+    z:CENTER-Number(r.y),
+    worldY:zG+Number(v.height||0.09)/2,
+    th:Number(r.th)||0,
+  };
+}
 function updateCam(){
+  if(viewMode!=='free' && cameraController){
+    cameraController.update(frameDt,{us:cameraRobotState(US),them:cameraRobotState(THEM),center:{x:0,y:0.22,z:0},ringHalfSize:1.2});
+    return;
+  }
   const c = camState;
   camera.position.set(
     c.tx + c.dist*Math.cos(c.pitch)*Math.cos(c.yaw),
@@ -590,35 +876,189 @@ function updateCam(){
   camera.lookAt(c.tx, c.ty, c.tz);
 }
 
+function stateLightName(state){
+  const s=String(state||'').toUpperCase();
+  if(s==='ATTACK') return 'attacking';
+  if(s==='RECOVER') return 'recover';
+  if(s==='SEARCH') return 'search';
+  if(s==='FINISHED') return 'disabled';
+  return 'idle';
+}
+function robotWorldPosition(r,on){
+  const v=r.vehicle||DEFAULT_VEHICLE;
+  const zG=(r.zG!==undefined && r.zG!==null) ? Number(r.zG) : (on?0.06:0);
+  return new THREE.Vector3(Number(r.x)-CENTER,zG+Number(v.height||0.09)/2,CENTER-Number(r.y));
+}
+function visualPoseOutsideStage(r, isOn){
+  const x=Number(r.x), y=Number(r.y);
+  if(isOn) return {x,y,clamped:false};
+  // 只修正显示层：当车中心仍在台下且车体/铲子已经触碰台沿时，
+  // 把网格停在台壁外侧，避免一帧高速运动把模型画进 6cm 台阶。
+  let vx=x, vy=y;
+  const eps=0.004;
+  const sx=footprintSupport(r,1,0), sy=footprintSupport(r,0,1);
+  if(vx<EL) vx=Math.min(vx,EL-sx-eps);
+  else if(vx>ER) vx=Math.max(vx,ER+sx+eps);
+  if(vy<EL) vy=Math.min(vy,EL-sy-eps);
+  else if(vy>ER) vy=Math.max(vy,ER+sy+eps);
+  return {x:vx,y:vy,clamped:Math.abs(vx-x)>1e-6||Math.abs(vy-y)>1e-6};
+}
+function visualPoseForVehicle(r, isOn, role){
+  const pose=visualPoseOutsideStage(r,isOn);
+  const prev=visualStageMemory[role] || null;
+  if(isOn && prev && !prev.on){
+    // CORE 的登台判定允许中心点在一帧内越过台沿；视觉层把刚登台的
+    // 车身推到“完整越过台沿”的安全位置，避免车体穿过台壁。
+    const eps=0.004;
+    if(prev.x<EL && r.x>=EL) pose.x=Math.max(pose.x,EL+footprintSupport(r,1,0)+eps);
+    if(prev.x>ER && r.x<=ER) pose.x=Math.min(pose.x,ER-footprintSupport(r,-1,0)-eps);
+    if(prev.y<EL && r.y>=EL) pose.y=Math.max(pose.y,EL+footprintSupport(r,0,1)+eps);
+    if(prev.y>ER && r.y<=ER) pose.y=Math.min(pose.y,ER-footprintSupport(r,0,-1)-eps);
+    pose.clamped=true;
+  }
+  visualStageMemory[role]={x:Number(r.x),y:Number(r.y),on:!!isOn};
+  return pose;
+}
+function visualPoseForObject(o, isOn, extent){
+  const x=Number(o.x), y=Number(o.y);
+  if(isOn) return {x,y};
+  const e=Math.max(0,Number(extent)||0);
+  return {
+    x:x<EL?Math.min(x,EL-e-0.003):x>ER?Math.max(x,ER+e+0.003):x,
+    y:y<EL?Math.min(y,EL-e-0.003):y>ER?Math.max(y,ER+e+0.003):y,
+  };
+}
+function updateReplayGhost(){
+  const rec=replayCursor>=0 ? replayHistory[replayCursor] : null;
+  const apply=(mesh,data,color)=>{
+    if(!mesh) return;
+    mesh.visible=!!data;
+    if(!data) return;
+    mesh.position.set(Number(data.x)-CENTER,0.095,CENTER-Number(data.y));
+    mesh.rotation.y=Number(data.th)||0;
+    mesh.material.color.set(color);
+  };
+  apply(replayGhost.us,rec&&rec.us,0x4da3ff); apply(replayGhost.them,rec&&rec.them,0xff5b5b);
+}
+function updateSensorVisuals(role, robot, group, onStage){
+  const bucket=sensorVisuals[role]; if(!bucket) return;
+  const raw=robot.rawSens||{};
+  for(const entry of bucket.entries){
+    const ch=(robot.sensorLayout?.channels||[]).find(x=>x.id===entry.id)||{};
+    const value=Number(raw[entry.id])||0;
+    const isGray=entry.type==='gray';
+    const active=isGray ? value < params.EDGE_THRESHOLD : value > params.IR_TRIGGER;
+    entry.active=active;
+    if(entry.cone){ entry.cone.material.opacity=sensorsVisible ? (active?0.26:0.055) : 0; entry.cone.visible=sensorsVisible; }
+    if(entry.edge){ entry.edge.material.opacity=sensorsVisible ? (active?0.98:0.35) : 0; entry.edge.visible=sensorsVisible; }
+    if(active && sensorsVisible){
+      entry.phase=(entry.phase+frameDt*1.8)%1;
+      entry.ripple.visible=true;
+      entry.ripple.scale.setScalar(0.5+entry.phase*1.8);
+      entry.ripple.material.opacity=0.62*(1-entry.phase);
+      if(entry.lastPulse==null || visualClock-entry.lastPulse>0.42){
+        entry.lastPulse=visualClock;
+        const p=entry.ripple.getWorldPosition(new THREE.Vector3());
+        p.y=(onStage?0.068:0.008);
+         sensorFx?.trigger(entry.id,p,{type:entry.type==='gray'?'gray':entry.type,color:entry.type==='gray'?0xffd166:0x46e0a0,intensity:0.82,life:0.36,spotSize:0.09});
+      }
+    } else {
+      entry.ripple.visible=false; entry.ripple.material.opacity=0;
+    }
+  }
+}
+function updateCollisionFeedback(){
+  if(!collisionFx) return;
+  const pairs=[['us','them',US,THEM]];
+  const blocks=[...buffs.map((b,i)=>['buff'+i,b]),['debuff',deb]];
+  for(const [a,b,ra,rb] of pairs){
+    const dx=Number(ra.x)-Number(rb.x),dy=Number(ra.y)-Number(rb.y);
+    const threshold=(ra.vehicle?.collisionRadius||0.16)+(rb.vehicle?.collisionRadius||0.16)+0.035;
+    const hit=Math.hypot(dx,dy)<threshold;
+    const key=a+'-'+b;
+    if(hit && (!carFx[key] || visualClock-(carFx[key].last||-10)>0.55)){
+      carFx[key]=carFx[key]||{}; carFx[key].last=visualClock;
+      const p=new THREE.Vector3((Number(ra.x)+Number(rb.x))/2-CENTER,0.07,CENTER-(Number(ra.y)+Number(rb.y))/2);
+       collisionFx.emit({position:p,normal:{x:0,y:1,z:0},sensorType:'vision',color:0xffbf5b,intensity:1.6,life:0.58,spotSize:0.18});
+      carFx.us.dust?.emit(p,{x:0,y:0.2,z:0},12); carFx.them.dust?.emit(p,{x:0,y:0.2,z:0},12);
+    }
+  }
+  for(const [id,b] of blocks){
+    for(const [role,r] of [['us',US],['them',THEM]]){
+      const dx=Number(r.x)-Number(b.x),dy=Number(r.y)-Number(b.y);
+      const threshold=(r.vehicle?.collisionRadius||0.16)+0.105;
+      const hit=Math.hypot(dx,dy)<threshold;
+      const key=role+'-'+id;
+      if(hit && (!carFx[key] || visualClock-(carFx[key].last||-10)>0.55)){
+        carFx[key]=carFx[key]||{}; carFx[key].last=visualClock;
+        const p=new THREE.Vector3((Number(r.x)+Number(b.x))/2-CENTER,0.08,CENTER-(Number(r.y)+Number(b.y))/2);
+         collisionFx.emit({position:p,normal:{x:0,y:1,z:0},sensorType:'vision',color:id==='debuff'?0xff5b5b:0x57f39a,intensity:1.1,life:0.44,spotSize:0.14});
+      }
+    }
+  }
+}
+
 // ---------- 3D 同步 (核心状态 → 网格) ----------
 function sync3D(){
   // 车辆参数面板在 3D 场景初始化前也会刷新一次；此时网格尚未创建，
   // 不能因为提前同步而中断整个启动流程。
   if(!botGroup || !themGroup) return;
+  if(sensorLayoutKey(US)+':'+sensorLayoutKey(THEM)!==sensorConeLayoutId) rebuildSensorCones();
   const on = onPlatform(US.x, US.y);
   const syncVehicleVisual = (group, body, r, isOn) => {
     const v = r.vehicle || DEFAULT_VEHICLE;
-    group.position.set(r.x-CENTER, (isOn?0.06:0)+v.height/2, CENTER-r.y);
+    const pose=visualPoseForVehicle(r,isOn,body===botBodyGroup?'us':'them');
+    // 台阶 3D 姿态: zG=重心平滑沉降(消除二值瞬切), pitch/roll=CORE 四轮采样姿态。
+    const zG=(r.zG!==undefined && r.zG!==null) ? Number(r.zG) : (isOn?0.06:0);
+    group.position.set(pose.x-CENTER, zG+v.height/2, CENTER-pose.y);
     group.rotation.y = r.th;
+    group.userData.visualClamped=pose.clamped;
     if(body) body.scale.set(v.length/0.26, v.height/0.09, v.width/0.26);
+    const model=group.userData.model;
+    if(model){
+      const bump=isOn ? Math.sin(visualClock*26+r.th*3.1)*Math.min(0.012,Math.abs(r.v||0)*0.008) : 0;
+      model.position.y=bump;
+      // 模型前向=+X: 俯仰(pitch)=rotation.z(车头上仰), 翻滚(roll)=rotation.x(左侧上抬)。
+      model.rotation.z = Number(r.pitch)||0;
+      model.rotation.x = Number(r.roll)||0;
+    }
   };
   syncVehicleVisual(botGroup, botBodyGroup, US, on);
   const onT = onPlatform(THEM.x, THEM.y);
   syncVehicleVisual(themGroup, themBodyGroup, THEM, onT);
+  if(carFx.us.shadow?.object) carFx.us.shadow.object.position.y=(US.zG!==undefined?Number(US.zG):(on?0.06:0))+0.006;
+  if(carFx.them.shadow?.object) carFx.them.shadow.object.position.y=(THEM.zG!==undefined?Number(THEM.zG):(onT?0.06:0))+0.006;
+  carFx.us.status?.setState(stateLightName(US.fsm.state)); carFx.them.status?.setState(stateLightName(THEM.fsm.state));
+  overheadHud.us?.update({state:US.fsm.state,v:US.v,omega:US.w,gray:US.rawSens},frameDt);
+  overheadHud.them?.update({state:THEM.fsm.state,v:THEM.v,omega:THEM.w,gray:THEM.rawSens},frameDt);
+  velocityVectors.us?.update({v:US.v,w:US.w,heading:US.th}); velocityVectors.them?.update({v:THEM.v,w:THEM.w,heading:THEM.th});
+  trails.us?.update(frameDt); trails.them?.update(frameDt);
+  updateSensorVisuals('us',US,botGroup,on); updateSensorVisuals('them',THEM,themGroup,onT);
   const setBox = (m, o, halfH) => {
-    m.position.set(o.x-CENTER, (onPlatform(o.x,o.y)?0.06:0)+halfH, CENTER-o.y);
+    const objectOn=onPlatform(o.x,o.y), pose=visualPoseForObject(o,objectOn,halfH);
+    m.position.set(pose.x-CENTER, (objectOn?0.06:0)+halfH, CENTER-pose.y);
+    if(m.userData.glow?.object) m.userData.glow.object.position.copy(m.position);
   };
   for(let i=0;i<buffs.length;i++) setBox(buffMeshes[i], buffs[i], 0.09);
   setBox(debMesh, deb, 0.09);
   if(physicsBridge){
     physicsBridge.syncRobot('us', { ...US, onPlatform:on, vehicle:US.vehicle });
     physicsBridge.syncRobot('them', { ...THEM, onPlatform:onT, vehicle:THEM.vehicle });
+    buffs.forEach((b,i)=>physicsBridge.syncBlock(`buff:${i}`,{...b,size:0.15,onPlatform:onPlatform(b.x,b.y),out:!!b.out,kind:'buff'}));
+    physicsBridge.syncBlock('debuff',{...deb,size:0.15,onPlatform:onPlatform(deb.x,deb.y),out:!!deb.out,kind:'debuff'});
     showPhysicsStatus();
   }
-  // 传感器锥体透明度 (我方)
-  for(const k in coneMat){
-    coneMat[k].opacity = US.sens[k] > params.IR_TRIGGER ? 0.30 : 0.07;
+  updateCollisionFeedback();
+  if(US.v>0.42 || Math.abs(US.w)>1.8){ const p=botGroup.getWorldPosition(new THREE.Vector3()); p.y=0.012; carFx.us.dust?.emit(p,{x:0,y:0.11,z:0},3); }
+  if(THEM.v>0.42 || Math.abs(THEM.w)>1.8){ const p=themGroup.getWorldPosition(new THREE.Vector3()); p.y=0.012; carFx.them.dust?.emit(p,{x:0,y:0.11,z:0},3); }
+  if(visualClock%0.16 < frameDt){
+    for(const [role,r,group,col] of [['us',US,botGroup,0x1a2330],['them',THEM,themGroup,0x2e1a24]]){
+      if(Math.abs(r.v)>0.62){ const p=group.getWorldPosition(new THREE.Vector3()); p.y=0.008; const mark=VisualEffects.createTireMark({THREE,scene,position:p,width:0.028,length:0.18,rotation:r.th,color:col,opacity:0.22,life:2.8}); tireMarks.push(mark); }
+    }
   }
+  visualClock+=frameDt;
+  replayHistory.push({t:visualClock,us:{x:US.x,y:US.y,th:US.th,v:US.v,w:US.w,state:US.fsm.state},them:{x:THEM.x,y:THEM.y,th:THEM.th,v:THEM.v,w:THEM.w,state:THEM.fsm.state}});
+  if(replayHistory.length>MAX_REPLAY_HISTORY) replayHistory.splice(0,replayHistory.length-MAX_REPLAY_HISTORY);
 }
 
 // ---------- 交互: 拾取拖拽 + 轨道 ----------
@@ -643,6 +1083,24 @@ function projectTo2D(ev, planeY){
   if (raycaster.ray.intersectPlane(plane, hit)) return worldTo2D(hit);
   return null;
 }
+function emitDragImpacts(){
+  const events=window.__SIM_CORE?.consumeDragImpacts?.() || [];
+  for(const event of events){
+    // Pointer events can arrive faster than the renderer. Keep the stateful
+    // collision result, but throttle particles so a held mouse is readable.
+    if(visualClock-lastDragImpactFx<0.065) continue;
+    lastDragImpactFx=visualClock;
+    const p=new THREE.Vector3(event.x-CENTER,0.075,CENTER-event.y);
+    const color=event.source==='debuff' ? 0xff5b5b : 0x72e8ae;
+    collisionFx?.emit({
+      position:p, normal:{x:event.nx,y:0,z:-event.ny}, sensorType:'vision',
+      color, intensity:Math.min(2.2,0.75+event.strength*0.48),
+      life:0.48, spotSize:Math.min(0.24,0.11+event.strength*0.035),
+    });
+    if(event.target==='us') carFx.us.dust?.emit(p,{x:0,y:0.22,z:0},10);
+    if(event.target==='them') carFx.them.dust?.emit(p,{x:0,y:0.22,z:0},10);
+  }
+}
 function dragTo(ev){
   const r = cv.getBoundingClientRect();
   ndc.set((ev.clientX-r.left)/r.width*2-1, -(ev.clientY-r.top)/r.height*2+1);
@@ -657,9 +1115,13 @@ function dragTo(ev){
     else if(k==='buff0') setObject('buff', 0, p.x-drag.dx2d, p.y-drag.dy2d);
     else if(k==='buff1') setObject('buff', 1, p.x-drag.dx2d, p.y-drag.dy2d);
     else if(k==='debuff') setObject('debuff', 0, p.x-drag.dx2d, p.y-drag.dy2d);
+    emitDragImpacts();
   }
 }
 cv.addEventListener('pointerdown', e=>{
+  // 画布上的镜头/效果工具栏不是场景拖拽目标，阻止事件冒泡到轨道控制，
+  // 否则点击“跟车/鸟瞰”等按钮会先被切回自由视角。
+  if(e.target && e.target.closest && e.target.closest('#cvOverlay')) return;
   const kind = pickAt(e);
   if(kind && e.button === 0){
     const dragObj = kind==='bot' ? US : kind==='opp' ? THEM : kind==='buff0' ? buffs[0] : kind==='buff1' ? buffs[1] : deb;
@@ -674,16 +1136,19 @@ cv.addEventListener('pointerdown', e=>{
     cv.setPointerCapture(e.pointerId);
     cv.style.cursor = 'grabbing';
   } else if(e.button===0) {
+    if(viewMode!=='free') setViewMode('free');
     camMode = 'orbit';
     camDrag = { x: e.clientX, y: e.clientY };
     cv.setPointerCapture(e.pointerId);
   } else if(e.button===2) {
+    if(viewMode!=='free') setViewMode('free');
     camMode = 'pan';
     camDrag = { x: e.clientX, y: e.clientY };
     cv.setPointerCapture(e.pointerId);
   }
 });
 cv.addEventListener('dblclick', ()=>{
+  setViewMode('free');
   camState = { yaw: Math.PI/4, pitch: 0.70, dist: 5.4, tx: 0, ty: 0.3, tz: 0 };
   updateCam();
 });
@@ -713,6 +1178,7 @@ cv.addEventListener('wheel', e=>{
 },{passive:false});
 window.addEventListener('resize', ()=>{
   renderer.setSize(cv.clientWidth, cv.clientHeight);
+  renderPipeline?.setSize?.(cv.clientWidth,cv.clientHeight);
   camera.aspect = cv.clientWidth/cv.clientHeight;
   camera.updateProjectionMatrix();
 });
@@ -748,7 +1214,8 @@ function updateStateUI(){
   subTxt.textContent=subOf(US);
   themSub.textContent=subOf(THEM);
   scUs.textContent=scoreBoard.us; scTh.textContent=scoreBoard.them;
-  const match = gameEngine ? gameEngine.referee.state().match : null;
+  // 远程对战的裁判状态属于 sim_server，不使用页面本地 GameEngine 的旧时钟。
+  const match = remote && remote.mode && remote.match ? remote.match : (gameEngine ? gameEngine.referee.state().match : null);
   const matchTimer = match ? match.timer : US.fsm.timer;
   const shownTime = match && match.phase==='PREP' ? match.prepRemaining : matchTimer;
   const m=Math.floor(shownTime/60), s=Math.floor(shownTime%60);
@@ -756,38 +1223,51 @@ function updateStateUI(){
   if(matchPhase) matchPhase.textContent = match ? match.phase : 'RUNNING';
 }
 
-// 传感器面板
-const SENSOR_DEFS=[
-  ['gF','灰度·前'],['gB','灰度·后'],['gL','灰度·左'],['gR','灰度·右'],
-  ['uL','铲下·L'],['uR','铲下·R'],['sFL','铲前·L'],['sFR','铲前·R'],
-  ['dLF','对角·左前'],['dRF','对角·右前'],['dLB','对角·左后'],['dRB','对角·右后'],
-  ['f','正前·远'],['r','后向'],
-];
+// 传感器面板：只显示该车辆 profile 中真实存在的 rawSens 通道。
 const senBox=document.getElementById('sensors');
-for(const [k,nm] of SENSOR_DEFS){
-  const d=document.createElement('div'); d.className='sen';
-  d.innerHTML=`<span class="nm">${nm}</span><span class="val" id="sv_${k}">0</span><span class="bar"><i id="sb_${k}"></i></span>`;
-  senBox.appendChild(d);
-}
+const sensorMeta=document.getElementById('sensorMeta');
+let sensorRows=[]; let sensorLayoutId='';
 let sensTarget = US;
 document.getElementById('sensSel').addEventListener('change', e=>{
   sensTarget = e.target.value==='them' ? THEM : US;
+  renderSensorRows();
 });
+function renderSensorRows(){
+  const layout=sensTarget.sensorLayout || sensTarget.vehicle.sensors || { id:'none', channels:[] };
+  const channels=Array.isArray(layout.channels)?layout.channels:[];
+  sensorLayoutId=String(layout.id||'custom')+':'+channels.map(c=>c.id).join('|');
+  sensorRows=[]; senBox.innerHTML='';
+  sensorMeta.textContent=`${channels.length} 路 · ${layout.label||layout.id||'custom'}`;
+  for(const ch of channels){
+    const d=document.createElement('div'); d.className='sen';
+    const nm=document.createElement('span'); nm.className='nm'; nm.textContent=ch.label||ch.id;
+    const val=document.createElement('span'); val.className='val'; val.textContent='0';
+    const bar=document.createElement('span'); bar.className='bar';
+    const fill=document.createElement('i'); bar.appendChild(fill);
+    d.append(nm,val,bar); senBox.appendChild(d);
+    sensorRows.push({ ch, val, fill });
+  }
+}
+renderSensorRows();
 function updateSensorUI(){
-  const sens = sensTarget.sens;
-  for(const [k] of SENSOR_DEFS){
-    const v=sens[k], isG=k.startsWith('g');
-    const el=document.getElementById('sv_'+k), bar=document.getElementById('sb_'+k);
+  const layout=sensTarget.sensorLayout || sensTarget.vehicle.sensors || { id:'none', channels:[] };
+  const expected=String(layout.id||'custom')+':'+(layout.channels||[]).map(c=>c.id).join('|');
+  if(expected!==sensorLayoutId) renderSensorRows();
+  const sens = sensTarget.rawSens || {};
+  for(const row of sensorRows){
+    const {ch, val:el, fill:bar}=row;
+    const v=Number(sens[ch.id])||0, isG=ch.type==='gray';
     let col;
     if(isG){
       col = v>params.ON_STAGE_THRESHOLD? '#3ddc84' : v>params.EDGE_THRESHOLD? '#ffd166' : v>params.FALL_THRESHOLD? '#ff9f43' : '#ff5b5b';
       el.textContent = Math.round(v);
-      bar.style.width = (v/10)+'%';
+      bar.style.width = Math.max(0,Math.min(100,v/10))+'%';
     } else {
       const trig = v>params.IR_TRIGGER;
       col = trig? '#3ddc84' : v>0.12? '#ffd166' : '#5a6472';
       el.textContent = v.toFixed(2);
-      bar.style.width = (v*100)+'%';
+      const max=Number(ch.max)||1;
+      bar.style.width = Math.max(0,Math.min(100,v/max*100))+'%';
     }
     el.style.color=col; bar.style.background=col;
   }
@@ -813,6 +1293,18 @@ for(const [k,lab,min,max,step] of paramDefs){
   l.querySelector('input').addEventListener('input',e=>{
     params[k]=+e.target.value;
     document.getElementById('v_'+k).textContent=params[k];
+    if(remote && remote.mode) api('/params',{[k]:params[k]});
+  });
+}
+
+// ---------- 右侧设置标签 ----------
+const toolTabs=document.querySelectorAll('.tool-tab');
+const toolPanes=document.querySelectorAll('.tool-pane');
+for(const tab of toolTabs){
+  tab.addEventListener('click',()=>{
+    const paneId=tab.dataset.pane;
+    for(const t of toolTabs) t.classList.toggle('active',t===tab);
+    for(const pane of toolPanes) pane.classList.toggle('active',pane.id===paneId);
   });
 }
 
@@ -820,6 +1312,10 @@ for(const [k,lab,min,max,step] of paramDefs){
 const vehicleRoleEl = document.getElementById('vehicleRole');
 const vehicleFieldsEl = document.getElementById('vehicleFields');
 const vehicleProfileNameEl = document.getElementById('vehicleProfileName');
+const sensorPresetEl = document.getElementById('sensorPreset');
+const sensorCountEl = document.getElementById('sensorCount');
+const sensorChannelFieldsEl = document.getElementById('sensorChannelFields');
+const sensorEditorStatusEl = document.getElementById('sensorEditorStatus');
 const VEHICLE_FIELDS = [
   ['id','profile 名称','text'],
   ['length','车身长度 (m)','number'],['width','车身宽度 (m)','number'],['height','车身高度 (m)','number'],
@@ -830,6 +1326,89 @@ const VEHICLE_FIELDS = [
   ['accelK','加速度系数','number'],['mass','质量 (kg)','number'],['pushFactor','推挤系数','number'],
 ];
 function vehicleRoleObj(){ return vehicleRoleEl.value==='them' ? THEM : US; }
+const SENSOR_TYPE_OPTIONS = [
+  ['gray','灰度'],['ir_ground','铲下红外'],['ir_edge','铲前/边缘红外'],
+  ['ir_distance','距离红外'],['digital','数字红外'],
+];
+function editorSensorProfile(){
+  const v=getVehicleFor(vehicleRoleEl.value);
+  const p=v.sensors || { id:'custom', label:'自定义', channels:[], logical:{} };
+  return {
+    id:String(p.id||'custom'), label:String(p.label||p.id||'custom'),
+    channels:(p.channels||[]).map(c=>({ ...c })),
+    logical:JSON.parse(JSON.stringify(p.logical||{})),
+  };
+}
+function defaultEditorChannel(index){
+  return { id:`sensor_${index+1}`, label:`传感器 ${index+1}`, type:'ir_distance',
+    forward:0, lateral:0, angle:0, range:0.9, fov:0.35, mode:'target' };
+}
+function editorNumber(value, fallback){
+  const n=Number(value); return Number.isFinite(n) ? n : fallback;
+}
+function readSensorEditorRows(){
+  const profile=editorSensorProfile();
+  const rows=[...sensorChannelFieldsEl.querySelectorAll('.sensor-channel-row')];
+  profile.channels=rows.map((row,i)=>{
+    const q=s=>row.querySelector(`[data-sensor-field="${s}"]`);
+    const old=profile.channels[i]||defaultEditorChannel(i);
+    return {
+      ...old,
+      id:(q('id').value.trim() || `sensor_${i+1}`),
+      label:(q('label').value.trim() || q('id').value.trim() || `传感器 ${i+1}`),
+      type:q('type').value,
+      forward:editorNumber(q('forward').value,0),
+      lateral:editorNumber(q('lateral').value,0),
+      angle:editorNumber(q('angle').value,0),
+      range:editorNumber(q('range').value,0.9),
+      fov:editorNumber(q('fov').value,0.35),
+    };
+  });
+  return profile;
+}
+function applySensorEditorProfile(profile, status){
+  const clean={...profile, id:String(profile.id||'custom'), label:String(profile.label||profile.id||'custom')};
+  setVehicleFor(vehicleRoleEl.value,{sensors:clean});
+  renderVehicleFields();
+  if(status) sensorEditorStatusEl.textContent=status;
+}
+function commitSensorEditor(){
+  const p=readSensorEditorRows();
+  p.id='custom'; p.label=`自定义 ${p.channels.length} 路`;
+  applySensorEditorProfile(p,'已应用');
+}
+function renderSensorEditor(){
+  if(!sensorPresetEl || !sensorCountEl || !sensorChannelFieldsEl) return;
+  const p=editorSensorProfile();
+  const isPreset=['wheeledCombat11','legacy14'].includes(p.id);
+  sensorPresetEl.value=isPreset ? p.id : 'custom';
+  sensorCountEl.value=p.channels.length;
+  sensorEditorStatusEl.textContent=`当前 ${p.channels.length} 路`;
+  sensorChannelFieldsEl.innerHTML='';
+  p.channels.forEach((ch,i)=>{
+    const row=document.createElement('div'); row.className='sensor-channel-row';
+    const input=(field,value,type='text')=>{
+      const el=document.createElement('input'); el.type=type; el.value=String(value ?? '');
+      el.dataset.sensorField=field; if(type==='number') el.step='0.001'; return el;
+    };
+    const id=input('id',ch.id), label=input('label',ch.label);
+    const type=document.createElement('select'); type.dataset.sensorField='type';
+    for(const [value,textLabel] of SENSOR_TYPE_OPTIONS){ const o=document.createElement('option'); o.value=value; o.textContent=textLabel; type.appendChild(o); }
+    type.value=SENSOR_TYPE_OPTIONS.some(([value])=>value===ch.type) ? ch.type : 'ir_distance';
+    const forward=input('forward',Number(ch.forward||0).toFixed(3),'number');
+    const lateral=input('lateral',Number(ch.lateral||0).toFixed(3),'number');
+    const angle=input('angle',Number(ch.angle||0).toFixed(3),'number');
+    const range=input('range',Number(ch.range||0.9).toFixed(3),'number');
+    const fov=input('fov',Number(ch.fov||0.35).toFixed(3),'number');
+    const del=document.createElement('button'); del.type='button'; del.textContent='×'; del.title='删除此通道';
+    del.addEventListener('click',()=>{
+      const next=readSensorEditorRows(); next.channels.splice(i,1); next.id='custom'; next.label=`自定义 ${next.channels.length} 路`;
+      applySensorEditorProfile(next,'已删除通道');
+    });
+    row.append(id,label,type,forward,lateral,angle,range,fov,del); sensorChannelFieldsEl.appendChild(row);
+    for(const el of [id,label,type,forward,lateral,angle,range,fov]) el.addEventListener('change',commitSensorEditor);
+  });
+}
 function renderVehicleFields(){
   const v = getVehicleFor(vehicleRoleEl.value);
   vehicleProfileNameEl.textContent = `当前: ${v.id}`;
@@ -848,9 +1427,34 @@ function renderVehicleFields(){
       renderVehicleFields();
     });
   }
+  renderSensorEditor();
   if(typeof sync3D==='function') sync3D();
 }
 vehicleRoleEl.addEventListener('change', renderVehicleFields);
+sensorPresetEl.addEventListener('change',()=>{
+  const choice=sensorPresetEl.value;
+  if(choice==='custom'){
+    const p=editorSensorProfile(); p.id='custom'; p.label=`自定义 ${p.channels.length} 路`;
+    applySensorEditorProfile(p,'已切换到自定义');
+  } else if(SENSOR_PRESETS[choice]) {
+    setVehicleFor(vehicleRoleEl.value,{sensors:choice});
+    renderVehicleFields();
+    sensorEditorStatusEl.textContent=`已载入 ${SENSOR_PRESETS[choice].label}`;
+  }
+});
+document.getElementById('btnSensorCount').addEventListener('click',()=>{
+  const p=readSensorEditorRows();
+  let n=Math.max(0,Math.min(64,Math.floor(Number(sensorCountEl.value)||0)));
+  while(p.channels.length<n) p.channels.push(defaultEditorChannel(p.channels.length));
+  if(p.channels.length>n) p.channels.length=n;
+  p.id='custom'; p.label=`自定义 ${n} 路`;
+  applySensorEditorProfile(p,`已设置 ${n} 路`);
+});
+document.getElementById('btnSensorAdd').addEventListener('click',()=>{
+  const p=readSensorEditorRows(); p.channels.push(defaultEditorChannel(p.channels.length));
+  p.id='custom'; p.label=`自定义 ${p.channels.length} 路`;
+  applySensorEditorProfile(p,'已添加通道');
+});
 document.getElementById('btnVehicleDefault').addEventListener('click',()=>{
   setVehicleFor(vehicleRoleEl.value, { ...DEFAULT_VEHICLE });
   renderVehicleFields();
@@ -878,12 +1482,37 @@ vehicleImportFile.addEventListener('change',()=>{
 renderVehicleFields();
 
 // ---------- 控制 ----------
-document.getElementById('btnArm').addEventListener('click', arm);
-document.getElementById('btnReset').addEventListener('click', ()=>{ logBox.innerHTML=''; resetAll(); });
-document.getElementById('btnPause').addEventListener('click', ()=> gameEngine.referee.pause('UI'));
-document.getElementById('btnResume').addEventListener('click', ()=> gameEngine.referee.resume());
-document.getElementById('btnDebug').addEventListener('click', ()=> gameEngine.referee.restart(document.getElementById('refRole').value, 'debug'));
-document.getElementById('btnRestart').addEventListener('click', ()=> gameEngine.referee.restart(document.getElementById('refRole').value, 'restart'));
+// 本地预览与远程对战有两个独立核心；远程模式下所有比赛控制必须发往 server。
+function controlMatch(remotePath, body, localAction){
+  if(!remote || !remote.mode) return localAction();
+  api(remotePath, body).then(result=>{
+    if(result && result.error) log('[远程控制] '+result.error,'warn');
+    else pollRemote();
+  });
+}
+document.getElementById('btnArm').addEventListener('click', ()=>controlMatch('/arm',undefined,arm));
+function clearVisualHistory(){
+  replayHistory.length=0; replayCursor=-1; visualClock=0; replayScrub.value=0; replayScrub.max=0; replayLabel.textContent='实时';
+  visualStageMemory.us=null; visualStageMemory.them=null;
+  if(replayGhost.us) replayGhost.us.visible=false;
+  if(replayGhost.them) replayGhost.them.visible=false;
+  trails.us?.clear(); trails.them?.clear(); sensorFx?.clear(); collisionFx?.clear();
+  for(const mark of tireMarks) mark?.dispose?.(); tireMarks=[];
+}
+document.getElementById('btnReset').addEventListener('click', ()=>{
+  if(remote && remote.mode) return resetRemoteMatch();
+  logBox.innerHTML=''; resetAll(); clearVisualHistory(); setViewMode('free');
+});
+document.getElementById('btnPause').addEventListener('click', ()=>controlMatch('/referee/pause',{reason:'UI'},()=>gameEngine.referee.pause('UI')));
+document.getElementById('btnResume').addEventListener('click', ()=>controlMatch('/referee/resume',{},()=>gameEngine.referee.resume()));
+document.getElementById('btnDebug').addEventListener('click', ()=>{
+  const role=document.getElementById('refRole').value;
+  controlMatch('/referee/restart',{role,kind:'debug'},()=>gameEngine.referee.restart(role,'debug'));
+});
+document.getElementById('btnRestart').addEventListener('click', ()=>{
+  const role=document.getElementById('refRole').value;
+  controlMatch('/referee/restart',{role,kind:'restart'},()=>gameEngine.referee.restart(role,'restart'));
+});
 document.getElementById('btnRotL').addEventListener('click', ()=>{ bot.th=norm(bot.th+0.26); });
 document.getElementById('btnRotR').addEventListener('click', ()=>{ bot.th=norm(bot.th-0.26); });
 document.getElementById('speedGrp').addEventListener('click', e=>{
@@ -894,18 +1523,42 @@ document.getElementById('speedGrp').addEventListener('click', e=>{
 });
 document.addEventListener('keydown', e=>{
   if(e.key==='Enter') arm();
-  if(e.key==='r'||e.key==='R'){ logBox.innerHTML=''; resetAll(); }
+  if(e.key==='r'||e.key==='R'){ logBox.innerHTML=''; resetAll(); clearVisualHistory(); setViewMode('free'); }
 });
-document.getElementById('scCenter').onclick = ()=> scenePreset('center');
-document.getElementById('scEdge').onclick = ()=> scenePreset('edge');
-document.getElementById('scFloor').onclick = ()=> scenePreset('walkway');
-document.getElementById('scHang').onclick = ()=> scenePreset('hang');
-document.getElementById('scOppOn').onclick = ()=> scenePreset('opp_on');
-document.getElementById('scOppGo').onclick = ()=> scenePreset('opp_start');
+function applyScene(preset){ controlMatch('/scene',{preset},()=>scenePreset(preset)); }
+document.getElementById('scCenter').onclick = ()=> applyScene('center');
+document.getElementById('scEdge').onclick = ()=> applyScene('edge');
+document.getElementById('scFloor').onclick = ()=> applyScene('walkway');
+document.getElementById('scHang').onclick = ()=> applyScene('hang');
+document.getElementById('scOppOn').onclick = ()=> applyScene('opp_on');
+document.getElementById('scOppGo').onclick = ()=> applyScene('opp_start');
+document.querySelectorAll('#camToolbar [data-cam]').forEach(btn=>btn.addEventListener('click',()=>setViewMode(btn.dataset.cam)));
+document.querySelectorAll('#fxToolbar [data-fx]').forEach(btn=>btn.addEventListener('click',()=>setFxVisibility(btn.dataset.fx,!fxVisible[btn.dataset.fx])));
+const replayScrub=document.getElementById('replayScrub'), replayLabel=document.getElementById('replayLabel');
+replayScrub.addEventListener('input',()=>{
+  replayCursor=Number(replayScrub.value);
+  const rec=replayHistory[replayCursor];
+  replayLabel.textContent=rec ? `t−${Math.max(0,visualClock-rec.t).toFixed(1)}s` : '实时';
+  updateReplayGhost();
+  if(rec && viewMode==='free') setViewMode('edge');
+});
+document.getElementById('btnSlowReplay').addEventListener('click',()=>{
+  const previous=params.simSpeed||1; params.simSpeed=0.2; replaySlowTimer=5;
+  document.querySelectorAll('#speedGrp button').forEach(x=>x.classList.toggle('active',x.dataset.sp==='0.5'));
+  replayLabel.textContent='精彩慢放 0.2x';
+  if(viewMode==='free') setViewMode('edge');
+  window.setTimeout(()=>{ if(replaySlowTimer>0){ replaySlowTimer=0; params.simSpeed=previous; document.querySelectorAll('#speedGrp button').forEach(x=>x.classList.toggle('active',x.dataset.sp===String(previous))); replayLabel.textContent='实时'; } },5000);
+});
 
 // ---------- 导入小车程序 + 远程对战 (GUI 直连本地 server) ----------
-const API_BASE = 'http://127.0.0.1:8932';
-let remote = { mode: false, timer: null, lastUpload: null, lastLogLen: 0, lastOutLen: 0 };
+// 默认连接本机 API；GitHub Pages/静态托管时可用 ?api=http://127.0.0.1:8932
+// 或在页面外提前设置 window.SIM_API_BASE，避免把地址写死在构建产物里。
+const API_BASE = (() => {
+  const query = new URLSearchParams(location.search).get('api');
+  const configured = window.SIM_API_BASE || query || 'http://127.0.0.1:8932';
+  return String(configured).replace(/\/$/, '');
+})();
+let remote = { mode: false, timer: null, lastUpload: null, lastLogLen: 0, lastOutLen: 0, pollInFlight: false, startInFlight: false, match: null };
 const remoteStatus = document.getElementById('remoteStatus');
 const remoteOut = document.getElementById('remoteOut');
 const remoteOutWrap = document.getElementById('remoteOutWrap');
@@ -935,13 +1588,35 @@ document.getElementById('btnImportDir').addEventListener('click', () => {
   const row = document.getElementById('dirImportRow');
   row.style.display = row.style.display === 'none' ? 'flex' : 'none';
 });
-// 传感器锥线开关 (2026-08-14: 默认隐藏, 用户要求去掉)
-let sensorsVisible = false;
+// 3D 效果开关：显示层独立控制，不改变 CORE、传感器输入或计分。
+let sensorsVisible = fxVisible.scan;
+function updateFxButtons(){
+  document.querySelectorAll('#fxToolbar [data-fx]').forEach(btn=>{
+    const on=!!fxVisible[btn.dataset.fx];
+    btn.classList.toggle('active',on); btn.classList.toggle('off',!on);
+    btn.setAttribute('aria-pressed',String(on));
+  });
+  const sensorBtn=document.getElementById('btnSensors');
+  if(sensorBtn){ sensorBtn.classList.toggle('active',sensorsVisible); sensorBtn.style.outline=sensorsVisible?'1px solid var(--acc)':''; }
+}
+function setFxVisibility(key,value){
+  if(!(key in fxVisible)) return;
+  fxVisible[key]=!!value;
+  if(key==='hud') for(const c of Object.values(overheadHud)) c?.setVisible?.(fxVisible.hud);
+  if(key==='trails') for(const c of Object.values(trails)) c?.setVisible?.(fxVisible.trails);
+  if(key==='vectors') for(const c of Object.values(velocityVectors)) c?.setVisible?.(fxVisible.vectors);
+  if(key==='scan'){
+    sensorsVisible=fxVisible.scan;
+    sensorFx?.setVisible?.(fxVisible.scan);
+    for(const c of (window.__sensorCones||[])) c.visible=fxVisible.scan;
+  }
+  if(key==='collisions') collisionFx?.setVisible?.(fxVisible.collisions);
+  updateFxButtons();
+}
+updateFxButtons();
+// 传感器锥线/扫描波纹开关，与左侧效果栏保持同一状态。
 document.getElementById('btnSensors').addEventListener('click', () => {
-  sensorsVisible = !sensorsVisible;
-  const cones = window.__sensorCones || [];
-  for (const c of cones) c.visible = sensorsVisible;
-  document.getElementById('btnSensors').style.outline = sensorsVisible ? '1px solid var(--acc)' : '';
+  setFxVisibility('scan',!fxVisible.scan);
 });
 document.getElementById('btnDirGo').addEventListener('click', async () => {
   const dirPath = document.getElementById('dirPath');
@@ -987,26 +1662,70 @@ document.getElementById('importPy').addEventListener('change', async e => {
   }
   e.target.value = '';
 });
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function waitForRemoteStop(timeoutMs=5000){
+  const deadline = performance.now() + timeoutMs;
+  do {
+    const status = await api('/battle/status');
+    if (status.error) return { stopped:false, error:status.error };
+    if (!status.running) return { stopped:true };
+    await sleep(150);
+  } while (performance.now() < deadline);
+  return { stopped:false, error:'上一场对战仍在停止，请稍后再试' };
+}
+async function startRemoteBattle(payload){
+  let result = await api('/battle/start', payload);
+  if (result.ok || !/已有对战进行中/.test(result.error || '')) return result;
+
+  remoteStatus.textContent = '正在停止上一场对战…';
+  remoteStatus.style.color = '#ffd166';
+  await api('/battle/stop');
+  const stopped = await waitForRemoteStop();
+  if (!stopped.stopped) return { error: stopped.error || '无法停止上一场对战' };
+  return api('/battle/start', payload);
+}
+async function resetRemoteMatch(){
+  remoteStatus.textContent='正在停止远程对战…';
+  await api('/battle/stop');
+  const stopped=await waitForRemoteStop();
+  if(!stopped.stopped){ remoteStatus.textContent='重置失败: '+(stopped.error||'对战未停止'); return; }
+  const r=await api('/reset',{vehicles:{us:getVehicleFor('us'),them:getVehicleFor('them')}});
+  if(!r.ok){ remoteStatus.textContent='重置失败: '+(r.error||''); return; }
+  remote.mode=false; remote.match=null;
+  if(remote.timer) clearInterval(remote.timer);
+  remote.timer=null; logBox.innerHTML=''; clearVisualHistory(); setViewMode('free');
+  remoteStatus.textContent='已重置 (本地预览)';
+}
+function startRemotePolling(){
+  if (remote.timer) clearInterval(remote.timer);
+  remote.timer = setInterval(pollRemote, 250);
+  pollRemote();
+}
 document.getElementById('btnRemoteStart').addEventListener('click', async () => {
-  if (remote.mode) return;
+  if (remote.mode || remote.startInFlight) return;
+  remote.startInFlight = true;
   const us = document.getElementById('selUs').value || '@example';
   const them = document.getElementById('selThem').value || 'fsm';
-  const r = await api('/battle/start', {
-    us, them, seed: 42, maxSteps: 2400,
-    // 远程 server 与当前页面是两个核心实例，必须显式传车辆 profile，
-    // 否则远程对战会退回默认车身/速度，3D 本地预览与实际比赛不一致。
-    vehicles: { us: getVehicleFor('us'), them: getVehicleFor('them') },
-  });
-  if (!r.ok){ remoteStatus.textContent = '启动失败: ' + (r.error || ''); log('[远程] ' + (r.error || ''), 'warn'); return; }
-  remote.mode = true;
-  remote.lastLogLen = logEvents.length;
-  remote.lastOutLen = 0;
-  remoteOutWrap.style.display = 'block';
-  remoteOut.innerHTML = '';
-  remoteStatus.textContent = `对战进行中 ${r.us} vs ${r.them}`;
-  remoteStatus.style.color = '#ffd166';
-  log(`[远程] 对战开始: ${r.us} vs ${r.them} (轮询渲染中)`);
-  remote.timer = setInterval(pollRemote, 200);
+  try {
+    const r = await startRemoteBattle({
+      us, them, seed: 42, maxSteps: 2400,
+      // 远程 server 与当前页面是两个核心实例，必须显式传车辆 profile，
+      // 否则远程对战会退回默认车身/速度，3D 本地预览与实际比赛不一致。
+      vehicles: { us: getVehicleFor('us'), them: getVehicleFor('them') },
+    });
+    if (!r.ok){ remoteStatus.textContent = '启动失败: ' + (r.error || ''); log('[远程] ' + (r.error || ''), 'warn'); return; }
+    remote.mode = true;
+    remote.lastLogLen = logEvents.length;
+    remote.lastOutLen = 0;
+    remoteOutWrap.style.display = 'block';
+    remoteOut.innerHTML = '';
+    remoteStatus.textContent = `对战进行中 ${r.us} vs ${r.them}`;
+    remoteStatus.style.color = '#ffd166';
+    log(`[远程] 对战开始: ${r.us} vs ${r.them} (轮询渲染中)`);
+    startRemotePolling();
+  } finally {
+    remote.startInFlight = false;
+  }
 });
 document.getElementById('btnRemoteStop').addEventListener('click', async () => {
   await api('/battle/stop');
@@ -1016,18 +1735,30 @@ document.getElementById('btnRemoteStop').addEventListener('click', async () => {
   remoteStatus.textContent = '已停止 (本地模式)';
   log('[远程] 已停止, 回到本地模式', 'warn');
 });
-function pollRemote(){
-  Promise.all([api('/state'), api('/battle/status')]).then(([st, stt]) => {
+async function pollRemote(){
+  if (remote.pollInFlight) return;
+  remote.pollInFlight = true;
+  try {
+    const stt = await api('/battle/status');
+    const st = stt && stt.state;
     if (!st || !st.robots) return;
     // 用服务器状态覆盖双车(远程渲染)
-    US.x = st.robots.us.x; US.y = st.robots.us.y; US.th = st.robots.us.th;
-    US.fsm.state = st.robots.us.state; US.fsm.action = st.robots.us.action;
-    if (st.robots.us.vehicle){ US.vehicle = { ...st.robots.us.vehicle }; US.r = US.vehicle.collisionRadius; }
-    THEM.x = st.robots.them.x; THEM.y = st.robots.them.y; THEM.th = st.robots.them.th;
-    THEM.fsm.state = st.robots.them.state; THEM.fsm.action = st.robots.them.action;
-    if (st.robots.them.vehicle){ THEM.vehicle = { ...st.robots.them.vehicle }; THEM.r = THEM.vehicle.collisionRadius; }
-    US.fsm.scores.us = st.scores.us; THEM.fsm.scores.us = st.scores.them;
-    US.fsm.timer = st.timer;
+     US.x = st.robots.us.x; US.y = st.robots.us.y; US.th = st.robots.us.th;
+     US.fsm.state = st.robots.us.state; US.fsm.action = st.robots.us.action;
+     if (st.robots.us.vehicle){ US.vehicle = { ...st.robots.us.vehicle }; US.r = US.vehicle.collisionRadius; }
+     if (st.sensors && st.sensors.us) US.sens = { ...st.sensors.us };
+     if (st.rawSensors && st.rawSensors.us) US.rawSens = { ...st.rawSensors.us };
+     if (st.sensorLayout && st.sensorLayout.us) US.sensorLayout = { ...st.sensorLayout.us };
+     THEM.x = st.robots.them.x; THEM.y = st.robots.them.y; THEM.th = st.robots.them.th;
+     THEM.fsm.state = st.robots.them.state; THEM.fsm.action = st.robots.them.action;
+     if (st.robots.them.vehicle){ THEM.vehicle = { ...st.robots.them.vehicle }; THEM.r = THEM.vehicle.collisionRadius; }
+     if (st.sensors && st.sensors.them) THEM.sens = { ...st.sensors.them };
+     if (st.rawSensors && st.rawSensors.them) THEM.rawSens = { ...st.rawSensors.them };
+     if (st.sensorLayout && st.sensorLayout.them) THEM.sensorLayout = { ...st.sensorLayout.them };
+     scoreBoard.us = st.scores.us; scoreBoard.them = st.scores.them;
+     US.fsm.scores.us = st.scores.us; THEM.fsm.scores.us = st.scores.them;
+     US.fsm.timer = st.timer;
+     remote.match = st.match || null;
     if (stt){
       // 日志增量显示(服务器 logTail → 主日志)
       for (const e of stt.logTail || []){
@@ -1052,20 +1783,28 @@ function pollRemote(){
         remoteStatus.style.color = '#4da3ff';
       }
     }
-  }).catch(() => {});
+  } finally {
+    remote.pollInFlight = false;
+  }
 }
 // ---------- 主循环 ----------
 let last = performance.now();
+let lastUiPaint = 0;
 function loop(now){
   const dt = Math.min((now-last)/1000, 0.05) * params.simSpeed;
   last = now;
+  frameDt = dt;
   if (!remote.mode) gameEngine.step(dt); // 3D GameEngine: FSM/RobotAPI + 规则裁判 + 物理桥
-  else if (physicsBridge) physicsBridge.step(dt); // 远程对战时服务器负责规则推进
+  // 远程对战的规则和物理均由 sim_server 推进；此处只渲染其状态，
+  // 避免浏览器侧 Rapier 每帧重复计算并与网络快照相互抢占。
   sync3D();
   updateCam();          // 应用相机状态(左键拖拽旋转/右键平移/滚轮缩放/双击复位)
-  renderer.render(scene, camera);
-  updateSensorUI();
-  updateStateUI();
+  carFx.us.dust?.update(dt); carFx.them.dust?.update(dt); sensorFx?.update(dt); collisionFx?.update(dt);
+  for(let i=tireMarks.length-1;i>=0;i--){ tireMarks[i]?.update(dt); if(tireMarks[i]?.object && !tireMarks[i].object.visible){ tireMarks[i].dispose?.(); tireMarks.splice(i,1); } }
+  if(replayHistory.length){ replayScrub.max=Math.max(0,replayHistory.length-1); if(replayCursor<0) replayScrub.value=replayHistory.length-1; else updateReplayGhost(); }
+  if(renderPipeline && renderPipeline.render) renderPipeline.render(dt); else renderer.render(scene,camera);
+  // 文本/传感器面板逐帧改 DOM 会导致远程对战掉帧；10Hz 对读数仍足够实时。
+  if(now-lastUiPaint>=100){ updateSensorUI(); updateStateUI(); lastUiPaint=now; }
   requestAnimationFrame(loop);
 }
 

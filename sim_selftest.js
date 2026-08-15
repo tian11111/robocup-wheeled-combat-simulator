@@ -9,7 +9,7 @@ global.document={getElementById:()=>({addEventListener:()=>{}}),addEventListener
 global.window={addEventListener:()=>{}};
 global.navigator={};
 
-eval(script + "\n;global.__T = global.__T || { fs, fs2, bot, opp, US, THEM, robots, blocks, buffs, deb, params, arm, resetAll, startManual, stepSim, stepSimExt, getState, getLog, setPose, setPoseFor, setObject, scenePreset, setVehicleFor, getVehicleFor, onPlatform, onStage, hangOn, fullOn, fieldGray, distToNearestEdge, toDoneFor, enterSearchFor, beginPreparation, pauseMatch, resumeMatch, restartFor };");
+eval(script + "\n;global.__T = global.__T || { fs, fs2, bot, opp, US, THEM, robots, blocks, buffs, deb, params, arm, resetAll, startManual, stepSim, stepSimExt, getState, getLog, setPose, setPoseFor, setObject, scenePreset, setVehicleFor, getVehicleFor, onPlatform, onStage, hangOn, fullOn, fieldGray, distToNearestEdge, toDoneFor, enterSearchFor, beginPreparation, pauseMatch, resumeMatch, restartFor, consumeDragImpacts };");
 const T = global.__T;
 let failures = 0;
 const assert = (cond, msg)=>{ if(cond) console.log(`  ✓ ${msg}`); else { failures++; console.log(`  ✗ FAIL: ${msg}`); } };
@@ -334,6 +334,77 @@ console.log('== 场景 25: 高速线段扫掠避免穿过能量块 ==');
   assert(b.lastContactRole==='us' && b.x>oldX,
     `高速跨帧仍应扫掠命中并推动能量块, 实际 role=${b.lastContactRole} x=${b.x.toFixed(3)}`);
   T.setVehicleFor('us', before);
+}
+
+console.log('== 场景 26: 每车独立传感器数量/类型/布局 ==');
+{
+  resetScene(41);
+  const before=T.getVehicleFor('us');
+  const profile={
+    id:'custom-11', label:'本车 11 路',
+    channels:[
+      {id:'gray_front',type:'gray',forward:0.11,lateral:0},
+      {id:'gray_rear',type:'gray',forward:-0.11,lateral:0,angle:Math.PI},
+      {id:'gray_left',type:'gray',forward:0,lateral:0.11,angle:Math.PI/2},
+      {id:'gray_right',type:'gray',forward:0,lateral:-0.11,angle:-Math.PI/2},
+      {id:'diag_left_front',type:'digital',angle:-Math.PI/4,range:1.6,fov:0.55},
+      {id:'diag_left_rear',type:'digital',angle:3*Math.PI/4,range:1.6,fov:0.55},
+      {id:'diag_right_front',type:'digital',angle:Math.PI/4,range:1.6,fov:0.55},
+      {id:'diag_right_rear',type:'digital',angle:-3*Math.PI/4,range:1.6,fov:0.55},
+      {id:'shovel_under_left',type:'ir_ground',forward:0.14,lateral:0.06},
+      {id:'shovel_under_right',type:'ir_ground',forward:0.14,lateral:-0.06},
+      {id:'shovel_front',type:'ir_edge',forward:0.16,range:0.9,fov:0.30},
+    ],
+    logical:{
+      gF:'gray_front',gB:'gray_rear',gL:'gray_left',gR:'gray_right',
+      uL:'shovel_under_left',uR:'shovel_under_right',sFL:'shovel_front',sFR:'shovel_front',
+      dLF:'diag_left_front',dRF:'diag_right_front',dLB:'diag_left_rear',dRB:'diag_right_rear',
+      f:{channels:['diag_left_front','diag_right_front'],reducer:'max',virtual:true},r:null,
+    },
+  };
+  T.setVehicleFor('us',{sensors:profile});
+  T.arm(); T.stepSim(0.05);
+  const st=T.getState();
+  assert(st.sensorLayout.us.channels.length===11, `传感器 profile 应为 11 路, 实际 ${st.sensorLayout.us.channels.length}`);
+  assert(Object.keys(st.rawSensors.us).length===11, `rawSensors 应只包含 11 个真实通道, 实际 ${Object.keys(st.rawSensors.us).length}`);
+  assert(st.sensorLayout.us.channels.filter(c=>c.type==='digital').length===4,
+    '四路对角红外应按实车配置为 digital 类型');
+  assert(st.rawSensors.us.shovel_front!==undefined && st.sensors.us.sFL===st.sensors.us.sFR,
+    '单路铲前红外应保留 raw 通道并兼容映射到 sFL/sFR');
+  assert(st.sensorLayout.us.channels.find(c=>c.id==='diag_left_rear').angle > 2,
+    '传感器布局应保留安装朝向');
+  T.setVehicleFor('us',before);
+}
+
+console.log('== 场景 27: 掉台能量块仍可碰撞，拖拽块可推开实体 ==');
+{
+  resetScene(42);
+  const fallen=T.buffs[0];
+  fallen.out=true; fallen.wasOn=false; fallen.x=0.48; fallen.y=1.9; fallen.vx=fallen.vy=0;
+  T.setPoseFor(T.US,0.18,1.9,0); T.US.fsm.armed=true; T.US.fsm.state='MANUAL';
+  T.THEM.fsm.armed=false; T.THEM.fsm.state='WAIT_START';
+  const fallenX=fallen.x;
+  for(let i=0;i<16;i++) T.stepSimExt(0.05,{us:{v:1.1,w:0},them:null});
+  assert(fallen.out && fallen.x>fallenX+0.01 && T.US.x<fallen.x,
+    `掉台块仍应阻挡并被推动, 实际 block=${fallen.x.toFixed(3)} car=${T.US.x.toFixed(3)}`);
+
+  const source=T.buffs[1];
+  source.x=1.15; source.y=2.0; source.vx=source.vy=0; source.dragLock=true;
+  T.setPoseFor(T.US,1.45,2.0,0);
+  const carX=T.US.x;
+  T.setObject('buff',1,1.60,2.0);
+  const carEvents=T.consumeDragImpacts();
+  assert(T.US.x>carX+0.05 && Math.hypot(T.US.x-source.x,T.US.y-source.y)>=source.r+T.US.r && carEvents.some(e=>e.target==='us'),
+    `拖拽块应推开车辆并保持间隙, 实际 x=${T.US.x.toFixed(3)} gap=${Math.hypot(T.US.x-source.x,T.US.y-source.y).toFixed(3)}`);
+
+  source.x=1.15; source.y=1.3; source.vx=source.vy=0;
+  fallen.x=1.45; fallen.y=1.3; fallen.vx=fallen.vy=0;
+  const blockX=fallen.x;
+  T.setObject('buff',1,1.60,1.3);
+  const blockEvents=T.consumeDragImpacts();
+  assert(fallen.x>blockX+0.05 && Math.hypot(fallen.x-source.x,fallen.y-source.y)>=source.r+fallen.r && blockEvents.some(e=>e.target==='buff'),
+    `拖拽块应推开另一能量块并保持间隙, 实际 x=${fallen.x.toFixed(3)} gap=${Math.hypot(fallen.x-source.x,fallen.y-source.y).toFixed(3)}`);
+  source.dragLock=false;
 }
 
 console.log(failures===0 ? '\n全部通过 ✔' : `\n${failures} 项失败 ✘`);

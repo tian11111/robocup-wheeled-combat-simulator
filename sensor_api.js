@@ -19,6 +19,10 @@
       scores: clone(st.scores),
       robot: clone(st.robots[role]),
       sensors: clone(st.sensors[role]),
+      // sensors 保持旧逻辑别名；rawSensors 是车辆 profile 的真实动态通道。
+      rawSensors: clone((st.rawSensors && st.rawSensors[role]) || st.sensors[role]),
+      sensorCompat: clone((st.sensorCompat && st.sensorCompat[role]) || st.sensors[role]),
+      sensorLayout: clone(st.sensorLayout && st.sensorLayout[role]),
       opponent: clone(st.robots[opponentRole]),
       objects: clone(st.objects),
     };

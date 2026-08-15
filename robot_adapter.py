@@ -10,7 +10,7 @@ robot_adapter.py — 小车程序适配器 (子进程桥客户端)
 obs 结构 (dict):
   t / role('us'|'them') / timer / scores{us,them}
   robot: {x,y,th,v,w,vehicle,onPlatform,hang,state,action}
-  sensors: 14 路 {gF,gB,gL,gR, uL,uR, sFL,sFR, dLF,dRF,dLB,dRB, f, r}
+  sensors: 兼容逻辑别名；rawSensors: 当前车辆真实通道；sensorLayout: 类型/位置/朝向
            (灰度 0-1000, 红外 0-1)
   opponent: 另一台车 {x,y,th,onPlatform,state,...}
   objects: {buffs:[{x,y,onPlatform}], debuff:{x,y,onPlatform}}
@@ -77,8 +77,8 @@ decide(obs) -> {"v": .., "w": ..}    (v: m/s, w: rad/s)
 
 obs 关键字段 (完整结构见 SIMULATOR.md / CONTRACT.md):
   robot    : {x, y, th, v, w, vehicle, onPlatform, hang, state}
-  sensors  : 14 路 {gF,gB,gL,gR, uL,uR, sFL,sFR, dLF,dRF,dLB,dRB, f, r}
-             灰度 0-1000(台上白≈1000/黑带≈300/走道=0), 红外 0-1
+  sensors  : 兼容逻辑别名 {gF,gB,gL,gR,...}; 真实通道请读 rawSensors，
+             通道数量/类型/布局请读 sensorLayout；灰度通常 0-1000，红外通常 0-1
   opponent : 另一台车 {x, y, th, onPlatform, state}
   objects  : {buffs: [{x,y,onPlatform}...], debuff: {x,y,onPlatform}}
 
