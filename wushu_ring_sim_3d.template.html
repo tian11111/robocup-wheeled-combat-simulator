@@ -78,6 +78,22 @@
   .sliders{display:grid; grid-template-columns:repeat(auto-fill,minmax(215px,1fr)); gap:6px 14px;}
   .sliders label{display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--muted); white-space:nowrap;}
   .sliders input[type=range]{flex:1; min-width:60px; accent-color:var(--acc);}
+  .yolo-panel{padding:14px;}
+  .yolo-page-head{display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding-bottom:12px; border-bottom:1px solid var(--line);}
+  .yolo-page-head h3{margin:0 0 5px;}
+  .yolo-status-card{display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--line); border-radius:5px; background:rgba(20,24,30,.72); white-space:nowrap;}
+  .yolo-status-card strong{color:#ffd166; font-size:11px; font-weight:600;}
+  .yolo-section{margin-top:13px; padding:11px 12px; border:1px solid rgba(91,108,126,.55); border-radius:6px; background:rgba(20,24,30,.42);}
+  .yolo-section h4{margin:0 0 9px; color:#dbe8f5; font-size:12px; font-weight:600;}
+  .yolo-settings-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:9px 12px; align-items:end;}
+  .yolo-field{display:flex; flex-direction:column; gap:4px; min-width:0; color:var(--muted); font-size:11px;}
+  .yolo-field.wide{grid-column:1/-1;}
+  .yolo-field input,.yolo-field select{box-sizing:border-box; width:100%; min-width:0; padding:6px 7px; background:#14181e; color:var(--txt); border:1px solid var(--line); border-radius:4px; font:inherit;}
+  .yolo-field input:focus,.yolo-field select:focus{border-color:#4da3ff; outline:none;}
+  .yolo-format{margin-top:9px; padding:7px 8px; color:#9fb2c4; background:#11161c; border-radius:4px; font:10.5px/1.55 Consolas,monospace; overflow:auto;}
+  .yolo-actions{display:flex; align-items:center; gap:8px; margin-top:13px;}
+  .yolo-actions .hint{margin:0;}
+  @media (max-width:760px){.yolo-page-head{flex-direction:column;}.yolo-status-card{width:100%; box-sizing:border-box; justify-content:space-between;}.yolo-field.wide{grid-column:auto;}}
   .sliders span{font-family:Consolas,monospace; color:var(--txt); min-width:38px; text-align:right;}
   .vehicle-fields{display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:6px 12px;}
   .vehicle-fields label{display:flex; align-items:center; gap:6px; color:var(--muted); font-size:11.5px;}
@@ -213,6 +229,7 @@
         <button class="tool-tab active" data-pane="settingsVehicle" type="button">车辆 / 传感器</button>
         <button class="tool-tab" data-pane="settingsMatch" type="button">比赛控制</button>
         <button class="tool-tab" data-pane="settingsParams" type="button">参数调节</button>
+        <button class="tool-tab" data-pane="settingsYolo" type="button">YOLO 设置</button>
       </div>
       <div class="tool-pane active" id="settingsVehicle">
        <div class="panel tool-panel">
@@ -309,6 +326,41 @@
     </div>
        </div>
       </div>
+      <div class="tool-pane" id="settingsYolo">
+       <div class="panel tool-panel yolo-panel">
+        <div class="yolo-page-head">
+          <div><h3>YOLO 视觉设置</h3><div class="hint" style="margin:0;">独立虚拟相机、独立缓存；默认关闭，不影响原有 classifyRate 仿真。</div></div>
+          <div class="yolo-status-card"><span class="cap">当前状态</span><strong id="yoloStatus">关闭</strong><button id="btnYoloToggle" type="button">YOLO：关</button></div>
+        </div>
+        <div class="yolo-section">
+          <h4>连接</h4>
+          <div class="yolo-settings-grid">
+            <label class="yolo-field wide">YOLO HTTP 地址<input id="yoloEndpoint" value="http://127.0.0.1:8933/predict" placeholder="http://127.0.0.1:8933/predict"></label>
+          </div>
+        </div>
+        <div class="yolo-section">
+          <h4>采集与请求</h4>
+          <div class="yolo-settings-grid">
+            <label class="yolo-field">帧率（FPS）<input id="yoloFps" type="number" min="1" max="30" value="5"></label>
+            <label class="yolo-field">图片宽度（px）<input id="yoloWidth" type="number" min="160" max="1280" step="16" value="640"></label>
+            <label class="yolo-field">JPEG 画质（0.1–1）<input id="yoloQuality" type="number" min="0.1" max="1" step="0.05" value="0.7"></label>
+            <label class="yolo-field">请求超时（ms）<input id="yoloTimeout" type="number" min="100" max="5000" value="700"></label>
+            <label class="yolo-field">最大缓存年龄（ms）<input id="yoloMaxAge" type="number" min="100" max="5000" value="800"></label>
+          </div>
+          <div class="yolo-format">截图高度自动按 16:9 计算；每辆车最多一个未完成请求。请求失败、超时或结果过期时自动回退 classifyRate。</div>
+        </div>
+        <div class="yolo-section">
+          <h4>结果归一化</h4>
+          <div class="yolo-settings-grid">
+            <label class="yolo-field">敌人类别映射（逗号或 / 分隔）<input id="yoloEnemyClass" placeholder="enemy,robot,car"></label>
+            <label class="yolo-field">固定返回标签<select id="yoloFixedLabel"><option value="">不固定</option><option value="opponent">opponent（敌人）</option><option value="buff">buff（增益）</option><option value="debuff">debuff（减益）</option><option value="unknown">unknown（未知）</option></select></label>
+            <label class="yolo-field">无法映射时返回<select id="yoloFallback"><option value="unknown">unknown</option><option value="opponent">opponent</option></select></label>
+          </div>
+          <div class="yolo-format">兼容 label / kind / type / target_type / className / class / name；支持 detections、predictions、results 数组或单个 target。固定标签只改已有检测，不会凭空生成目标。</div>
+        </div>
+        <div class="yolo-actions"><button id="btnYoloApply" type="button">应用设置</button><span class="hint">远程对战开始时会自动同步这些配置；远程只发送检测结果，不发送图片。</span></div>
+       </div>
+      </div>
       <div class="tool-pane" id="settingsParams">
        <div class="panel tool-panel">
         <h3>参数 (实时生效)</h3>
@@ -351,7 +403,7 @@
     matchControl, beginPreparation, pauseMatch, resumeMatch, restartFor,
     setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset, consumeDragImpacts,
     setFieldGrayMap, getFieldGrayMap, getFieldGrayInfo,
-    setSimVision, getSimVisionInfo, classifyTargetFor,
+    setSimVision, getSimVisionInfo, classifyTargetFor, setExternalVisionCache, updateExternalVisionResult, clearExternalVisionCache,
   };
   // 3D 主页面默认展示用户提供的实车布局；无头/API 仍保持 legacy14 兼容默认。
   setVehicleFor('us', { id:'robocup-wheeled-combat', sensors:'wheeledCombat11' });
@@ -838,7 +890,8 @@ function init3D(){
   // 相机初始视角 (斜一点, 能看出擂台高度)
   camState = { yaw: Math.PI/4, pitch: 0.70, dist: 5.4, tx: 0, ty: 0.3, tz: 0 };
   renderPipeline=VisualEffects.createBloom({THREE,renderer,scene,camera,strength:0.42,radius:0.28,threshold:0.82});
-  updateCam();
+    updateCam();
+    yoloInit();
 }
 
 // ---------- 相机 (手动轨道) ----------
@@ -1739,6 +1792,9 @@ document.getElementById('btnRemoteStart').addEventListener('click', async () => 
     if (!r.ok){ remoteStatus.textContent = '启动失败: ' + (r.error || ''); log('[远程] ' + (r.error || ''), 'warn'); return; }
     remote.mode = true;
     remote.controlToken = r.controlToken || null;
+    // 服务端是独立 CORE；远程局开始后先同步完整视觉配置，避免服务端仍沿用上一局的开关/尺寸。
+    const visionConfigResult = await api('/vision/config', yoloConfigPayload());
+    if (visionConfigResult && visionConfigResult.error) log('[远程视觉] 配置同步失败: '+visionConfigResult.error, 'warn');
     remote.lastLogLen = logEvents.length;
     remote.lastOutLen = 0;
     remoteOutWrap.style.display = 'block';
@@ -1819,6 +1875,119 @@ async function pollRemote(){
     remote.pollInFlight = false;
   }
 }
+// ---------- 可选 YOLO 视觉（默认关闭） ----------
+const yoloState={enabled:false,endpoint:'http://127.0.0.1:8933/predict',fps:5,width:640,quality:.7,timeout:700,maxAge:800,enemyClass:'',fixedLabel:'',fallback:'unknown',last:0,seq:0,inflight:{us:false,them:false},controllers:{us:null,them:null}};
+const yoloEls={toggle:document.getElementById('btnYoloToggle'),apply:document.getElementById('btnYoloApply'),endpoint:document.getElementById('yoloEndpoint'),fps:document.getElementById('yoloFps'),width:document.getElementById('yoloWidth'),quality:document.getElementById('yoloQuality'),timeout:document.getElementById('yoloTimeout'),maxAge:document.getElementById('yoloMaxAge'),enemy:document.getElementById('yoloEnemyClass'),fixed:document.getElementById('yoloFixedLabel'),fallback:document.getElementById('yoloFallback'),status:document.getElementById('yoloStatus')};
+let yoloTarget=null,yoloCanvas=null,yoloCtx=null,yoloCameras={};
+function yoloDimensions(){const width=Math.max(160,Math.min(1280,Math.round(Number(yoloState.width)||640)));return {width,height:Math.max(90,Math.round(width*9/16))};}
+function yoloResize(){
+  const {width,height}=yoloDimensions();
+  if(yoloTarget) yoloTarget.dispose?.();
+  yoloTarget=new THREE.WebGLRenderTarget(width,height);
+  if(!yoloCanvas) yoloCanvas=document.createElement('canvas');
+  yoloCanvas.width=width; yoloCanvas.height=height;
+  yoloCtx=yoloCanvas.getContext('2d');
+  for(const r of ['us','them']){
+    if(!yoloCameras[r]) yoloCameras[r]=new THREE.PerspectiveCamera(74,width/height,.03,30);
+    else { yoloCameras[r].aspect=width/height; yoloCameras[r].updateProjectionMatrix(); }
+  }
+}
+function yoloInit(){yoloResize();}
+function yoloOutputLabel(d){
+  const raw=d&&typeof d==='object'?d:{};
+  return String(raw.label??raw.kind??raw.type??raw.target_type??raw.className??raw.class_name??raw.class??raw.name??raw.category??'').trim().toLowerCase();
+}
+function yoloAliases(){return new Set(String(yoloState.enemyClass||'').toLowerCase().split(/[,/\\s]+/).map(x=>x.trim()).filter(Boolean));}
+function yoloBBox(d){
+  const raw=d&&typeof d==='object'?d:{};
+  if(Array.isArray(raw.bbox)&&raw.bbox.length===4) return raw.bbox.map(Number);
+  const x=Number(raw.x??raw.left??raw.center_x), y=Number(raw.y??raw.top??raw.center_y), w=Number(raw.width??raw.w??raw.box_width), h=Number(raw.height??raw.h??raw.box_height);
+  if([x,y,w,h].every(Number.isFinite)) return Number.isFinite(Number(raw.center_x))&&Number.isFinite(Number(raw.center_y)) ? [x-w/2,y-h/2,w,h] : [x,y,w,h];
+  return [];
+}
+function yoloNorm(d){
+  const raw=d&&typeof d==='object'?d:{};
+  let label=yoloOutputLabel(raw);
+  const aliases={good:'buff',gain:'buff',bonus:'buff',bad:'debuff',penalty:'debuff',enemy:'opponent',robot:'opponent'};
+  if(aliases[label]) label=aliases[label];
+  if(yoloAliases().has(label)) label='opponent';
+  if(!['buff','debuff','opponent'].includes(label)) label=yoloState.fallback;
+  if(yoloState.fixedLabel) label=yoloState.fixedLabel;
+  const confidence=Math.max(0,Math.min(1,Number(raw.confidence??raw.score??raw.probability)||0));
+  return {label,confidence,bbox:yoloBBox(raw)};
+}
+function yoloDetections(payload){
+  if(Array.isArray(payload)) return payload;
+  if(!payload||typeof payload!=='object') return [];
+  if(Array.isArray(payload.detections)) return payload.detections;
+  if(Array.isArray(payload.predictions)) return payload.predictions;
+  if(Array.isArray(payload.results)) return payload.results;
+  if(payload.target&&typeof payload.target==='object') return [payload.target];
+  if(payload.result&&typeof payload.result==='object') return yoloDetections(payload.result);
+  return [];
+}
+function yoloSetDebugVisible(visible){
+  const restore=[];
+  const hideObject=o=>{if(!o||typeof o.visible!=='boolean')return;const old=o.visible;o.visible=visible;restore.push(()=>{o.visible=old;});};
+  const hideController=(c,show)=>{if(!c)return;if(typeof c.setVisible==='function'){c.setVisible(visible);restore.push(()=>c.setVisible(show));}else hideObject(c.object);};
+  for(const bucket of Object.values(sensorVisuals||{})) hideObject(bucket?.root);
+  for(const c of Object.values(overheadHud||{})) hideController(c,fxVisible.hud);
+  for(const c of Object.values(trails||{})) hideController(c,fxVisible.trails);
+  for(const c of Object.values(velocityVectors||{})) hideController(c,fxVisible.vectors);
+  hideController(sensorFx,fxVisible.scan); hideController(collisionFx,fxVisible.collisions);
+  hideObject(replayGhost?.us); hideObject(replayGhost?.them);
+  for(const m of tireMarks||[]) hideObject(m?.object);
+  return ()=>{for(let i=restore.length-1;i>=0;i--)restore[i]();};
+}
+async function yoloCapture(role){
+  if(!yoloState.enabled||yoloState.inflight[role]||!yoloTarget)return;
+  yoloState.inflight[role]=true;
+  const {width,height}=yoloDimensions();
+  const g=role==='us'?botGroup:themGroup,c=yoloCameras[role],p=g.getWorldPosition(new THREE.Vector3()),q=g.getWorldQuaternion(new THREE.Quaternion()),d=new THREE.Vector3(1,0,0).applyQuaternion(q);
+  c.position.copy(p).addScaledVector(d,.22); c.position.y+=.2; c.lookAt(p.x+d.x*3,.12,p.z+d.z*3);
+  let restoreDebug=()=>{}, oldTarget=null, tm=null;
+  try{
+    restoreDebug=yoloSetDebugVisible(false);
+    oldTarget=renderer.getRenderTarget();
+    try{
+      renderer.setRenderTarget(yoloTarget); renderer.render(scene,c);
+      const px=new Uint8Array(width*height*4); renderer.readRenderTargetPixels(yoloTarget,0,0,width,height,px);
+      const im=yoloCtx.createImageData(width,height);
+      for(let y=0;y<height;y++)for(let x=0;x<width;x++){const s=((height-1-y)*width+x)*4,t=(y*width+x)*4;im.data[t]=px[s];im.data[t+1]=px[s+1];im.data[t+2]=px[s+2];im.data[t+3]=255;}
+      yoloCtx.putImageData(im,0,0); renderer.setRenderTarget(oldTarget);
+    } finally { renderer.setRenderTarget(oldTarget); restoreDebug(); restoreDebug=()=>{}; }
+    const frameId=role+'-'+(++yoloState.seq), body={frameId,role,image:{mime:'image/jpeg',base64:yoloCanvas.toDataURL('image/jpeg',yoloState.quality).split(',')[1]},width,height};
+    const ac=new AbortController(); yoloState.controllers[role]=ac; tm=setTimeout(()=>ac.abort(),yoloState.timeout);
+    const res=await fetch(yoloState.endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:ac.signal}); if(!res.ok)throw Error('HTTP '+res.status);
+    const out=await res.json(),detections=yoloDetections(out).map(yoloNorm),result={frameId,role,detections,width,height};
+    window.__SIM_CORE.updateExternalVisionResult(role,result,Date.now());
+    if(remote?.mode) api('/vision/result',{frameId,role,detections,width,height}).catch(()=>{});
+    yoloEls.status.textContent='运行中';
+  }catch(e){yoloEls.status.textContent='回退：'+String(e.message||e).slice(0,60);}
+  finally{clearTimeout(tm);restoreDebug();yoloState.controllers[role]=null;yoloState.inflight[role]=false;}
+}
+function yoloTick(now){if(yoloState.enabled&&now-yoloState.last>=1000/yoloState.fps){yoloState.last=now;yoloCapture('us');yoloCapture('them');}}
+function yoloConfigPayload(){return {enabled:yoloState.enabled,maxAgeMs:yoloState.maxAge,fps:yoloState.fps,width:yoloState.width,quality:yoloState.quality,fallback:'classifyRate',fixedLabel:yoloState.fixedLabel||''};}
+function yoloSyncRemoteConfig(){if(remote?.mode)api('/vision/config',yoloConfigPayload()).catch(()=>{});}
+function yoloApply(){
+  yoloState.endpoint=yoloEls.endpoint.value.trim()||yoloState.endpoint;
+  yoloState.fps=Math.max(1,Math.min(30,Number(yoloEls.fps.value)||5));
+  yoloState.width=Math.max(160,Math.min(1280,Math.round(Number(yoloEls.width.value)||640)));
+  yoloState.quality=Math.max(.1,Math.min(1,Number(yoloEls.quality.value)||.7));
+  yoloState.timeout=Math.max(100,Math.min(5000,Number(yoloEls.timeout.value)||700));
+  yoloState.maxAge=Math.max(100,Math.min(5000,Number(yoloEls.maxAge.value)||800));
+  yoloState.enemyClass=yoloEls.enemy.value.trim();
+  yoloState.fixedLabel=['buff','debuff','opponent','unknown'].includes(yoloEls.fixed?.value)?yoloEls.fixed.value:'';
+  yoloState.fallback=['unknown','opponent'].includes(yoloEls.fallback.value)?yoloEls.fallback.value:'unknown';
+  yoloEls.fps.value=yoloState.fps; yoloEls.width.value=yoloState.width; yoloEls.quality.value=yoloState.quality; yoloEls.timeout.value=yoloState.timeout; yoloEls.maxAge.value=yoloState.maxAge;
+  yoloResize();
+  if(yoloState.enabled) window.__SIM_CORE.setExternalVisionCache({enabled:true,maxAgeMs:yoloState.maxAge,clear:false});
+  yoloSyncRemoteConfig();
+}
+yoloEls.toggle?.addEventListener('click',()=>{yoloApply();yoloState.enabled=!yoloState.enabled;window.__SIM_CORE.setExternalVisionCache({enabled:yoloState.enabled,maxAgeMs:yoloState.maxAge,clear:true});if(!yoloState.enabled){for(const role of ['us','them'])yoloState.controllers[role]?.abort();}yoloSyncRemoteConfig();yoloEls.toggle.textContent='YOLO：'+(yoloState.enabled?'开':'关');yoloEls.status.textContent=yoloState.enabled?'连接中':'关闭';});
+yoloEls.apply?.addEventListener('click',()=>{yoloApply();yoloEls.status.textContent=yoloState.enabled?'配置已应用':'已保存（当前关闭）';});
+for(const el of [yoloEls.endpoint,yoloEls.fps,yoloEls.width,yoloEls.quality,yoloEls.timeout,yoloEls.maxAge,yoloEls.enemy,yoloEls.fixed,yoloEls.fallback]) el?.addEventListener('change',()=>{yoloApply();});
+
 // ---------- 主循环 ----------
 let last = performance.now();
 let lastUiPaint = 0;
@@ -1830,6 +1999,7 @@ function loop(now){
   // 远程对战的规则和物理均由 sim_server 推进；此处只渲染其状态，
   // 避免浏览器侧 Rapier 每帧重复计算并与网络快照相互抢占。
   sync3D();
+  yoloTick(now);
   updateCam();          // 应用相机状态(左键拖拽旋转/右键平移/滚轮缩放/双击复位)
   carFx.us.dust?.update(dt); carFx.them.dust?.update(dt); sensorFx?.update(dt); collisionFx?.update(dt);
   for(let i=tireMarks.length-1;i>=0;i--){ tireMarks[i]?.update(dt); if(tireMarks[i]?.object && !tireMarks[i].object.visible){ tireMarks[i].dispose?.(); tireMarks.splice(i,1); } }

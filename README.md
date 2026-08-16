@@ -48,10 +48,11 @@ http://127.0.0.1:8931/wushu_ring_sim_3d.html
 ```
 
 页面上的“导入代码文件夹”和“远程对战”依赖 `8932` 服务；如果它没有启动，静态 3D 场景仍可使用，但无法运行 Python 策略。
+右侧设置栏的 YOLO 配置位于独立的“YOLO 设置”标签页，不会随着车辆、比赛控制或参数页面重复出现。
 
 ### AI 一条命令评测
 
-策略迭代不需要打开网页或手动启动服务。`sim_runner.py` 会复用已有 `sim_server`；若本机服务未启动，则临时启动并在评测结束后关闭自己启动的那一个：
+策略迭代不需要打开网页或手动启动服务。默认单 worker 会复用已有 `sim_server`；若本机服务未启动，则临时启动并在评测结束后关闭自己启动的那一个。需要并行 seed 时使用 `--workers N`，runner 会启动隔离的临时服务池，不触碰已有 `8932` 服务：
 
 ```powershell
 # 检查 Node、Python、服务、coreHash 和当前比赛核心是否被占用
@@ -63,12 +64,16 @@ python sim_runner.py eval --candidate candidate.py
 # 用相同车辆、参数、对手和 seed 集对比候选与基线
 python sim_runner.py compare --candidate candidate.py --baseline fsm
 
+# 并行评测 4 个 worker（默认 workers=1，按需手动开启）
+python sim_runner.py eval --candidate candidate.py --workers 4
+python sim_runner.py compare --candidate candidate.py --baseline fsm --workers 4
+
 # 使用实测灰度表评测（将路径替换为你实际导出的 JSON 文件）
 # JSON 至少包含 values；可选 width/height/bounds/interpolation/id
 python sim_runner.py eval --candidate candidate.py --field-gray path\to\measured_gray.json
 ```
 
-`--params`、`--vehicles` 和 `--field-gray` 均可传内联 JSON 或 JSON 文件；单车 profile 会自动作为我方 profile 使用。仓库不附带真实灰度表，需先将实测数据导出为灰度表 JSON；不要直接把原始遥测目录当作 `--field-gray` 文件。每次 `eval/compare` 都把请求、策略 SHA-256、实际 `coreHash`、灰度表摘要和完整结果保存到 `.sim_runs/`，该目录不会提交到 Git。默认是快速确定性评测；实车线程时序验证时附加 `--realtime`。如果 `doctor` 显示服务的 `coreHash` 与当前文件不一致，请先重启已有的 `sim_server.js`；runner 默认拒绝复用旧核心，只有明确传 `--allow-stale-core` 才会继续。
+`--params`、`--vehicles` 和 `--field-gray` 均可传内联 JSON 或 JSON 文件；单车 profile 会自动作为我方 profile 使用。仓库不附带真实灰度表，需先将实测数据导出为灰度表 JSON；不要直接把原始遥测目录当作 `--field-gray` 文件。`--workers N` 只并行 AI 批量评测，不改变网页远程对战和 HTTP 单例 API；每次实验结果会记录 worker 数、端口、`coreHash`、灰度表摘要和完整结果。每次 `eval/compare` 都把请求、策略 SHA-256、实际 `coreHash`、灰度表摘要和完整结果保存到 `.sim_runs/`，该目录不会提交到 Git。默认是快速确定性评测；实车线程时序验证时附加 `--realtime`。如果 `doctor` 显示服务的 `coreHash` 与当前文件不一致，请先重启已有的 `sim_server.js`；runner 默认拒绝复用旧核心，只有明确传 `--allow-stale-core` 才会继续。
 
 ### 真实遥测标定
 
@@ -99,6 +104,10 @@ Invoke-RestMethod http://127.0.0.1:8932/field-gray -Method Post -ContentType 'ap
 `GET /field-gray?values=1` 可回读当前表，`POST /field-gray` 加 `{ "reset": true }` 恢复手绘默认值。灰度表会被
 `/reset`、`/battle/run`、`/battle/start` 和多 seed 评测请求接受为 `fieldGray`，便于可复现对比。加载数据不代表
 自动完成物理标定；视觉也仍默认是 `classifyRate` 随机桩，详见 [SIMULATOR.md](SIMULATOR.md)。
+
+3D 页面可按需打开 YOLO HTTP 视觉：进入右侧“YOLO 设置”标签页，设置 endpoint、帧率、图片宽度、JPEG 画质、超时、
+固定返回标签和敌人类别映射，再点击“应用设置”和“YOLO：开”。模型不可用时自动回退 `classifyRate`。YOLO 模型和
+GPU 运行时由外部服务提供，接口与示例见 [SIMULATOR.md](SIMULATOR.md)。
 
 ### 仅查看 3D 场景
 
@@ -161,6 +170,7 @@ https://<your-account>.github.io/<repository>/wushu_ring_sim_3d.html?api=http://
 node sim_selftest.js
 node sim_dragtest.js
 node sim_calibrate_selftest.js
+node sim_vision_http_selftest.js
 
 # 从模板同步生成唯一 3D 页面
 node build_3d.js
@@ -191,6 +201,7 @@ Windows 上如果 `python` 不在 PATH，请使用你的 Python 解释器完整�
 | `sim_runner.py` | AI 优先的服务编排、固定 seed 评测、策略对比与结果归档。 |
 | `sim_calibrate.js` | 真实遥测的最小二乘标定工具，只输出可审计的参数建议。 |
 | `fidelity.json` | 当前物理/传感器子系统的保真度状态与证据。 |
+| `sim_vision_http_selftest.js` | YOLO 外部视觉缓存和 HTTP 接口回归测试。 |
 | `AI_QUICKSTART.md` | AI 克隆项目后的部署、仿真迭代和验收入口。 |
 | `SIMULATOR.md` | API、策略协议、传感器与详细使用说明。 |
 
@@ -199,5 +210,3 @@ Windows 上如果 `python` 不在 PATH，请使用你的 Python 解释器完整�
 - 修改规则核心 `wushu_ring_sim.html` 后，运行 `node sim_selftest.js`、`node sim_dragtest.js` 和 `node build_3d.js`。
 - 修改 3D UI 请编辑 `wushu_ring_sim_3d.template.html`，不要直接修改生成页面中的核心代码。
 - 同一台 `sim_server.js` 在任一时刻只运行一场远程对战或一个批量评估任务。
-
-

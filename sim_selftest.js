@@ -527,5 +527,33 @@ console.log('== 场景 31: 紧凑状态、独立传感器随机流与视觉错�
   T.setSimVision(null);
 }
 
+console.log('== 场景 32: 超时停车、custom footprint 与移动能量块扫掠 ==');
+{
+  resetScene(49);
+  T.setPoseFor(T.US, 1.9, 0.85, 0);
+  T.US.fsm.armed=true; T.US.fsm.manual=true; T.US.fsm.state='MANUAL';
+  T.stepSimExt(0.05, { us:{v:0.8,w:0}, them:null });
+  T.stepSimExt(0.05, { us:null, them:null });
+  assert(T.US.v===0 && T.US.w===0 && T.US.fsm.state==='MANUAL',
+    '外部动作缺失时应停车而不是沿用上一帧指令');
+
+  const beforeVehicle=T.getVehicleFor('us');
+  T.setVehicleFor('us',{frontExtent:0.34,rearExtent:0.30,sideExtent:0.20});
+  T.setPoseFor(T.US,1.9,0.85,0);
+  assert(!T.onStage(T.US) && T.hangOn(T.US),
+    '自定义 footprint 悬出台沿时应判定未完整登台并触发前端悬空');
+  T.setVehicleFor('us',beforeVehicle);
+
+  resetScene(50);
+  const moving=T.buffs[0];
+  T.setPoseFor(T.US,1.9,1.9,0);
+  for(const b of T.blocks){ b.x=0.3; b.y=0.3; b.vx=0; b.vy=0; b.wasOn=false; b.out=false; }
+  moving.x=1.43; moving.y=1.9; moving.vx=2.4; moving.vy=0; moving.wasOn=true;
+  T.US.fsm.armed=true; T.US.fsm.manual=true; T.US.fsm.state='MANUAL';
+  T.stepSimExt(0.1,{us:{v:0,w:0},them:null});
+  assert(T.US.vx>0.01,
+    `高速移动能量块扫掠应撞到静止车, 实际 carV=${T.US.vx.toFixed(3)} blockV=${moving.vx.toFixed(3)}`);
+}
+
 console.log(failures===0 ? '\n全部通过 ✔' : `\n${failures} 项失败 ✘`);
 process.exit(failures===0?0:1);

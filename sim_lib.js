@@ -229,6 +229,11 @@ function loadRegistry(){
   }
   return robotRegistry;
 }
+// sim_server.js 会在服务运行期间写入 sim_robots.json（上传/导入小车程序）。
+// 写入后清掉模块缓存，保证同一服务进程下一场对战能立即解析新 @名字。
+function invalidateRegistry(){
+  robotRegistry = null;
+}
 // 解析控制器参数: '@名字' → 注册表 cmd; 否则原样返回
 function resolveController(spec){
   if (typeof spec === 'string' && spec.startsWith('@')){
@@ -359,4 +364,4 @@ async function runBattle(opts){
   };
 }
 
-module.exports = { loadCore, extractCoreScript, createGameEngine, runBattle, mkObs, resolveCmd, resolveController, loadRegistry, spawnPolicy, splitCommand };
+module.exports = { loadCore, extractCoreScript, createGameEngine, runBattle, mkObs, resolveCmd, resolveController, loadRegistry, invalidateRegistry, spawnPolicy, splitCommand };

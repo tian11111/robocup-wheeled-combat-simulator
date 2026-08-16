@@ -144,7 +144,7 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 
 | 约束 | 说明 |
 |---|---|
-| 必跑回归 | `node sim_selftest.js`（**31 个确定性场景 1-31**，必须全绿）+ `node sim_dragtest.js`（拖拽语义 11 项）；AI 接口改动另跑 `node sim_lib_selftest.js` 与 `node sim_ai_selftest.js` |
+| 必跑回归 | `node sim_selftest.js`（**32 个确定性场景 1-32**，必须全绿）+ `node sim_dragtest.js`（拖拽语义 11 项）；AI 接口改动另跑 `node sim_lib_selftest.js` 与 `node sim_ai_selftest.js` |
 | 确定性 | `resetAll({seed})` 后噪声/识别/能量块摆放可复现（mulberry32）；评估用固定种子集 |
 | 桥验证 | 实车侧改动后：`node sim_battle.js --us "python robot_adapter.py D:/.../tools/sim_robot_main.py" --them fsm --seed 42` 跑通一场 |
 | 语法 | 实车侧代码保持 Python 3.7 兼容（树莓派系统 python3） |
@@ -175,6 +175,12 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 默认适配器保持原有一次 `rng() < classifyRate` 的行为，以维持既有固定 seed 轨迹。加载灰度表、接入视觉缓存本身
 不构成标定；`fidelity.json` 仍须在真实采样和人工复核后更新。
 
+可选 HTTP YOLO 由 3D 页面控制，默认关闭。页面将 `detections` 统一规范为标准标签，并通过
+`POST /vision/config`、`POST /vision/result` 写入 `us/them` 独立缓存；图片不会转发给 CORE 服务。每辆车最多一个
+未完成请求，配置的帧率、宽度、JPEG 画质、超时和最大缓存年龄只影响视觉桥接层。缓存过期、HTTP 错误或畸形响应时，
+必须回退 `classifyRate`；不能把失败伪装成一个“unknown”目标，也不能用仿真物体类型给模型泄漏答案。固定返回标签
+只可重写已有检测，禁止在没有检测时凭空生成 `opponent`。
+
 ## 9. 环境约束
 
 - Python 可通过 PATH 的 `python/python3/py` 启动；若需指定解释器，设置 `SIM_PYTHON`（其次读取 `PYTHON`），例如 `SIM_PYTHON=C:/Python312/python.exe`。不再依赖任何个人电脑绝对路径。
@@ -194,15 +200,15 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 - [ ] **battle 偶发卡 WAIT_START**：疑似 run() 线程与管道交互的调度问题；已用"模块加载即 arm"缓解，但 3 seed 中出现过 FSM 日志停在"climbed→正向登台"（mount_ring 动作未返回）。**根治方向：验证 time.sleep 在子进程环境的行为；必要时改同步驱动模型**
 - [x] **3D 擂台下方视觉偏暗**：已修——裙边改为与擂台同高的实心底座（完全覆盖擂台底，消除低视角无光缝隙），并加微弱 emissive
 - [ ] 实车 actuator 动作的 `_on_stage_live` 灰度确认依赖 SimDriver 分段映射，标定后需用实车采样复核
-- [ ] 视觉（buff/debuff 分类）待实车 YOLO 就位后替换 `classifyRate`
+- [x] 可选 YOLO HTTP 视觉桥接（2026-08-16）：3D 页面默认关闭，支持双车虚拟相机、固定标签/类别映射、帧率/画质/超时配置和 `classifyRate` 回退；真实模型部署与实车视觉标定仍待完成
 - [x] **文件夹导入**（2026-08-12）：`POST /import-dir {name,dir,entry}` 直接引用本地文件夹入口程序（不复制，改代码即时生效），自动探测 `tools/sim_robot_main.py→main.py`；`robot_adapter.py` 自动把入口目录加入 sys.path（多文件 import 可用）；3D GUI 加"📁 导入代码文件夹"
-- [x] **动力学与传感非理想特性重构**（2026）：保留 `{v,w}` 接口与 `US/THEM/blocks/vehicle` 结构不变，原生 ES6、零外部依赖、沿用 `rng()` 确定性。①轮式驱动滑移（纵向 `accelK` 收敛 + 侧向 `latFrictionK` 衰减 + 碰撞打转 `spinOmega` 独立衰减叠加）②偏心力矩 `r×J` 撞角打转③台阶 4 轮采样 pitch/roll/zG 连续姿态（消除二值瞬切）④能量块库仑摩擦（`BLOCK_STICK_SPEED` 粘住消微滑）⑤数字红外施密特迟滞 + 灰度近地光斑 + 红外入射角 `cosθ` 衰减⑥铲子楔入（`shovelHeight` 判定，被挑车 `frontLoad→0` 推力骤降）⑦堵转过流 `isStalled`⑧指令延迟环形队列 `cmdLatencyFrames`（默认 0=零回归）。`getState().robots.<role>` 新增 `speed/omega/pitch/roll/zG/isStalled/wedgedFront/frontLoad`；3D/Rapier 读取 `zG/pitch/roll` 仅作显示。selftest 31 场景 + dragtest 11 项全绿。
+- [x] **动力学与传感非理想特性重构**（2026）：保留 `{v,w}` 接口与 `US/THEM/blocks/vehicle` 结构不变，原生 ES6、零外部依赖、沿用 `rng()` 确定性。①轮式驱动滑移（纵向 `accelK` 收敛 + 侧向 `latFrictionK` 衰减 + 碰撞打转 `spinOmega` 独立衰减叠加）②偏心力矩 `r×J` 撞角打转③台阶 4 轮采样 pitch/roll/zG 连续姿态（消除二值瞬切）④能量块库仑摩擦（`BLOCK_STICK_SPEED` 粘住消微滑）⑤数字红外施密特迟滞 + 灰度近地光斑 + 红外入射角 `cosθ` 衰减⑥铲子楔入（`shovelHeight` 判定，被挑车 `frontLoad→0` 推力骤降）⑦堵转过流 `isStalled`⑧指令延迟环形队列 `cmdLatencyFrames`（默认 0=零回归）。`getState().robots.<role>` 新增 `speed/omega/pitch/roll/zG/isStalled/wedgedFront/frontLoad`；3D/Rapier 读取 `zG/pitch/roll` 仅作显示。selftest 32 场景 + dragtest 11 项全绿。
 - [x] **P1 车车碰撞单遍处理**（2026-08-15）：`motionFor()` 只做各车独立积分；`resolveRobotPair()` 在双车均完成积分后以相对位移扫掠解析唯一接触点，统一执行质量加权分离、冲量、角冲量、切向摩擦和铲子楔入。场景 28 固化同步对冲不穿透与 `e=0` 单次冲量结果。
 - [x] **P0 标定/验证闭环工具**（2026-08-15）：`sim_calibrate.js` 对真实遥测执行最小二乘拟合、输出 RMSE/样本数/建议 patch；`fidelity.json` + `GET /fidelity` 如实公布子系统状态。仓库初始仍是 `friction/collision/stall=uncalibrated`，必须录入真机遥测后才能更新为已标定。
 - [x] **P2 可插拔感知层**（2026-08-15）：`fieldGray()` 可加载最高 256×256 的实测表（双线性/最近邻），通过 `/field-gray` 与 reset/评测/对战请求固定复现实验；SimVision 统一为同步缓存接口和标准标签，默认 `classifyRate` 行为不变。场景 29 固化表采样、状态元数据与插件回退。真实场地/视觉尚未载入，因此保真度仍是 `hand_drawn/random_stub`。
-- [x] **P1 台阶/能量块物理稳定性**（2026-08-16）：台沿使用车辆 footprint 的连续扫掠与按位移自适应子步（覆盖 `dt=0.1`、高速/大 footprint/指令延迟）；登台门槛使用实际积分速度并保留低速顶台阻挡；车辆穿过能量块时回退到首次接触点，拖拽目标不再冻结清零而是获得有限推开速度；车-车仍每步单遍解析，小相对接近速度会被清除避免贴合抖动。selftest 场景 25、30，dragtest 11 项覆盖。
+- [x] **P1 台阶/能量块物理稳定性**（2026-08-16）：台沿使用车辆 footprint 的连续扫掠与按位移自适应子步（覆盖 `dt=0.1`、高速/大 footprint/指令延迟）；登台门槛使用实际积分速度并保留低速顶台阻挡；车与移动能量块使用相对位移扫掠，接触归属按本帧最后接触时间确定；车辆穿过能量块时回退到首次接触点，拖拽目标不再冻结清零而是获得有限推开速度；车-车仍每步单遍解析，小相对接近速度会被清除避免贴合抖动。完整 footprint 用于登台/掉台计分，前端 footprint 用于危机恢复；selftest 场景 25、30、32，dragtest 11 项覆盖。
 - [x] **P0 评测/远程生命周期**（2026-08-16）：批量评测实际透传 `fieldGray` 并记录实际 `coreHash`、灰度、车辆 profile 和 fidelity；全失败任务标为 `error`；后台远程对战支持 `idle/running/stopping`、幂等停止和 5 秒兜底释放。
-- [x] **P2 AI 诊断与紧凑状态**（2026-08-16）：`GET /state?compact=1`、step 请求 `compact:true` 提供低分配状态；传感器噪声按 seed/步/车/通道派生；SimVision 暴露错误计数；策略超时/协议错误写入 `policyStats/warnings`；inline 候选按 SHA 文件名去重并限量清理。selftest 场景 31 固化。
+- [x] **P2 AI 诊断与紧凑状态**（2026-08-16）：`GET /state?compact=1`、step 请求 `compact:true` 提供低分配状态；传感器噪声按 seed/步/车/通道派生；SimVision 暴露错误计数；策略超时/协议错误写入 `policyStats/warnings`；外部策略无动作时 MANUAL 状态显式停车；inline 候选按 SHA 文件名去重并限量清理。selftest 场景 31-32 固化。
 
 ## 11. 3D 渲染约束（GUI 层）
 
