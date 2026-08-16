@@ -1059,6 +1059,62 @@ function normalizeVisionDetection(result, fallbackSource){
   const confidence=Number.isFinite(Number(raw.confidence)) ? clamp(Number(raw.confidence),0,1) : (label==='unknown'?0:1);
   return { label, confidence, source:String(raw.source||fallbackSource||'sim-vision').slice(0,80) };
 }
+// 外部视觉缓存：由浏览器/HTTP 桥接异步写入，CORE 只同步读取最新结果。
+// 不把仿真目标类型传给外部适配器，避免视觉结果“泄漏答案”。
+const externalVisionCache={
+  us:{frameId:null,at:0,detection:null,error:null},
+  them:{frameId:null,at:0,detection:null,error:null},
+  enabled:false, maxAgeMs:800,
+};
+function clearExternalVisionCache(){
+  for(const role of ['us','them']) externalVisionCache[role]={frameId:null,at:0,detection:null,error:null};
+}
+function setExternalVisionCache(config){
+  const c=config&&typeof config==='object'?config:{};
+  externalVisionCache.enabled=c.enabled!==false;
+  if(Number.isFinite(Number(c.maxAgeMs))) externalVisionCache.maxAgeMs=Math.max(1,Number(c.maxAgeMs));
+  if(c.clear) clearExternalVisionCache();
+  if(externalVisionCache.enabled){
+    simVision={id:'yolo', classify:externalVisionClassify};
+  } else {
+    simVision=DEFAULT_SIM_VISION;
+    clearExternalVisionCache();
+  }
+  resetSimVisionStats();
+  return getSimVisionInfo();
+}
+function updateExternalVisionResult(role,result,nowMs){
+  role=role==='them'?'them':'us';
+  const e=externalVisionCache[role];
+  const raw=result&&typeof result==='object'?result:{};
+  const frame=raw.frameId==null?null:String(raw.frameId);
+  if(frame!==null && e.frameId!==null && frame===e.frameId) return false;
+  const at=Number.isFinite(Number(nowMs))?Number(nowMs):Date.now();
+  const detections=Array.isArray(raw.detections)?raw.detections:[];
+  const valid=[];
+  for(const d of detections){
+    const n=normalizeVisionDetection(d,'yolo');
+    if(n.label==='unknown' || n.confidence<=0) continue;
+    const b=Array.isArray(d.bbox)?d.bbox.map(Number):[];
+    const cx=b.length>=4 && b.every(Number.isFinite)?b[0]+b[2]/2:0.5;
+    const cy=b.length>=4 && b.every(Number.isFinite)?b[1]+b[3]/2:0.5;
+    const dx=cx-(Number(raw.width)||1)/2, dy=cy-(Number(raw.height)||1)/2;
+    valid.push({...n,_centerDist:dx*dx+dy*dy});
+  }
+  valid.sort((a,b)=>b.confidence-a.confidence || a._centerDist-b._centerDist);
+  e.frameId=frame; e.at=at; e.detection=valid[0]||{label:'unknown',confidence:0,source:'yolo'}; e.error=null;
+  return true;
+}
+function externalVisionClassify(context){
+  const e=externalVisionCache[context&&context.role==='them'?'them':'us'];
+  const age=Date.now()-e.at;
+  // 外部相机不可用时不要把“超时”伪装成一个确定的 unknown。
+  // 回退到原有 classifyRate，保证比赛继续推进，同时保留原有确定性随机流语义。
+  if(!externalVisionCache.enabled || !e.at || age>externalVisionCache.maxAgeMs)
+    return normalizeVisionDetection(DEFAULT_SIM_VISION.classify(context),'classifyRate');
+  const d=e.detection||{label:'unknown',confidence:0,source:'yolo'};
+  return {label:d.label,confidence:d.confidence,source:'yolo'};
+}
 const DEFAULT_SIM_VISION=Object.freeze({
   id:'classifyRate',
   classify(context){
@@ -1075,6 +1131,8 @@ function resetSimVisionStats(){ simVisionStats.errorCount=0; simVisionStats.last
 function getSimVisionInfo(){
   return {
     id:String(simVision.id||'custom'), mode:simVision===DEFAULT_SIM_VISION?'default':'custom', synchronous:true,
+    external:{enabled:!!externalVisionCache.enabled,maxAgeMs:externalVisionCache.maxAgeMs,
+      roles:Object.fromEntries(['us','them'].map(role=>{const e=externalVisionCache[role]; return [role,{frameId:e.frameId,ageMs:e.at?Math.max(0,Date.now()-e.at):null,hasResult:!!e.detection,error:e.error}]}))},
     errorCount:simVisionStats.errorCount, lastError:simVisionStats.lastError, lastAt:simVisionStats.lastAt,
   };
 }
@@ -2041,6 +2099,7 @@ function resetAll(opts){
   setSeed(opts.seed);
   simStepIndex=0;
   resetSimVisionStats();
+  clearExternalVisionCache();
   matchControl.phase='PREP'; matchControl.prepRemaining=60; matchControl.matchTimer=120;
   matchControl.paused=false; matchControl.restartPenalties.us=0; matchControl.restartPenalties.them=0;
   US.x=0.95; US.y=0.3; US.th=-Math.PI/2;   // 黄区中部(正对南台边): 车头朝南, 车尾朝北
@@ -2277,7 +2336,7 @@ if (typeof module !== 'undefined' && module.exports){
     resetAll, arm, armFor, startManual, stepSim, stepSimExt, getState, getLog,
     matchControl, beginPreparation, pauseMatch, resumeMatch, restartFor,
     setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset, consumeDragImpacts,
-    setFieldGrayMap, getFieldGrayMap, getFieldGrayInfo, setSimVision, getSimVisionInfo, classifyTargetFor,
+    setFieldGrayMap, getFieldGrayMap, getFieldGrayInfo, setSimVision, setExternalVisionCache, updateExternalVisionResult, clearExternalVisionCache, getSimVisionInfo, classifyTargetFor,
     onPlatform, onStage, hangOn, fullOn, fieldGray, distToNearestEdge,
     stageHeightAt, computeRobotPose, momentInertia, closestPointOnRobot, robotFaceCos,
     irHysteresis, valueHysteresis, graySpotSample, updateStall, applyCommandLatency,

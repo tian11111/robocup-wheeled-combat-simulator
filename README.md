@@ -48,6 +48,7 @@ http://127.0.0.1:8931/wushu_ring_sim_3d.html
 ```
 
 页面上的“导入代码文件夹”和“远程对战”依赖 `8932` 服务；如果它没有启动，静态 3D 场景仍可使用，但无法运行 Python 策略。
+右侧设置栏的 YOLO 配置位于独立的“YOLO 设置”标签页，不会随着车辆、比赛控制或参数页面重复出现。
 
 ### AI 一条命令评测
 
@@ -103,6 +104,10 @@ Invoke-RestMethod http://127.0.0.1:8932/field-gray -Method Post -ContentType 'ap
 `GET /field-gray?values=1` 可回读当前表，`POST /field-gray` 加 `{ "reset": true }` 恢复手绘默认值。灰度表会被
 `/reset`、`/battle/run`、`/battle/start` 和多 seed 评测请求接受为 `fieldGray`，便于可复现对比。加载数据不代表
 自动完成物理标定；视觉也仍默认是 `classifyRate` 随机桩，详见 [SIMULATOR.md](SIMULATOR.md)。
+
+3D 页面可按需打开 YOLO HTTP 视觉：进入右侧“YOLO 设置”标签页，设置 endpoint、帧率、图片宽度、JPEG 画质、超时、
+固定返回标签和敌人类别映射，再点击“应用设置”和“YOLO：开”。模型不可用时自动回退 `classifyRate`。YOLO 模型和
+GPU 运行时由外部服务提供，接口与示例见 [SIMULATOR.md](SIMULATOR.md)。
 
 ### 仅查看 3D 场景
 
@@ -165,6 +170,7 @@ https://<your-account>.github.io/<repository>/wushu_ring_sim_3d.html?api=http://
 node sim_selftest.js
 node sim_dragtest.js
 node sim_calibrate_selftest.js
+node sim_vision_http_selftest.js
 
 # 从模板同步生成唯一 3D 页面
 node build_3d.js
@@ -195,6 +201,7 @@ Windows 上如果 `python` 不在 PATH，请使用你的 Python 解释器完整�
 | `sim_runner.py` | AI 优先的服务编排、固定 seed 评测、策略对比与结果归档。 |
 | `sim_calibrate.js` | 真实遥测的最小二乘标定工具，只输出可审计的参数建议。 |
 | `fidelity.json` | 当前物理/传感器子系统的保真度状态与证据。 |
+| `sim_vision_http_selftest.js` | YOLO 外部视觉缓存和 HTTP 接口回归测试。 |
 | `AI_QUICKSTART.md` | AI 克隆项目后的部署、仿真迭代和验收入口。 |
 | `SIMULATOR.md` | API、策略协议、传感器与详细使用说明。 |
 
@@ -203,4 +210,3 @@ Windows 上如果 `python` 不在 PATH，请使用你的 Python 解释器完整�
 - 修改规则核心 `wushu_ring_sim.html` 后，运行 `node sim_selftest.js`、`node sim_dragtest.js` 和 `node build_3d.js`。
 - 修改 3D UI 请编辑 `wushu_ring_sim_3d.template.html`，不要直接修改生成页面中的核心代码。
 - 同一台 `sim_server.js` 在任一时刻只运行一场远程对战或一个批量评估任务。
-

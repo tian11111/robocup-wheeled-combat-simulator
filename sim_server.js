@@ -31,12 +31,13 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { loadCore, runBattle } = require('./sim_lib');
+const { loadCore, runBattle, invalidateRegistry } = require('./sim_lib');
 
 const PORT = parseInt(process.argv[2] || process.env.SIM_PORT || '8932', 10);
 const api = loadCore(__dirname);
 const { resetAll, arm, startManual, stepSim, stepSimExt, getState, getLog, setParams, setVehicleFor, getVehicleFor, setFieldGrayMap, getFieldGrayMap, getFieldGrayInfo, setPose, setPoseFor, setObject, scenePreset, params, scoreBoard, US, THEM,
-  beginPreparation, pauseMatch, resumeMatch, restartFor } = api;
+  beginPreparation, pauseMatch, resumeMatch, restartFor, setExternalVisionCache, updateExternalVisionResult,
+  clearExternalVisionCache, getSimVisionInfo } = api;
 const SERVER_STARTED_AT = new Date().toISOString();
 const CORE_HASH = crypto.createHash('sha256')
   .update(fs.readFileSync(path.join(__dirname, 'wushu_ring_sim.html'), 'utf8'))
@@ -91,6 +92,49 @@ const REGISTRY_FILE = path.join(__dirname, 'sim_robots.json');
 if (!fs.existsSync(ROBOTS_DIR)) fs.mkdirSync(ROBOTS_DIR);
 let battleSession = { status: 'idle', running: false, abort: false, stop: null, controlToken: '', startedAt: 0, stopStartedAt: 0, result: null, error: null, usName: '', themName: '', output: [] };
 let foregroundBattleRunning = false;
+
+// 外部 YOLO 视觉桥接状态。默认关闭，关闭时完全沿用 CORE 的 classifyRate。
+const visionConfig = { enabled:false, maxAgeMs:800, fps:5, width:640, quality:0.7, fallback:'classifyRate', fixedLabel:'' };
+const visionFrames = { us:{frameId:null, at:null, errorCount:0, lastError:null}, them:{frameId:null, at:null, errorCount:0, lastError:null} };
+function visionStatus(){
+  const now=Date.now();
+  const roles={};
+  for(const role of ['us','them']){
+    const v=visionFrames[role];
+    roles[role]={frameId:v.frameId, ageMs:v.at===null?null:Math.max(0,now-v.at), errorCount:v.errorCount, lastError:v.lastError};
+  }
+  const info=typeof getSimVisionInfo==='function'?getSimVisionInfo():null;
+  return { enabled:visionConfig.enabled, mode:visionConfig.enabled?'external':'default', settings:{...visionConfig}, roles, core:info };
+}
+function validVisionConfig(b){
+  const out={...visionConfig};
+  if(b.enabled!==undefined){ if(typeof b.enabled!=='boolean') throw new Error('vision.enabled 必须是布尔值'); out.enabled=b.enabled; }
+  for(const k of ['maxAgeMs','fps','width','quality']) if(b[k]!==undefined){
+    const n=Number(b[k]); if(!Number.isFinite(n)) throw new Error(`vision.${k} 必须是数字`);
+    out[k]=n;
+  }
+  out.maxAgeMs=Math.max(100,Math.min(10000,Math.round(out.maxAgeMs)));
+  out.fps=Math.max(1,Math.min(30,Math.round(out.fps)));
+  out.width=Math.max(160,Math.min(1920,Math.round(out.width)));
+  out.quality=Math.max(0.1,Math.min(1,Number(out.quality)));
+  if(b.fallback!==undefined && b.fallback!=='classifyRate') throw new Error("vision.fallback 目前只支持 'classifyRate'");
+  out.fallback='classifyRate';
+  if(b.fixedLabel!==undefined){
+    if(!['','buff','debuff','opponent','unknown'].includes(String(b.fixedLabel)))
+      throw new Error("vision.fixedLabel 必须为空、buff、debuff、opponent 或 unknown");
+    out.fixedLabel=String(b.fixedLabel);
+  }
+  out.fixedLabel=String(out.fixedLabel||'');
+  return out;
+}
+function visionFrameIsNew(role, frameId){
+  const previous=visionFrames[role].frameId;
+  if(previous===null) return true;
+  const a=String(frameId), b=String(previous);
+  const na=Number(a.match(/(-?\d+)$/)?.[1]), nb=Number(b.match(/(-?\d+)$/)?.[1]);
+  if(Number.isFinite(na)&&Number.isFinite(nb)) return na>nb;
+  return a>b;
+}
 
 // ---------- AI 批量评测任务 ----------
 // 核心是单例，因此本机服务同一时刻只运行一个评测任务；任务本身异步执行，
@@ -301,6 +345,7 @@ function registryAdd(name, cmd, desc){
   try { reg = JSON.parse(fs.readFileSync(REGISTRY_FILE, 'utf8')); } catch (e) {}
   reg[name] = { cmd, desc: desc || '上传的小车程序' };
   fs.writeFileSync(REGISTRY_FILE, JSON.stringify(reg, null, 2));
+  invalidateRegistry();
 }
 function registryList(){
   try { return JSON.parse(fs.readFileSync(REGISTRY_FILE, 'utf8')); } catch (e) { return {}; }
@@ -398,7 +443,7 @@ const server = http.createServer(async (req, res) => {
         version: '2026',
         apiVersion: 'v1',
         core: '3D GameEngine; rules CORE compatibility source',
-        endpoints: ['GET /health', 'GET /fidelity', 'GET/POST /field-gray', 'GET /schema', 'POST /reset', 'POST /arm', 'POST /step', 'POST /step2', 'POST /params', 'GET /vehicle', 'POST /vehicle', 'POST /scene', 'POST /battle/run', 'POST /battle/start', 'POST /battle/control', 'POST /battle/stop', 'GET /battle/status', 'POST /api/v1/evaluations', 'GET /api/v1/evaluations/:id', 'DELETE /api/v1/evaluations/:id', 'GET /state', 'GET /log', 'GET /referee/state', 'POST /referee/pause', 'POST /referee/resume', 'POST /referee/restart'],
+        endpoints: ['GET /health', 'GET /fidelity', 'GET/POST /field-gray', 'GET /schema', 'GET /vision/status', 'POST /vision/config', 'POST /vision/result', 'POST /reset', 'POST /arm', 'POST /step', 'POST /step2', 'POST /params', 'GET /vehicle', 'POST /vehicle', 'POST /scene', 'POST /battle/run', 'POST /battle/start', 'POST /battle/control', 'POST /battle/stop', 'GET /battle/status', 'POST /api/v1/evaluations', 'GET /api/v1/evaluations/:id', 'DELETE /api/v1/evaluations/:id', 'GET /state', 'GET /log', 'GET /referee/state', 'POST /referee/pause', 'POST /referee/resume', 'POST /referee/restart'],
         state: getState().robots.us.state,
       });
     }
@@ -416,12 +461,13 @@ const server = http.createServer(async (req, res) => {
         coreBusy: !!coreBusyReason(),
         fidelitySummary: fidelitySnapshot().byStatus,
         fieldGray: fieldGraySnapshot(),
+        vision: visionStatus(),
         endpoints: {
           schema: '/api/v1/schema',
           evaluate: '/api/v1/evaluations',
           state: '/state (全量) 或 /state?compact=1 (紧凑)',
           fidelity: '/fidelity',
-          fieldGray: '/field-gray',
+          fieldGray: '/field-gray', vision: '/vision/status',
         },
       });
     }
@@ -455,7 +501,7 @@ const server = http.createServer(async (req, res) => {
         fidelity: { endpoint: '/fidelity', statuses: ['calibrated', 'hand_drawn', 'random_stub', 'uncalibrated', 'verified'] },
         perception: {
           fieldGray: { endpoint:'/field-gray', reset:'POST {"reset":true}', map:'POST {id?, values, width?, height?, bounds?, interpolation?}' },
-          vision: { interface:'core.setSimVision({id, classify(context)}) -> {label, confidence, source}', labels:['buff','debuff','opponent','unknown'] },
+          vision: { endpoint:'/vision/status', config:'/vision/config', result:'/vision/result', interface:'external cache -> {label, confidence, source}', labels:['buff','debuff','opponent','unknown'], defaults:{enabled:false,maxAgeMs:800,fps:5,width:640,quality:0.7,fallback:'classifyRate',fixedLabel:''} },
         },
         action: {
           type: 'object',
@@ -489,6 +535,36 @@ const server = http.createServer(async (req, res) => {
           resultMetrics: ['meanNetScore', 'winRate', 'drawRate', 'mountRate', 'bestNetScore', 'worstNetScore'],
         },
       });
+    }
+    if (req.method === 'GET' && (u.pathname === '/vision/status' || u.pathname === '/api/v1/vision/status')) {
+      return json(res, 200, { ok:true, ...visionStatus() });
+    }
+    if (req.method === 'POST' && (u.pathname === '/vision/config' || u.pathname === '/api/v1/vision/config')) {
+      const b=await readBody(req);
+      const next=validVisionConfig(b);
+      Object.assign(visionConfig,next);
+      setExternalVisionCache({enabled:visionConfig.enabled,maxAgeMs:visionConfig.maxAgeMs,clear:true});
+      if(!visionConfig.enabled){ for(const role of ['us','them']) visionFrames[role]={frameId:null,at:null,errorCount:0,lastError:null}; }
+      return json(res,200,{ok:true,...visionStatus()});
+    }
+    if (req.method === 'POST' && (u.pathname === '/vision/result' || u.pathname === '/api/v1/vision/result')) {
+      if(!visionConfig.enabled) return json(res,409,{error:'YOLO视觉未启用，请先 POST /vision/config {"enabled":true}'});
+      const b=await readBody(req);
+      const role=b.role;
+      if(role!=='us'&&role!=='them') return json(res,400,{error:"role 必须是 'us' 或 'them'"});
+      if((typeof b.frameId!=='string'&&typeof b.frameId!=='number') || String(b.frameId).length>128) return json(res,400,{error:'frameId 必须是字符串或数字'});
+      if(!Array.isArray(b.detections)||b.detections.length>128) return json(res,400,{error:'detections 必须是数组且最多 128 项'});
+      for(const d of b.detections){
+        if(!d||typeof d!=='object'||Array.isArray(d)) return json(res,400,{error:'detection 必须是对象'});
+        if(typeof d.label!=='string' || !['buff','debuff','opponent','unknown','good','gain','bonus','bad','penalty','enemy','robot','none','miss'].includes(d.label.toLowerCase())) return json(res,400,{error:'detection.label 无效'});
+        if(d.confidence!==undefined && (!Number.isFinite(Number(d.confidence))||Number(d.confidence)<0||Number(d.confidence)>1)) return json(res,400,{error:'detection.confidence 必须在 0..1'});
+        if(d.bbox!==undefined && (!Array.isArray(d.bbox)||d.bbox.length!==4||d.bbox.some(x=>!Number.isFinite(Number(x))))) return json(res,400,{error:'detection.bbox 必须是四个数字'});
+      }
+      if(!visionFrameIsNew(role,b.frameId)) return json(res,409,{error:'拒绝重复或乱序视觉帧',frameId:b.frameId,lastFrameId:visionFrames[role].frameId});
+      const accepted=updateExternalVisionResult(role,{frameId:String(b.frameId),detections:b.detections,width:b.width,height:b.height},Date.now());
+      if(!accepted) return json(res,409,{error:'拒绝重复视觉帧'});
+      visionFrames[role].frameId=String(b.frameId); visionFrames[role].at=Date.now(); visionFrames[role].lastError=null;
+      return json(res,200,{ok:true,role,frameId:visionFrames[role].frameId,status:visionStatus()});
     }
     if (req.method === 'POST' && (u.pathname === '/api/v1/evaluations' || u.pathname === '/batch/start')) {
       if (rejectWhenCoreBusy(res)) return;
@@ -562,6 +638,8 @@ const server = http.createServer(async (req, res) => {
       if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
       resetAll({ seed: b.seed ?? params.seed, params: b.params, scene: b.scene, fieldGray: b.fieldGray, vehicles: b.vehicles });
+      clearExternalVisionCache();
+      for(const role of ['us','them']) visionFrames[role]={frameId:null,at:null,errorCount:0,lastError:null};
       if (b.manual) startManual();
       scoreBase = { us: scoreBoard.us, them: scoreBoard.them };
       return json(res, 200, { ok: true, state: stateForRequest(u, b) });
@@ -697,6 +775,8 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       if (rejectWhenCoreBusy(res)) return;
       resetAll({ seed: b.seed, params: b.params, scene: b.scene, fieldGray: b.fieldGray, vehicles: b.vehicles });
+      clearExternalVisionCache();
+      for(const role of ['us','them']) visionFrames[role]={frameId:null,at:null,errorCount:0,lastError:null};
       scoreBase = { us: scoreBoard.us, them: scoreBoard.them };
       const session = {
         status: 'running', running: true, abort: false, stop: null, controlToken: crypto.randomBytes(24).toString('hex'), startedAt: Date.now(), stopStartedAt: 0, result: null, error: null,

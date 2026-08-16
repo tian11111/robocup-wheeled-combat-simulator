@@ -30,7 +30,7 @@ python sim_runner.py eval --candidate example_robot.py --workers 4              
 - **AI 批量评测**：默认 `sim_runner.py eval/compare` 使用单 worker；显式传 `--workers N` 时按 seed 启动隔离 Node 进程池并行评测，不修改已有 `8932` 服务。
 - **接入自己的小车程序**：写 `decide(obs) -> {"v","w"}`，用 `robot_adapter.py` 跑（协议见 SIMULATOR.md）。
 - **复现 bug**：`sim_selftest.js` 里加场景（固定 seed），确定性复现后修 CORE。
-- **视觉**：目前 `classifyRate` 概率模拟，实车视觉由用户另行配置，勿改接口。
+- **视觉**：默认使用 `classifyRate` 概率模拟；3D 页右侧独立“YOLO 设置”标签可选接入外部 HTTP 视觉，超时/过期自动回退，勿改 `decide(obs)` 接口。
 
 ## 纪律
 

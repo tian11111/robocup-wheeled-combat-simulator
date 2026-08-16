@@ -175,6 +175,12 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 默认适配器保持原有一次 `rng() < classifyRate` 的行为，以维持既有固定 seed 轨迹。加载灰度表、接入视觉缓存本身
 不构成标定；`fidelity.json` 仍须在真实采样和人工复核后更新。
 
+可选 HTTP YOLO 由 3D 页面控制，默认关闭。页面将 `detections` 统一规范为标准标签，并通过
+`POST /vision/config`、`POST /vision/result` 写入 `us/them` 独立缓存；图片不会转发给 CORE 服务。每辆车最多一个
+未完成请求，配置的帧率、宽度、JPEG 画质、超时和最大缓存年龄只影响视觉桥接层。缓存过期、HTTP 错误或畸形响应时，
+必须回退 `classifyRate`；不能把失败伪装成一个“unknown”目标，也不能用仿真物体类型给模型泄漏答案。固定返回标签
+只可重写已有检测，禁止在没有检测时凭空生成 `opponent`。
+
 ## 9. 环境约束
 
 - Python 可通过 PATH 的 `python/python3/py` 启动；若需指定解释器，设置 `SIM_PYTHON`（其次读取 `PYTHON`），例如 `SIM_PYTHON=C:/Python312/python.exe`。不再依赖任何个人电脑绝对路径。
@@ -194,7 +200,7 @@ Rapier 目前是 3D 辅助碰撞层，不直接回写核心位置；核心 footp
 - [ ] **battle 偶发卡 WAIT_START**：疑似 run() 线程与管道交互的调度问题；已用"模块加载即 arm"缓解，但 3 seed 中出现过 FSM 日志停在"climbed→正向登台"（mount_ring 动作未返回）。**根治方向：验证 time.sleep 在子进程环境的行为；必要时改同步驱动模型**
 - [x] **3D 擂台下方视觉偏暗**：已修——裙边改为与擂台同高的实心底座（完全覆盖擂台底，消除低视角无光缝隙），并加微弱 emissive
 - [ ] 实车 actuator 动作的 `_on_stage_live` 灰度确认依赖 SimDriver 分段映射，标定后需用实车采样复核
-- [ ] 视觉（buff/debuff 分类）待实车 YOLO 就位后替换 `classifyRate`
+- [x] 可选 YOLO HTTP 视觉桥接（2026-08-16）：3D 页面默认关闭，支持双车虚拟相机、固定标签/类别映射、帧率/画质/超时配置和 `classifyRate` 回退；真实模型部署与实车视觉标定仍待完成
 - [x] **文件夹导入**（2026-08-12）：`POST /import-dir {name,dir,entry}` 直接引用本地文件夹入口程序（不复制，改代码即时生效），自动探测 `tools/sim_robot_main.py→main.py`；`robot_adapter.py` 自动把入口目录加入 sys.path（多文件 import 可用）；3D GUI 加"📁 导入代码文件夹"
 - [x] **动力学与传感非理想特性重构**（2026）：保留 `{v,w}` 接口与 `US/THEM/blocks/vehicle` 结构不变，原生 ES6、零外部依赖、沿用 `rng()` 确定性。①轮式驱动滑移（纵向 `accelK` 收敛 + 侧向 `latFrictionK` 衰减 + 碰撞打转 `spinOmega` 独立衰减叠加）②偏心力矩 `r×J` 撞角打转③台阶 4 轮采样 pitch/roll/zG 连续姿态（消除二值瞬切）④能量块库仑摩擦（`BLOCK_STICK_SPEED` 粘住消微滑）⑤数字红外施密特迟滞 + 灰度近地光斑 + 红外入射角 `cosθ` 衰减⑥铲子楔入（`shovelHeight` 判定，被挑车 `frontLoad→0` 推力骤降）⑦堵转过流 `isStalled`⑧指令延迟环形队列 `cmdLatencyFrames`（默认 0=零回归）。`getState().robots.<role>` 新增 `speed/omega/pitch/roll/zG/isStalled/wedgedFront/frontLoad`；3D/Rapier 读取 `zG/pitch/roll` 仅作显示。selftest 32 场景 + dragtest 11 项全绿。
 - [x] **P1 车车碰撞单遍处理**（2026-08-15）：`motionFor()` 只做各车独立积分；`resolveRobotPair()` 在双车均完成积分后以相对位移扫掠解析唯一接触点，统一执行质量加权分离、冲量、角冲量、切向摩擦和铲子楔入。场景 28 固化同步对冲不穿透与 `e=0` 单次冲量结果。

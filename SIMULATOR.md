@@ -111,6 +111,38 @@ window.__SIM_CORE.setSimVision({
 HTTP 传函数，因此 Node/浏览器集成方负责安装该同步适配器。加载灰度表或安装视觉缓存都**不会**自动修改
 `fidelity.json`：只有有可审计的真实采样/视觉验证证据时，才能人工更新相应保真度状态。
 
+#### 可选 YOLO HTTP 视觉
+
+3D 页面右侧的“YOLO 设置”独立标签页默认关闭。打开后每辆车使用独立第一人称虚拟相机，把 JPEG 发到
+`http://127.0.0.1:8933/predict`（外部 YOLO 服务需允许浏览器 CORS）；YOLO 不可用、超时或缓存超过最大年龄时，
+CORE 自动回退到 `classifyRate`，不会阻塞比赛。截图只含擂台、车辆和能量块，不含 HUD、传感器线、轨迹和速度矢量。
+
+设置面板可调：
+
+- 帧率（1–30 FPS）、图片宽度（160–1280， 高度自动按 16:9）、JPEG 画质（0.1–1）；
+- 请求超时、结果最大缓存年龄；
+- 敌人类别映射（例如 `enemy,robot,car`，也支持 `/` 分隔）；
+- 固定返回标签：对任意**已有检测**统一返回 `opponent`/`buff`/`debuff`/`unknown`，不会凭空生成目标；
+- 无法映射时返回 `unknown` 或 `opponent`。
+
+模型响应可使用 `detections`/`predictions`/`results` 数组，也可返回单个 `target`；类别字段兼容 `label`、`kind`、`type`、
+`target_type`、`className`、`class`、`name`，框兼容 `bbox:[x,y,w,h]` 或中心点/宽高字段。页面会统一转换为：
+
+```json
+{"frameId":"us-123","role":"us","detections":[{"label":"opponent","confidence":0.93,"bbox":[120,80,160,130]}],"width":640,"height":360}
+```
+
+远程对战只把上述检测结果（不含 base64 图片）提交给模拟服务：
+
+```text
+POST /vision/config  {enabled,fps,width,quality,maxAgeMs,fixedLabel}
+POST /vision/result  {frameId,role,detections,width,height}
+GET  /vision/status
+```
+
+服务端按 `us/them` 分开缓存并丢弃重复/乱序帧；`/reset` 清空结果但保留开关和参数。外部 YOLO 模型、GPU、
+Ultralytics/ONNX 运行时均由用户自行部署，不会成为仿真器依赖。
+
 ### 自定义小车参数
 
 车辆参数单位统一为 SI 制：长度/宽度/高度/footprint 为 m，速度为 m/s，转速为 rad/s，质量为 kg。
@@ -401,7 +433,7 @@ curl http://127.0.0.1:8932/api/v1/evaluations/<id>
 
 ## 子进程桥（跑你自己的小车程序）
 
-**GUI 一键导入（最省事）**：打开 3D 页 → 点"📤 导入小车程序"选你的 .py（含 `decide(obs)`，可用 `--new` 生成模板）→ **"我方"和"对手"下拉里都能选**（fsm / @example / @realcar / 你上传的）→ 点"▶ 远程对战"→ **双车在 3D 场景中实时对战**，比分/日志同步，"小车程序输出面板"显示双方子进程输出，自动结束或点"⏹ 停止"。（需先 `node sim_server.js` 起本地 API；页面 file:// 双击打开即可，自动连 `http://127.0.0.1:8932`。远程期间，发令、暂停、继续、调试/重启判罚、场景预设和参数滑条都直接控制服务端比赛；重置会先停止远程局。停止会立即终止两个策略子进程，下一局无需等待超时。远程模式只渲染服务端快照，HUD/传感器文本以 10Hz 更新以避免浏览器掉帧。
+**GUI 一键导入（最省事）**：打开 3D 页 → 点"📤 导入小车程序"选你的 .py（含 `decide(obs)`，可用 `--new` 生成模板）→ **"我方"和"对手"下拉里都能选**（fsm / @example / @realcar / 你上传的）→ 点"▶ 远程对战"→ **双车在 3D 场景中实时对战**，比分/日志同步，"小车程序输出面板"显示双方子进程输出，自动结束或点"⏹ 停止"。（需先 `node sim_server.js` 起本地 API；页面 file:// 双击打开即可，自动连 `http://127.0.0.1:8932`。远程期间，发令、暂停、继续、调试/重启判罚、场景预设和参数滑条都直接控制服务端比赛；重置会先停止远程局。停止会立即终止两个策略子进程，下一局无需等待超时。导入或覆盖小车程序后，当前服务会立即刷新注册表，无需重启。远程模式只渲染服务端快照，HUD/传感器文本以 10Hz 更新以避免浏览器掉帧。
 
 **命令行三步接入**：
 

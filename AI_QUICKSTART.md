@@ -96,6 +96,33 @@ Invoke-RestMethod http://127.0.0.1:8932/fidelity
 
 If `coreBusy` is true, an evaluation or remote battle owns the singleton CORE. Wait for it to finish or use its documented `/battle/control` token. Do not issue `/step`, `/params`, `/scene`, or `/vehicle` writes against a busy CORE.
 
+## Optional YOLO Vision
+
+YOLO is an optional browser-side bridge and is **off by default**. It does not change the `decide(obs)` contract or the
+deterministic `sim_runner.py` evaluation path. Start a separate HTTP detector (default endpoint
+`http://127.0.0.1:8933/predict`) and allow CORS from the page, then open the right-side **YOLO 设置** tab:
+
+1. Enter the detector endpoint.
+2. Set FPS, image width (height is automatically 16:9), JPEG quality, request timeout, and maximum cache age.
+3. If the model does not call the robot `opponent`, enter aliases such as `enemy,robot,car`.
+4. Optionally choose a fixed return label (`opponent`, `buff`, `debuff`, or `unknown`). It only relabels an existing detection;
+   it never invents a target when the model returned no detection.
+5. Click **应用设置**, then **YOLO：开**.
+
+The page accepts `detections`, `predictions`, `results`, or a single `target`, and normalizes common fields such as
+`label`, `kind`, `type`, `target_type`, `className`, `class`, and `name`. A timeout, malformed response, HTTP error, or stale
+cache falls back to `classifyRate`, so the match keeps running. The two virtual cameras have independent caches; remote mode
+sends only normalized detections to `/vision/result`, never the JPEG payload. The service endpoints are:
+
+```text
+POST /vision/config   { enabled, fps, width, quality, maxAgeMs, fixedLabel }
+POST /vision/result   { frameId, role, detections, width, height }
+GET  /vision/status
+```
+
+This bridge proves API plumbing only. Do not mark `fidelity.json` as calibrated until real camera/YOLO measurements have been
+reviewed.
+
 ## Reproducible Field and Sensor Work
 
 The default field grayscale and vision are placeholders. They are useful for strategy comparisons but not real-robot calibration.
@@ -128,16 +155,17 @@ node --check sim_server.js
 git diff --check
 ```
 
-`sim_selftest.js` currently has 31 deterministic scenarios. A legitimate code change that alters a decision contract must update or add a fixed-seed scenario and update [AGENTS.md](AGENTS.md), [CONTRACT.md](CONTRACT.md), and [SIMULATOR.md](SIMULATOR.md).
+`sim_selftest.js` currently has 32 deterministic scenarios. A legitimate code change that alters a decision contract must update or add a fixed-seed scenario and update [AGENTS.md](AGENTS.md), [CONTRACT.md](CONTRACT.md), and [SIMULATOR.md](SIMULATOR.md).
 
 Also run these after changing the process bridge or API:
 
 ```powershell
 node sim_lib_selftest.js
 node sim_ai_selftest.js
+node sim_vision_http_selftest.js
 ```
 
-In restricted desktop sandboxes these two may report `spawn EPERM`, because the environment prohibits child-process creation. Record that limitation; do not treat it as a CORE failure. Run them in a normal local terminal before merging bridge/API changes.
+In restricted desktop sandboxes these tests may report `spawn EPERM`, because the environment prohibits child-process creation. Record that limitation; do not treat it as a CORE failure. Run them in a normal local terminal before merging bridge/API changes.
 
 ## Safe Change Order
 
