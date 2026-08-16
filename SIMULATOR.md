@@ -140,7 +140,9 @@ POST /vision/result  {frameId,role,detections,width,height}
 GET  /vision/status
 ```
 
-服务端按 `us/them` 分开缓存并丢弃重复/乱序帧；`/reset` 清空结果但保留开关和参数。外部 YOLO 模型、GPU、
+服务端按 `us/them` 分开缓存并丢弃重复/乱序帧；`/reset` 清空结果但保留开关和参数。远程对战期间，
+`/vision/config` 与 `/vision/result` 必须携带 `/battle/start` 返回的 `controlToken`，评测和停止中的对战会锁定视觉输入；
+状态接口会报告 `lastLabel`、错误总数、连续失败数、最近错误/成功时间。外部 YOLO 模型、GPU、
 Ultralytics/ONNX 运行时均由用户自行部署，不会成为仿真器依赖。
 
 ### 自定义小车参数

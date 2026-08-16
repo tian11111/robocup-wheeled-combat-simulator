@@ -81,8 +81,10 @@
   .yolo-panel{padding:14px;}
   .yolo-page-head{display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding-bottom:12px; border-bottom:1px solid var(--line);}
   .yolo-page-head h3{margin:0 0 5px;}
-  .yolo-status-card{display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--line); border-radius:5px; background:rgba(20,24,30,.72); white-space:nowrap;}
+  .yolo-status-card{display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:7px 9px; border:1px solid var(--line); border-radius:5px; background:rgba(20,24,30,.72); white-space:nowrap;}
   .yolo-status-card strong{color:#ffd166; font-size:11px; font-weight:600;}
+  .yolo-role-status{color:var(--muted); font-size:10.5px; padding-left:7px; border-left:1px solid var(--line);}
+  .yolo-role-status b{color:#9fd0ff; font-weight:600;}
   .yolo-section{margin-top:13px; padding:11px 12px; border:1px solid rgba(91,108,126,.55); border-radius:6px; background:rgba(20,24,30,.42);}
   .yolo-section h4{margin:0 0 9px; color:#dbe8f5; font-size:12px; font-weight:600;}
   .yolo-settings-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:9px 12px; align-items:end;}
@@ -330,7 +332,7 @@
        <div class="panel tool-panel yolo-panel">
         <div class="yolo-page-head">
           <div><h3>YOLO 视觉设置</h3><div class="hint" style="margin:0;">独立虚拟相机、独立缓存；默认关闭，不影响原有 classifyRate 仿真。</div></div>
-          <div class="yolo-status-card"><span class="cap">当前状态</span><strong id="yoloStatus">关闭</strong><button id="btnYoloToggle" type="button">YOLO：关</button></div>
+           <div class="yolo-status-card"><span class="cap">当前状态</span><strong id="yoloStatus">关闭</strong><span class="yolo-role-status">我方 <b id="yoloUsStatus">—</b></span><span class="yolo-role-status">对手 <b id="yoloThemStatus">—</b></span><button id="btnYoloToggle" type="button">YOLO：关</button></div>
         </div>
         <div class="yolo-section">
           <h4>连接</h4>
@@ -1793,7 +1795,7 @@ document.getElementById('btnRemoteStart').addEventListener('click', async () => 
     remote.mode = true;
     remote.controlToken = r.controlToken || null;
     // 服务端是独立 CORE；远程局开始后先同步完整视觉配置，避免服务端仍沿用上一局的开关/尺寸。
-    const visionConfigResult = await api('/vision/config', yoloConfigPayload());
+    const visionConfigResult = await api('/vision/config', {...yoloConfigPayload(),controlToken:remote.controlToken});
     if (visionConfigResult && visionConfigResult.error) log('[远程视觉] 配置同步失败: '+visionConfigResult.error, 'warn');
     remote.lastLogLen = logEvents.length;
     remote.lastOutLen = 0;
@@ -1876,14 +1878,22 @@ async function pollRemote(){
   }
 }
 // ---------- 可选 YOLO 视觉（默认关闭） ----------
-const yoloState={enabled:false,endpoint:'http://127.0.0.1:8933/predict',fps:5,width:640,quality:.7,timeout:700,maxAge:800,enemyClass:'',fixedLabel:'',fallback:'unknown',last:0,seq:0,inflight:{us:false,them:false},controllers:{us:null,them:null}};
-const yoloEls={toggle:document.getElementById('btnYoloToggle'),apply:document.getElementById('btnYoloApply'),endpoint:document.getElementById('yoloEndpoint'),fps:document.getElementById('yoloFps'),width:document.getElementById('yoloWidth'),quality:document.getElementById('yoloQuality'),timeout:document.getElementById('yoloTimeout'),maxAge:document.getElementById('yoloMaxAge'),enemy:document.getElementById('yoloEnemyClass'),fixed:document.getElementById('yoloFixedLabel'),fallback:document.getElementById('yoloFallback'),status:document.getElementById('yoloStatus')};
-let yoloTarget=null,yoloCanvas=null,yoloCtx=null,yoloCameras={};
+const yoloState={enabled:false,endpoint:'http://127.0.0.1:8933/predict',fps:5,width:640,quality:.7,timeout:700,maxAge:800,enemyClass:'',fixedLabel:'',fallback:'unknown',seq:0,inflight:{us:false,them:false},controllers:{us:null,them:null},failures:{us:0,them:0},nextAt:{us:0,them:0}};
+const yoloEls={toggle:document.getElementById('btnYoloToggle'),apply:document.getElementById('btnYoloApply'),endpoint:document.getElementById('yoloEndpoint'),fps:document.getElementById('yoloFps'),width:document.getElementById('yoloWidth'),quality:document.getElementById('yoloQuality'),timeout:document.getElementById('yoloTimeout'),maxAge:document.getElementById('yoloMaxAge'),enemy:document.getElementById('yoloEnemyClass'),fixed:document.getElementById('yoloFixedLabel'),fallback:document.getElementById('yoloFallback'),status:document.getElementById('yoloStatus'),usStatus:document.getElementById('yoloUsStatus'),themStatus:document.getElementById('yoloThemStatus')};
+let yoloTarget=null,yoloCanvas=null,yoloCtx=null,yoloCameras={},yoloTargetSize={width:0,height:0};
 function yoloDimensions(){const width=Math.max(160,Math.min(1280,Math.round(Number(yoloState.width)||640)));return {width,height:Math.max(90,Math.round(width*9/16))};}
-function yoloResize(){
+function yoloResize(force=false){
   const {width,height}=yoloDimensions();
+  const sizeChanged=yoloTargetSize.width!==width||yoloTargetSize.height!==height;
+  if(!force && yoloTarget && !sizeChanged){
+    for(const r of ['us','them']){
+      const c=yoloCameras[r]; if(c){ c.aspect=width/height; c.updateProjectionMatrix(); }
+    }
+    return;
+  }
   if(yoloTarget) yoloTarget.dispose?.();
   yoloTarget=new THREE.WebGLRenderTarget(width,height);
+  yoloTargetSize={width,height};
   if(!yoloCanvas) yoloCanvas=document.createElement('canvas');
   yoloCanvas.width=width; yoloCanvas.height=height;
   yoloCtx=yoloCanvas.getContext('2d');
@@ -1952,24 +1962,64 @@ async function yoloCapture(role){
     try{
       renderer.setRenderTarget(yoloTarget); renderer.render(scene,c);
       const px=new Uint8Array(width*height*4); renderer.readRenderTargetPixels(yoloTarget,0,0,width,height,px);
-      const im=yoloCtx.createImageData(width,height);
-      for(let y=0;y<height;y++)for(let x=0;x<width;x++){const s=((height-1-y)*width+x)*4,t=(y*width+x)*4;im.data[t]=px[s];im.data[t+1]=px[s+1];im.data[t+2]=px[s+2];im.data[t+3]=255;}
+      const im=yoloCtx.createImageData(width,height),rowBytes=width*4;
+      // WebGL 原点在左下；按行反转即可，避免逐像素 JS 循环造成额外卡顿。
+      for(let y=0;y<height;y++){
+        const src=(height-1-y)*rowBytes;
+        im.data.set(px.subarray(src,src+rowBytes),y*rowBytes);
+      }
       yoloCtx.putImageData(im,0,0); renderer.setRenderTarget(oldTarget);
     } finally { renderer.setRenderTarget(oldTarget); restoreDebug(); restoreDebug=()=>{}; }
     const frameId=role+'-'+(++yoloState.seq), body={frameId,role,image:{mime:'image/jpeg',base64:yoloCanvas.toDataURL('image/jpeg',yoloState.quality).split(',')[1]},width,height};
     const ac=new AbortController(); yoloState.controllers[role]=ac; tm=setTimeout(()=>ac.abort(),yoloState.timeout);
     const res=await fetch(yoloState.endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:ac.signal}); if(!res.ok)throw Error('HTTP '+res.status);
-    const out=await res.json(),detections=yoloDetections(out).map(yoloNorm),result={frameId,role,detections,width,height};
+    const out=await res.json();
+    if(!yoloState.enabled) return;
+    const detections=yoloDetections(out).map(yoloNorm),result={frameId,role,detections,width,height};
     window.__SIM_CORE.updateExternalVisionResult(role,result,Date.now());
-    if(remote?.mode) api('/vision/result',{frameId,role,detections,width,height}).catch(()=>{});
+    if(remote?.mode){
+      const remoteResult=await api('/vision/result',{frameId,role,detections,width,height,controlToken:remote.controlToken});
+      if(remoteResult && remoteResult.error) throw Error('远程视觉：'+remoteResult.error);
+    }
+    yoloState.failures[role]=0;
+    yoloState.nextAt[role]=performance.now()+1000/yoloState.fps;
+    yoloSetRoleStatus(role,'运行中');
     yoloEls.status.textContent='运行中';
-  }catch(e){yoloEls.status.textContent='回退：'+String(e.message||e).slice(0,60);}
+  }catch(e){
+    if(!yoloState.enabled || e?.name==='AbortError'){
+      yoloSetRoleStatus(role,'关闭');
+      return;
+    }
+    const failures=++yoloState.failures[role];
+    // 服务不可用时退避，避免每个渲染周期都读回 GPU 并发起失败请求。
+    const retryMs=Math.min(10000,1000*Math.pow(2,Math.min( failures-1,3)));
+    yoloState.nextAt[role]=performance.now()+retryMs;
+    yoloSetRoleStatus(role,'回退 '+Math.round(retryMs/1000)+'s');
+    yoloEls.status.textContent='回退：'+String(e.message||e).slice(0,60);
+  }
   finally{clearTimeout(tm);restoreDebug();yoloState.controllers[role]=null;yoloState.inflight[role]=false;}
 }
-function yoloTick(now){if(yoloState.enabled&&now-yoloState.last>=1000/yoloState.fps){yoloState.last=now;yoloCapture('us');yoloCapture('them');}}
+function yoloSetRoleStatus(role,text){
+  const el=role==='us'?yoloEls.usStatus:yoloEls.themStatus;
+  if(el) el.textContent=text;
+}
+function yoloTick(now){
+  if(!yoloState.enabled) return;
+  for(const role of ['us','them']){
+    if(now<yoloState.nextAt[role]) continue;
+    yoloState.nextAt[role]=now+1000/yoloState.fps;
+    yoloCapture(role);
+  }
+}
 function yoloConfigPayload(){return {enabled:yoloState.enabled,maxAgeMs:yoloState.maxAge,fps:yoloState.fps,width:yoloState.width,quality:yoloState.quality,fallback:'classifyRate',fixedLabel:yoloState.fixedLabel||''};}
-function yoloSyncRemoteConfig(){if(remote?.mode)api('/vision/config',yoloConfigPayload()).catch(()=>{});}
+function yoloSyncRemoteConfig(){
+  if(!remote?.mode||!remote.controlToken) return;
+  api('/vision/config',{...yoloConfigPayload(),controlToken:remote.controlToken}).then(result=>{
+    if(result&&result.error) yoloEls.status.textContent='远程配置失败：'+result.error;
+  });
+}
 function yoloApply(){
+  const previousWidth=yoloState.width;
   yoloState.endpoint=yoloEls.endpoint.value.trim()||yoloState.endpoint;
   yoloState.fps=Math.max(1,Math.min(30,Number(yoloEls.fps.value)||5));
   yoloState.width=Math.max(160,Math.min(1280,Math.round(Number(yoloEls.width.value)||640)));
@@ -1980,13 +2030,29 @@ function yoloApply(){
   yoloState.fixedLabel=['buff','debuff','opponent','unknown'].includes(yoloEls.fixed?.value)?yoloEls.fixed.value:'';
   yoloState.fallback=['unknown','opponent'].includes(yoloEls.fallback.value)?yoloEls.fallback.value:'unknown';
   yoloEls.fps.value=yoloState.fps; yoloEls.width.value=yoloState.width; yoloEls.quality.value=yoloState.quality; yoloEls.timeout.value=yoloState.timeout; yoloEls.maxAge.value=yoloState.maxAge;
-  yoloResize();
+  // 只有分辨率变化才重建 GPU RenderTarget；改超时/标签/画质不应中断采集。
+  if(previousWidth!==yoloState.width||!yoloTarget) yoloResize();
+  const scheduleAt=performance.now();
+  yoloState.nextAt.us=scheduleAt;
+  yoloState.nextAt.them=scheduleAt+500/yoloState.fps;
   if(yoloState.enabled) window.__SIM_CORE.setExternalVisionCache({enabled:true,maxAgeMs:yoloState.maxAge,clear:false});
-  yoloSyncRemoteConfig();
 }
-yoloEls.toggle?.addEventListener('click',()=>{yoloApply();yoloState.enabled=!yoloState.enabled;window.__SIM_CORE.setExternalVisionCache({enabled:yoloState.enabled,maxAgeMs:yoloState.maxAge,clear:true});if(!yoloState.enabled){for(const role of ['us','them'])yoloState.controllers[role]?.abort();}yoloSyncRemoteConfig();yoloEls.toggle.textContent='YOLO：'+(yoloState.enabled?'开':'关');yoloEls.status.textContent=yoloState.enabled?'连接中':'关闭';});
-yoloEls.apply?.addEventListener('click',()=>{yoloApply();yoloEls.status.textContent=yoloState.enabled?'配置已应用':'已保存（当前关闭）';});
-for(const el of [yoloEls.endpoint,yoloEls.fps,yoloEls.width,yoloEls.quality,yoloEls.timeout,yoloEls.maxAge,yoloEls.enemy,yoloEls.fixed,yoloEls.fallback]) el?.addEventListener('change',()=>{yoloApply();});
+yoloEls.toggle?.addEventListener('click',()=>{
+  yoloApply();
+  yoloState.enabled=!yoloState.enabled;
+  window.__SIM_CORE.setExternalVisionCache({enabled:yoloState.enabled,maxAgeMs:yoloState.maxAge,clear:true});
+  const toggleAt=performance.now();
+  for(const role of ['us','them']){
+    yoloState.failures[role]=0;
+    yoloState.nextAt[role]=toggleAt+(role==='them'?500/yoloState.fps:0);
+    if(!yoloState.enabled){ yoloState.controllers[role]?.abort(); yoloSetRoleStatus(role,'关闭'); }
+    else yoloSetRoleStatus(role,'连接中');
+  }
+  yoloSyncRemoteConfig();
+  yoloEls.toggle.textContent='YOLO：'+(yoloState.enabled?'开':'关');
+  yoloEls.status.textContent=yoloState.enabled?'连接中':'关闭';
+});
+yoloEls.apply?.addEventListener('click',()=>{yoloApply();yoloSyncRemoteConfig();yoloEls.status.textContent=yoloState.enabled?'配置已应用':'已保存（当前关闭）';});
 
 // ---------- 主循环 ----------
 let last = performance.now();

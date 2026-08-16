@@ -95,13 +95,53 @@ let foregroundBattleRunning = false;
 
 // 外部 YOLO 视觉桥接状态。默认关闭，关闭时完全沿用 CORE 的 classifyRate。
 const visionConfig = { enabled:false, maxAgeMs:800, fps:5, width:640, quality:0.7, fallback:'classifyRate', fixedLabel:'' };
-const visionFrames = { us:{frameId:null, at:null, errorCount:0, lastError:null}, them:{frameId:null, at:null, errorCount:0, lastError:null} };
+const visionFrames = {
+  us:{frameId:null, at:null, lastLabel:null, errorCount:0, lastError:null, lastErrorAt:null, lastSuccessAt:null, consecutiveFailures:0},
+  them:{frameId:null, at:null, lastLabel:null, errorCount:0, lastError:null, lastErrorAt:null, lastSuccessAt:null, consecutiveFailures:0},
+};
+function resetVisionFrames(preserveErrors=false){
+  for(const role of ['us','them']){
+    const old=visionFrames[role];
+    visionFrames[role]={frameId:null,at:null,lastLabel:null,
+      errorCount:preserveErrors ? Number(old.errorCount||0) : 0,
+      lastError:preserveErrors ? (old.lastError||null) : null,
+      lastErrorAt:preserveErrors ? (old.lastErrorAt||null) : null,
+      lastSuccessAt:preserveErrors ? (old.lastSuccessAt||null) : null,
+      consecutiveFailures:preserveErrors ? Number(old.consecutiveFailures||0) : 0,
+    };
+  }
+}
+function recordVisionError(role, message){
+  const key=role==='us'||role==='them'?role:null;
+  if(key){
+    visionFrames[key].errorCount=Number(visionFrames[key].errorCount||0)+1;
+    visionFrames[key].lastError=String(message||'视觉请求失败').slice(0,500);
+    visionFrames[key].lastErrorAt=Date.now();
+    visionFrames[key].consecutiveFailures=Number(visionFrames[key].consecutiveFailures||0)+1;
+  } else {
+    for(const r of ['us','them']){
+      visionFrames[r].errorCount=Number(visionFrames[r].errorCount||0)+1;
+      visionFrames[r].lastError=String(message||'视觉请求失败').slice(0,500);
+      visionFrames[r].lastErrorAt=Date.now();
+      visionFrames[r].consecutiveFailures=Number(visionFrames[r].consecutiveFailures||0)+1;
+    }
+  }
+}
+function recordVisionSuccess(role){
+  const key=role==='us'||role==='them'?role:null;
+  if(!key) return;
+  visionFrames[key].lastSuccessAt=Date.now();
+  visionFrames[key].consecutiveFailures=0;
+  visionFrames[key].lastError=null;
+}
 function visionStatus(){
   const now=Date.now();
   const roles={};
   for(const role of ['us','them']){
     const v=visionFrames[role];
-    roles[role]={frameId:v.frameId, ageMs:v.at===null?null:Math.max(0,now-v.at), errorCount:v.errorCount, lastError:v.lastError};
+    roles[role]={frameId:v.frameId, ageMs:v.at===null?null:Math.max(0,now-v.at), lastLabel:v.lastLabel, errorCount:v.errorCount,
+      lastError:v.lastError, lastErrorAt:v.lastErrorAt, lastSuccessAt:v.lastSuccessAt,
+      consecutiveFailures:v.consecutiveFailures};
   }
   const info=typeof getSimVisionInfo==='function'?getSimVisionInfo():null;
   return { enabled:visionConfig.enabled, mode:visionConfig.enabled?'external':'default', settings:{...visionConfig}, roles, core:info };
@@ -206,7 +246,7 @@ function normalizeSeeds(value){
   return out;
 }
 function summarizeEvaluation(runs){
-  const okRuns = runs.filter(r => !r.error);
+  const okRuns = runs.filter(r => r && r.ok === true);
   const count = okRuns.length;
   const sum = key => okRuns.reduce((n, r) => n + Number(r[key] || 0), 0);
   const netScores = okRuns.map(r => Number(r.netScore || 0));
@@ -262,10 +302,16 @@ function trimEvaluations(){
 async function runEvaluation(job, opts){
   job.status = 'running';
   job.startedAt = new Date().toISOString();
+  const evaluationVisionConfig={...visionConfig};
+  // 批量评测必须使用确定性的默认视觉，不能被浏览器/YOLO异步注入污染。
+  setExternalVisionCache({enabled:false,maxAgeMs:visionConfig.maxAgeMs,clear:true});
+  resetVisionFrames();
   try {
     for (const seed of job.seeds){
       if (job.cancelRequested) break;
       job.currentSeed = seed;
+      clearExternalVisionCache();
+      resetVisionFrames();
       const started = Date.now();
       try {
         const result = await runBattle({
@@ -325,13 +371,17 @@ async function runEvaluation(job, opts){
       job.summary = summarizeEvaluation(job.runs);
     }
     if (job.cancelRequested) job.status = 'cancelled';
-    else if (!job.runs.length || job.runs.every(r => r.error)) job.status = 'error';
-    else if (job.runs.some(r => r.error)) job.status = 'partial';
+    else if (!job.runs.length || job.runs.every(r => r && r.ok !== true)) job.status = 'error';
+    else if (job.runs.some(r => !r || r.ok !== true)) job.status = 'partial';
     else job.status = 'done';
   } catch (e) {
     job.status = 'error';
     job.error = String(e && e.message || e);
   } finally {
+    // 评测结束后恢复评测前的视觉开关，但不恢复评测期间产生的旧帧。
+    Object.assign(visionConfig,evaluationVisionConfig);
+    setExternalVisionCache({enabled:visionConfig.enabled,maxAgeMs:visionConfig.maxAgeMs,clear:true});
+    resetVisionFrames();
     job.currentSeed = null;
     job.finishedAt = new Date().toISOString();
     job.summary = summarizeEvaluation(job.runs);
@@ -380,6 +430,33 @@ function rejectWhenCoreBusy(res){
   if (!error) return false;
   json(res, 409, { error });
   return true;
+}
+// 视觉接口在远程对战期间仍可用，但只能由启动该会话的页面写入；
+// 评测、前台整场对战和 stopping 状态一律拒绝，避免异步视觉污染单例 CORE。
+function rejectVisionWhenBusy(res, body){
+  if (evaluationBusy()){
+    json(res, 409, { error:'评测任务运行中，视觉输入已锁定' });
+    return true;
+  }
+  if (foregroundBattleRunning){
+    json(res, 409, { error:'单场对战运行中，视觉输入已锁定' });
+    return true;
+  }
+  if (battleSession.status === 'stopping'){
+    json(res, 409, { error:'上一场远程对战仍在停止，请稍后再试' });
+    return true;
+  }
+  if (battleSession.status === 'running'){
+    if (!body || typeof body.controlToken !== 'string' || body.controlToken !== battleSession.controlToken){
+      json(res, 403, { error:'远程对战视觉控制令牌无效' });
+      return true;
+    }
+  }
+  return false;
+}
+function applyFixedVisionLabel(detections){
+  if (!visionConfig.fixedLabel || !Array.isArray(detections)) return detections;
+  return detections.map(d => ({ ...d, label: visionConfig.fixedLabel }));
 }
 function finitePosePart(value, fallback){
   const n = Number(value);
@@ -501,7 +578,7 @@ const server = http.createServer(async (req, res) => {
         fidelity: { endpoint: '/fidelity', statuses: ['calibrated', 'hand_drawn', 'random_stub', 'uncalibrated', 'verified'] },
         perception: {
           fieldGray: { endpoint:'/field-gray', reset:'POST {"reset":true}', map:'POST {id?, values, width?, height?, bounds?, interpolation?}' },
-          vision: { endpoint:'/vision/status', config:'/vision/config', result:'/vision/result', interface:'external cache -> {label, confidence, source}', labels:['buff','debuff','opponent','unknown'], defaults:{enabled:false,maxAgeMs:800,fps:5,width:640,quality:0.7,fallback:'classifyRate',fixedLabel:''} },
+          vision: { endpoint:'/vision/status', config:'/vision/config', result:'/vision/result', interface:'external cache -> {label, confidence, source}', labels:['buff','debuff','opponent','unknown'], remoteAuth:'远程对战期间请求体需附带 /battle/start 返回的 controlToken', defaults:{enabled:false,maxAgeMs:800,fps:5,width:640,quality:0.7,fallback:'classifyRate',fixedLabel:''} },
         },
         action: {
           type: 'object',
@@ -540,30 +617,53 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok:true, ...visionStatus() });
     }
     if (req.method === 'POST' && (u.pathname === '/vision/config' || u.pathname === '/api/v1/vision/config')) {
-      const b=await readBody(req);
-      const next=validVisionConfig(b);
+      let b;
+      try { b=await readBody(req); }
+      catch (e) { recordVisionError(null,e.message); return json(res,400,{error:e.message}); }
+      if (rejectVisionWhenBusy(res,b)) return;
+      let next;
+      try { next=validVisionConfig(b); }
+      catch (e) { recordVisionError(null,e.message); return json(res,400,{error:e.message}); }
+      // 只有启停、缓存年龄语义或固定标签变化需要丢弃旧帧；
+      // FPS、尺寸、JPEG 画质调整不应让当前有效检测瞬间消失。
+      const cacheAffecting = next.enabled !== visionConfig.enabled
+        || next.maxAgeMs !== visionConfig.maxAgeMs
+        || next.fixedLabel !== visionConfig.fixedLabel;
       Object.assign(visionConfig,next);
-      setExternalVisionCache({enabled:visionConfig.enabled,maxAgeMs:visionConfig.maxAgeMs,clear:true});
-      if(!visionConfig.enabled){ for(const role of ['us','them']) visionFrames[role]={frameId:null,at:null,errorCount:0,lastError:null}; }
+      if (cacheAffecting) {
+        setExternalVisionCache({enabled:visionConfig.enabled,maxAgeMs:visionConfig.maxAgeMs,clear:true});
+        resetVisionFrames();
+      } else {
+        setExternalVisionCache({enabled:visionConfig.enabled,maxAgeMs:visionConfig.maxAgeMs,clear:false});
+      }
       return json(res,200,{ok:true,...visionStatus()});
     }
     if (req.method === 'POST' && (u.pathname === '/vision/result' || u.pathname === '/api/v1/vision/result')) {
-      if(!visionConfig.enabled) return json(res,409,{error:'YOLO视觉未启用，请先 POST /vision/config {"enabled":true}'});
-      const b=await readBody(req);
+      let b;
+      try { b=await readBody(req); } catch (e) { recordVisionError(null,e.message); return json(res,400,{error:e.message}); }
+      if (rejectVisionWhenBusy(res,b)) return;
+      if(!visionConfig.enabled){ recordVisionError(b && b.role,'YOLO视觉未启用'); return json(res,409,{error:'YOLO视觉未启用，请先 POST /vision/config {"enabled":true}'}); }
       const role=b.role;
-      if(role!=='us'&&role!=='them') return json(res,400,{error:"role 必须是 'us' 或 'them'"});
-      if((typeof b.frameId!=='string'&&typeof b.frameId!=='number') || String(b.frameId).length>128) return json(res,400,{error:'frameId 必须是字符串或数字'});
-      if(!Array.isArray(b.detections)||b.detections.length>128) return json(res,400,{error:'detections 必须是数组且最多 128 项'});
+      if(role!=='us'&&role!=='them'){ recordVisionError(null,"role 必须是 'us' 或 'them'"); return json(res,400,{error:"role 必须是 'us' 或 'them'"}); }
+      if((typeof b.frameId!=='string'&&typeof b.frameId!=='number') || String(b.frameId).length>128){ recordVisionError(role,'frameId 必须是字符串或数字'); return json(res,400,{error:'frameId 必须是字符串或数字'}); }
+      if(!Array.isArray(b.detections)||b.detections.length>128){ recordVisionError(role,'detections 必须是数组且最多 128 项'); return json(res,400,{error:'detections 必须是数组且最多 128 项'}); }
       for(const d of b.detections){
-        if(!d||typeof d!=='object'||Array.isArray(d)) return json(res,400,{error:'detection 必须是对象'});
-        if(typeof d.label!=='string' || !['buff','debuff','opponent','unknown','good','gain','bonus','bad','penalty','enemy','robot','none','miss'].includes(d.label.toLowerCase())) return json(res,400,{error:'detection.label 无效'});
-        if(d.confidence!==undefined && (!Number.isFinite(Number(d.confidence))||Number(d.confidence)<0||Number(d.confidence)>1)) return json(res,400,{error:'detection.confidence 必须在 0..1'});
-        if(d.bbox!==undefined && (!Array.isArray(d.bbox)||d.bbox.length!==4||d.bbox.some(x=>!Number.isFinite(Number(x))))) return json(res,400,{error:'detection.bbox 必须是四个数字'});
+        if(!d||typeof d!=='object'||Array.isArray(d)){ recordVisionError(role,'detection 必须是对象'); return json(res,400,{error:'detection 必须是对象'}); }
+        if(typeof d.label!=='string' || !['buff','debuff','opponent','unknown','good','gain','bonus','bad','penalty','enemy','robot','none','miss'].includes(d.label.toLowerCase())){ recordVisionError(role,'detection.label 无效'); return json(res,400,{error:'detection.label 无效'}); }
+        if(d.confidence!==undefined && (!Number.isFinite(Number(d.confidence))||Number(d.confidence)<0||Number(d.confidence)>1)){ recordVisionError(role,'detection.confidence 必须在 0..1'); return json(res,400,{error:'detection.confidence 必须在 0..1'}); }
+        if(d.bbox!==undefined && (!Array.isArray(d.bbox)||d.bbox.length!==4||d.bbox.some(x=>!Number.isFinite(Number(x))))){ recordVisionError(role,'detection.bbox 必须是四个数字'); return json(res,400,{error:'detection.bbox 必须是四个数字'}); }
       }
-      if(!visionFrameIsNew(role,b.frameId)) return json(res,409,{error:'拒绝重复或乱序视觉帧',frameId:b.frameId,lastFrameId:visionFrames[role].frameId});
-      const accepted=updateExternalVisionResult(role,{frameId:String(b.frameId),detections:b.detections,width:b.width,height:b.height},Date.now());
-      if(!accepted) return json(res,409,{error:'拒绝重复视觉帧'});
-      visionFrames[role].frameId=String(b.frameId); visionFrames[role].at=Date.now(); visionFrames[role].lastError=null;
+      if(!visionFrameIsNew(role,b.frameId)){ recordVisionError(role,'拒绝重复或乱序视觉帧'); return json(res,409,{error:'拒绝重复或乱序视觉帧',frameId:b.frameId,lastFrameId:visionFrames[role].frameId}); }
+      const normalizedDetections=applyFixedVisionLabel(b.detections);
+      let accepted=false;
+      try {
+        accepted=updateExternalVisionResult(role,{frameId:String(b.frameId),detections:normalizedDetections,width:b.width,height:b.height},Date.now());
+      }
+      catch (e) { recordVisionError(role,e.message); return json(res,500,{error:'视觉结果处理失败'}); }
+      if(!accepted){ recordVisionError(role,'拒绝重复视觉帧'); return json(res,409,{error:'拒绝重复视觉帧'}); }
+      visionFrames[role].frameId=String(b.frameId); visionFrames[role].at=Date.now();
+      visionFrames[role].lastLabel=normalizedDetections[0]?.label || null;
+      recordVisionSuccess(role);
       return json(res,200,{ok:true,role,frameId:visionFrames[role].frameId,status:visionStatus()});
     }
     if (req.method === 'POST' && (u.pathname === '/api/v1/evaluations' || u.pathname === '/batch/start')) {
@@ -639,7 +739,7 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       resetAll({ seed: b.seed ?? params.seed, params: b.params, scene: b.scene, fieldGray: b.fieldGray, vehicles: b.vehicles });
       clearExternalVisionCache();
-      for(const role of ['us','them']) visionFrames[role]={frameId:null,at:null,errorCount:0,lastError:null};
+      resetVisionFrames();
       if (b.manual) startManual();
       scoreBase = { us: scoreBoard.us, them: scoreBoard.them };
       return json(res, 200, { ok: true, state: stateForRequest(u, b) });
@@ -776,7 +876,7 @@ const server = http.createServer(async (req, res) => {
       if (rejectWhenCoreBusy(res)) return;
       resetAll({ seed: b.seed, params: b.params, scene: b.scene, fieldGray: b.fieldGray, vehicles: b.vehicles });
       clearExternalVisionCache();
-      for(const role of ['us','them']) visionFrames[role]={frameId:null,at:null,errorCount:0,lastError:null};
+      resetVisionFrames();
       scoreBase = { us: scoreBoard.us, them: scoreBoard.them };
       const session = {
         status: 'running', running: true, abort: false, stop: null, controlToken: crypto.randomBytes(24).toString('hex'), startedAt: Date.now(), stopStartedAt: 0, result: null, error: null,
