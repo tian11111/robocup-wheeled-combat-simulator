@@ -520,12 +520,33 @@ const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
 const norm = a=> { while(a>Math.PI)a-=2*Math.PI; while(a<-Math.PI)a+=2*Math.PI; return a; };
 const dist = (a,b)=> Math.hypot(b.x-a.x, b.y-a.y);
 function onPlatform(x,y){ return x>=EL && x<=ER && y>=EL && y<=ER; }
-const onStage = r => onPlatform(r.x, r.y);
+function footprintPoint(r, forward, lateral){
+  const c=Math.cos(r.th), s=Math.sin(r.th);
+  return { x:r.x+forward*c-lateral*s, y:r.y+forward*s+lateral*c };
+}
+function footprintCorners(r){
+  const v=r.vehicle || DEFAULT_VEHICLE;
+  const front=Number(v.frontExtent)||0, rear=Number(v.rearExtent)||0, side=Number(v.sideExtent)||0;
+  return [
+    footprintPoint(r, front, side), footprintPoint(r, front, -side),
+    footprintPoint(r, -rear, side), footprintPoint(r, -rear, -side),
+  ];
+}
+function footprintOnPlatform(r){ return footprintCorners(r).every(p=>onPlatform(p.x,p.y)); }
+function frontFootprintOnPlatform(r){
+  const v=r.vehicle || DEFAULT_VEHICLE;
+  const front=Number(v.frontExtent)||0, side=Number(v.sideExtent)||0;
+  return onPlatform(footprintPoint(r,front,side).x,footprintPoint(r,front,side).y)
+    && onPlatform(footprintPoint(r,front,-side).x,footprintPoint(r,front,-side).y);
+}
+// “在台上”必须是整车 footprint 都由台面支撑，而不是只看车中心。
+// 这样自定义车体尺寸、铲子伸出量和掉台读秒使用同一几何语义。
+const onStage = r => footprintOnPlatform(r);
 function nearestPlatPoint(x,y){ return { x:clamp(x,EL,ER), y:clamp(y,EL,ER) }; }
 function frontPt(r,d){ return { x:r.x+Math.cos(r.th)*d, y:r.y+Math.sin(r.th)*d }; }
 function rearPt(r,d){ return { x:r.x-Math.cos(r.th)*d, y:r.y-Math.sin(r.th)*d }; }
-function fullOn(r){ return onPlatform(r.x,r.y)&&onPlatform(frontPt(r,0.16).x,frontPt(r,0.16).y)&&onPlatform(rearPt(r,0.16).x,rearPt(r,0.16).y); }
-function hangOn(r){ return onPlatform(r.x,r.y) && !onPlatform(frontPt(r,0.16).x,frontPt(r,0.16).y); }
+function fullOn(r){ return footprintOnPlatform(r); }
+function hangOn(r){ return onPlatform(r.x, r.y) && !frontFootprintOnPlatform(r); }
 const other = r => r===US ? THEM : US;
 const dirName = a=> { const d=norm(a-Math.PI/2); if(Math.abs(d)<0.4)return '南'; if(Math.abs(norm(a))<0.4)return '东'; if(Math.abs(d-Math.PI)<0.4||Math.abs(d+Math.PI)<0.4)return '北'; return '西'; };
 
@@ -856,7 +877,9 @@ function crisisGateFor(r){
   if(!st.armed || st.state===S.MOUNT || st.state===S.RECOVER || st.state===S.DONE) return;
   if(r.dragLock) return;                    // 拖拽中不判危机(位置由 GUI 控制)
   const sens = r.sens;
-  const hang = onStage(r) && sens.f < 0.25;
+  // 部分 footprint 已悬出时，中心点仍可能在台面内；此时应立即进入
+  // 危机门控，而不是等整车中心掉下台后才处理。
+  const hang = hangOn(r) && sens.f < 0.25;
   if(hang && Math.abs(r.v) > 0.05){
     r.v = 0; r.w = 0;
     logFor(r, `[fsm] 危机门控: 前红外悬空(safety 危机) → 急刹 → RECOVER`, 'warn');
@@ -974,7 +997,9 @@ function recoverTick(r, dt){
       r.v = -0.6;
       if(r.sens.f > 0.25 && !hangOn(r)){ logFor(r, `[fsm] RECOVER: 倒车回台成功 → SEARCH`); enterSearchFor(r); }
       else if(rc.t>4){ rc.t=0; logFor(r, `[fsm] RECOVER: 回台超时 → 重新摆位`); }
-      if(!onStage(r)){ rc.phase='spin'; rc.t=0; logFor(r, `[fsm] RECOVER: 已离台 → 转为掉台恢复流程`); }
+       // 部分 footprint 悬出时仍应继续倒车/登台；只有车中心已经完全
+       // 离开平台才切回 spin，否则新的整车判定会把恢复过程打断。
+       if(!onPlatform(r.x,r.y)){ rc.phase='spin'; rc.t=0; logFor(r, `[fsm] RECOVER: 已离台 → 转为掉台恢复流程`); }
       break;
     case 'spin':
       setAct(r,'掉台恢复: 屁股朝擂台');
@@ -1181,6 +1206,13 @@ function fsmTickFor(r, dt){
     case S.SEARCH: searchTick(r, dt); break;
     case S.ATTACK: attackTick(r, dt); break;
     case S.SCORE:  scoreTick(r, dt); break;
+    case S.MANUAL:
+      // 外部策略超时/退出时 stepSimExt 会以 null 表示本帧没有动作。
+      // MANUAL 不能落入“什么都不做”，否则 r.v/r.w 会沿用上一帧，车辆继续
+      // 持续冲向台沿。显式停车也让直接调用 stepSimExt 的客户端更安全。
+      setAct(r,'外部策略未提供动作 → 停车');
+      r.v=0; r.w=0;
+      break;
     case S.DONE:
       setAct(r,'停车, 比赛结束');
       r.v=0; r.w=0;
@@ -1280,15 +1312,18 @@ function stageWall(r, px, py){
     if(avn>0){ r.vx -= wall.nx*avn; r.vy -= wall.ny*avn; }
   }
 }
-function markBlockContact(o, r){
+function markBlockContact(o, r, t){
   if(!o.contactThisStep) o.contactThisStep=[];
   const role = r===US ? 'us' : 'them';
-  if(!o.contactThisStep.includes(role)) o.contactThisStep.push(role);
+  const time = Number.isFinite(Number(t)) ? clamp(Number(t),0,1) : 1;
+  o.contactThisStep.push({ role, t:time });
 }
 function finalizeBlockContacts(){
   for(const o of blocks){
     if(!o.contactThisStep || !o.contactThisStep.length) continue;
-    o.lastContactRole = o.contactThisStep.length > 1 ? 'simultaneous' : o.contactThisStep[0];
+    const maxT=Math.max(...o.contactThisStep.map(c=>Number(c.t)||0));
+    const last=o.contactThisStep.filter(c=>Math.abs((Number(c.t)||0)-maxT)<=1e-6);
+    o.lastContactRole = last.length===1 ? last[0].role : 'simultaneous';
   }
 }
 // 离散帧之外的线段扫掠：自定义车允许更高速度时，车中心可能一帧跨过
@@ -1441,24 +1476,42 @@ function keepBlockInsideFence(o){
   if(o.y<B){ o.y=B; if(o.vy<0) o.vy*=-0.10; }
   else if(o.y>3.8-B){ o.y=3.8-B; if(o.vy>0) o.vy*=-0.10; }
 }
-function collectRobotBlockContact(r, o, px, py, blockIndex){
+function collectRobotBlockContact(r, o, px, py, blockIndex, dt){
   const R=(r.r||BODY)+o.r;
-  let dx=o.x-r.x, dy=o.y-r.y, d=Math.hypot(dx,dy);
+  const stepDt=Math.max(0,Number(dt)||0);
+  // 车和能量块都可能在同一个外层步中移动。用相对位移做扫掠，
+  // 避免“车没动但高速能量块穿过车”的离散碰撞漏洞。
+  const b0x=Number(o.x)||0, b0y=Number(o.y)||0;
+  const b1x=b0x+(Number(o.vx)||0)*stepDt;
+  const b1y=b0y+(Number(o.vy)||0)*stepDt;
+  const rel0x=px-b0x, rel0y=py-b0y;
+  const rel1x=r.x-b1x, rel1y=r.y-b1y;
+  const startD=Math.hypot(rel0x,rel0y), endD=Math.hypot(rel1x,rel1y);
   let hit=null;
-  // 即使帧末已经穿到块的另一侧，只要起帧仍分离，就优先使用首次
-  // 接触点；否则用帧末法线分离会把目标块沿反方向“弹走”。
-  const startD=Math.hypot(o.x-px,o.y-py);
-  if(startD>=R-1e-9) hit=sweptCircleContact(px,py,r.x,r.y,o.x,o.y,R);
-  if(!(d<R) && !hit) return false;
+  if(startD>=R-1e-9){
+    const swept=sweptCircleContact(rel0x,rel0y,rel1x,rel1y,0,0,R);
+    if(swept){
+      const t=swept.t;
+      hit={
+        ...swept,
+        qx:px+(r.x-px)*t,
+        qy:py+(r.y-py)*t,
+        blockX:b0x+(b1x-b0x)*t,
+        blockY:b0y+(b1y-b0y)*t,
+      };
+    }
+  }
+  if(endD>=R-1e-9 && !hit) return false;
   let nx, ny, overlap=0;
   if(hit && startD>=R-1e-9){
     nx=hit.nx; ny=hit.ny;
     // Put the car back at first contact so a swept hit cannot cross the block.
     r.x=hit.qx-nx*0.0005; r.y=hit.qy-ny*0.0005;
-  } else if(d<R){
-    if(d<1e-9){ const h=Math.hypot(r.vx,r.vy)||1; nx=r.vx/h; ny=r.vy/h; }
-    else { nx=dx/d; ny=dy/d; }
-    overlap=R-d;
+  } else if(endD<R){
+    const dx=b1x-r.x, dy=b1y-r.y;
+    if(endD<1e-9){ const h=Math.hypot(r.vx-o.vx,r.vy-o.vy)||1; nx=(r.vx-o.vx)/h; ny=(r.vy-o.vy)/h; }
+    else { nx=dx/endD; ny=dy/endD; }
+    overlap=R-endD;
   }
   return { r, o, nx, ny, overlap, hit, t:hit ? hit.t : 1, blockIndex };
 }
@@ -1476,7 +1529,7 @@ function resolveRobotBlockContacts(contacts){
   const add=(table, entity, x, y)=>{ const d=table.get(entity); d.x+=x; d.y+=y; };
   for(const c of contacts){
     const {r,o,nx,ny,overlap}=c;
-    markBlockContact(o,r);
+    markBlockContact(o,r,c.t);
     if(c.hit){
       const old=firstSweep.get(r);
       if(!old || c.t<old.t) firstSweep.set(r,c);
@@ -1668,8 +1721,9 @@ function motionFor(r, dt, applyLatency=true){
   if(r.y < B){ r.y = B; if(r.vy<0) r.vy = 0; }
   else if(r.y > 3.8-B){ r.y = 3.8-B; if(r.vy>0) r.vy = 0; }
 }
-// 统一处理本帧所有车-块接触，再推进能量块一次。这样两辆车同时接触
-// 同一块时看到的是同一个几何位置，不再因 robots 遍历顺序产生动力学偏置。
+// 统一处理本帧所有车-块接触，再推进能量块一次。扫掠同时考虑车和块的
+// 相对位移；这样高速移动的能量块不会穿过静止车辆，也不因 robots 遍历
+// 顺序改变同一块的动力学结果。
 function integrateBlocks(dt, previousPos){
   const contacts=[];
   for(const r of robots){
@@ -1678,7 +1732,7 @@ function integrateBlocks(dt, previousPos){
     for(let i=0;i<blocks.length;i++){
       const o=blocks[i];
       if(o.dragLock) continue;
-      const contact=collectRobotBlockContact(r,o,prev.x,prev.y,i);
+      const contact=collectRobotBlockContact(r,o,prev.x,prev.y,i,dt);
       if(contact) contacts.push(contact);
     }
   }
