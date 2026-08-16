@@ -39,6 +39,18 @@ def unused_local_base():
         sock.close()
 
 
+def port_is_open(port):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.25)
+    try:
+        sock.connect(("127.0.0.1", int(port)))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
 def main():
     assert sim_runner.read_json_object('{"EDGE_THRESHOLD":300}', "--params")["EDGE_THRESHOLD"] == 300
     assert sim_runner.read_vehicle_profiles(str(ROOT / "vehicle_profiles" / "robocup_wheeled_combat_11.json"))["us"]["id"] == "robocup-wheeled-combat"
@@ -59,12 +71,44 @@ def main():
         assert eval_result["result"]["seeds"] == [42]
         assert eval_result["server"]["startedByRunner"] is True
 
+        parallel = run(base_args + ["eval", "--candidate", str(candidate), "--workers", "2",
+                                    "--seeds", "42,7", "--max-steps", "12", "--timeout", "60"])
+        assert parallel.returncode == 0, parallel.stderr + "\n" + parallel.stdout
+        parallel_path = result_path(parallel.stdout)
+        generated.append(parallel_path.parent)
+        parallel_result = json.loads(parallel_path.read_text(encoding="utf-8"))
+        pool = parallel_result["server"]["pool"]
+        assert pool["enabled"] is True and pool["actualWorkers"] == 2
+        assert len(pool["workers"]) == 2
+        assert parallel_result["result"]["seeds"] == [42, 7]
+        assert [row["seed"] for row in parallel_result["result"]["runs"]] == [42, 7]
+        assert all(not port_is_open(worker["port"]) for worker in pool["workers"])
+
+        single = run(base_args + ["eval", "--candidate", str(candidate), "--workers", "1",
+                                  "--seeds", "42,7", "--max-steps", "12", "--timeout", "60"])
+        assert single.returncode == 0, single.stderr + "\n" + single.stdout
+        single_path = result_path(single.stdout)
+        generated.append(single_path.parent)
+        single_result = json.loads(single_path.read_text(encoding="utf-8"))
+        parallel_nets = {row["seed"]: row.get("netScore") for row in parallel_result["result"]["runs"]}
+        single_nets = {row["seed"]: row.get("netScore") for row in single_result["result"]["runs"]}
+        assert parallel_nets == single_nets
+
         compared = run(base_args + ["compare", "--candidate", str(candidate), "--baseline", str(candidate), "--seeds", "42", "--max-steps", "12", "--timeout", "60"])
         assert compared.returncode == 0, compared.stderr + "\n" + compared.stdout
         compare_path = result_path(compared.stdout)
         generated.append(compare_path.parent)
         compare_result = json.loads(compare_path.read_text(encoding="utf-8"))
         assert compare_result["comparison"]["meanNetDelta"] == 0
+
+        parallel_compare = run(base_args + ["compare", "--candidate", str(candidate), "--baseline", str(candidate),
+                                            "--workers", "2", "--seeds", "42,7", "--max-steps", "12", "--timeout", "60"])
+        assert parallel_compare.returncode == 0, parallel_compare.stderr + "\n" + parallel_compare.stdout
+        parallel_compare_path = result_path(parallel_compare.stdout)
+        generated.append(parallel_compare_path.parent)
+        parallel_compare_result = json.loads(parallel_compare_path.read_text(encoding="utf-8"))
+        assert parallel_compare_result["comparison"]["meanNetDelta"] == 0
+        assert all(row["delta"] == 0 for row in parallel_compare_result["comparison"]["perSeed"])
     finally:
         for path in generated:
             if path.is_dir():

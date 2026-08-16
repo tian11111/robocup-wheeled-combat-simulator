@@ -51,7 +51,7 @@ http://127.0.0.1:8931/wushu_ring_sim_3d.html
 
 ### AI 一条命令评测
 
-策略迭代不需要打开网页或手动启动服务。`sim_runner.py` 会复用已有 `sim_server`；若本机服务未启动，则临时启动并在评测结束后关闭自己启动的那一个：
+策略迭代不需要打开网页或手动启动服务。默认单 worker 会复用已有 `sim_server`；若本机服务未启动，则临时启动并在评测结束后关闭自己启动的那一个。需要并行 seed 时使用 `--workers N`，runner 会启动隔离的临时服务池，不触碰已有 `8932` 服务：
 
 ```powershell
 # 检查 Node、Python、服务、coreHash 和当前比赛核心是否被占用
@@ -63,12 +63,16 @@ python sim_runner.py eval --candidate candidate.py
 # 用相同车辆、参数、对手和 seed 集对比候选与基线
 python sim_runner.py compare --candidate candidate.py --baseline fsm
 
+# 并行评测 4 个 worker（默认 workers=1，按需手动开启）
+python sim_runner.py eval --candidate candidate.py --workers 4
+python sim_runner.py compare --candidate candidate.py --baseline fsm --workers 4
+
 # 使用实测灰度表评测（将路径替换为你实际导出的 JSON 文件）
 # JSON 至少包含 values；可选 width/height/bounds/interpolation/id
 python sim_runner.py eval --candidate candidate.py --field-gray path\to\measured_gray.json
 ```
 
-`--params`、`--vehicles` 和 `--field-gray` 均可传内联 JSON 或 JSON 文件；单车 profile 会自动作为我方 profile 使用。仓库不附带真实灰度表，需先将实测数据导出为灰度表 JSON；不要直接把原始遥测目录当作 `--field-gray` 文件。每次 `eval/compare` 都把请求、策略 SHA-256、实际 `coreHash`、灰度表摘要和完整结果保存到 `.sim_runs/`，该目录不会提交到 Git。默认是快速确定性评测；实车线程时序验证时附加 `--realtime`。如果 `doctor` 显示服务的 `coreHash` 与当前文件不一致，请先重启已有的 `sim_server.js`；runner 默认拒绝复用旧核心，只有明确传 `--allow-stale-core` 才会继续。
+`--params`、`--vehicles` 和 `--field-gray` 均可传内联 JSON 或 JSON 文件；单车 profile 会自动作为我方 profile 使用。仓库不附带真实灰度表，需先将实测数据导出为灰度表 JSON；不要直接把原始遥测目录当作 `--field-gray` 文件。`--workers N` 只并行 AI 批量评测，不改变网页远程对战和 HTTP 单例 API；每次实验结果会记录 worker 数、端口、`coreHash`、灰度表摘要和完整结果。每次 `eval/compare` 都把请求、策略 SHA-256、实际 `coreHash`、灰度表摘要和完整结果保存到 `.sim_runs/`，该目录不会提交到 Git。默认是快速确定性评测；实车线程时序验证时附加 `--realtime`。如果 `doctor` 显示服务的 `coreHash` 与当前文件不一致，请先重启已有的 `sim_server.js`；runner 默认拒绝复用旧核心，只有明确传 `--allow-stale-core` 才会继续。
 
 ### 真实遥测标定
 
@@ -199,5 +203,4 @@ Windows 上如果 `python` 不在 PATH，请使用你的 Python 解释器完整�
 - 修改规则核心 `wushu_ring_sim.html` 后，运行 `node sim_selftest.js`、`node sim_dragtest.js` 和 `node build_3d.js`。
 - 修改 3D UI 请编辑 `wushu_ring_sim_3d.template.html`，不要直接修改生成页面中的核心代码。
 - 同一台 `sim_server.js` 在任一时刻只运行一场远程对战或一个批量评估任务。
-
 

@@ -445,7 +445,7 @@ obs 结构：
 优先使用 `sim_runner.py`，它只编排现有 HTTP API，不改变 `decide(obs)` 或规则核心：
 
 ```bash
-# 未启动服务时会临时启动；已有服务会被复用且绝不被 runner 关闭
+# 默认单 worker：未启动服务时会临时启动；已有服务会被复用且绝不被 runner 关闭
 python sim_runner.py eval --candidate candidate.py
 
 # 基线可为 fsm 或另一份 Python 策略；两组使用完全相同的 seed/车辆/参数/对手
@@ -453,9 +453,15 @@ python sim_runner.py compare --candidate candidate.py --baseline baseline.py --t
 
 # 单车 profile 自动包装成 {"us": profile}；也可传 {"us":...,"them":...}
 python sim_runner.py eval --candidate candidate.py --vehicles vehicle_profiles/robocup_wheeled_combat_11.json
+
+# 并行 seed：启动隔离临时服务池，不触碰已有 8932 服务
+python sim_runner.py eval --candidate candidate.py --workers 4
+python sim_runner.py compare --candidate candidate.py --baseline fsm --workers 4
 ```
 
-默认固定 seed 集为 `42,7,21,100,123`，默认 `realtime=false`，因此适合快速、可复现的决策筛选。`--params`、`--vehicles` 支持内联 JSON 或 JSON 文件，`--opponent` 可选 `fsm`、`@注册名` 或子进程命令；实车线程时序验证必须显式传 `--realtime`。
+默认固定 seed 集为 `42,7,21,100,123`，默认 `realtime=false` 和 `workers=1`，因此适合快速、可复现的决策筛选。显式传 `--workers N`（`1..32`）后，seed 会按确定性轮询分片到独立 Node worker；实际 worker 数不会超过 seed 数，结果按原 seed 顺序合并，worker 端口和 coreHash 会写入实验记录。`--params`、`--vehicles` 支持内联 JSON 或 JSON 文件，`--opponent` 可选 `fsm`、`@注册名` 或子进程命令；实车线程时序验证必须显式传 `--realtime`。
+
+短小的 FSM 评测可能被 worker 启动开销主导；较多 seed、较慢的候选程序或 `--realtime` 评测更适合提高 `--workers`。
 
 每次 `eval/compare` 会写入 `.sim_runs/<UTC-实验名>/result.json`：含请求参数、候选策略 SHA-256、`coreHash`、车辆 profile、种子、完整服务端结果及执行时间。该目录被 Git 忽略，便于 AI 比较策略版本或按结果文件复现。需要可视化时，再打开 `wushu_ring_sim_3d.html` 观察轨迹与裁判阶段。
 

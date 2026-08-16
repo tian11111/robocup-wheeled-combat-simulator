@@ -18,7 +18,9 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
@@ -228,6 +230,179 @@ class ServiceLease(object):
             self.log_file = None
 
 
+class EvaluationPool(object):
+    """隔离的 sim_server 进程池；每个进程只负责其 seed 分片。"""
+    def __init__(self, args, run_dir, settings):
+        self.args, self.run_dir, self.settings = args, run_dir, settings
+        self.leases = []
+        self.workers = []
+        self.active_jobs = {}
+        self._jobs_lock = threading.Lock()
+        self.start_failed = False
+
+    def start(self):
+        count = min(self.settings["workers"], len(self.settings["seeds"]))
+        node = resolve_node(self.args.node)
+        for index in range(count):
+            last_error = None
+            for _attempt in range(3):
+                port = self._free_port()
+                base = "http://127.0.0.1:%d" % port
+                log = self.run_dir / ("worker-%d.log" % index)
+                lease = ServiceLease(base, node, self.args.keep_server, log)
+                # Register before startup so a failed health check is also cleaned up.
+                self.leases.append(lease)
+                try:
+                    health = lease.ensure()
+                    assert_core_available(health)
+                    local_hash, match = assert_core_compatible(health, self.args.allow_stale_core)
+                    self.workers.append({"index": index, "base": base, "port": port,
+                                         "coreHash": health.get("coreHash"),
+                                         "localCoreHash": local_hash, "coreHashMatch": match,
+                                         "startedByRunner": lease.started_by_runner,
+                                         "fieldGray": health.get("fieldGray"),
+                                         "fidelitySummary": health.get("fidelitySummary")})
+                    last_error = None
+                    break
+                except Exception as error:
+                    last_error = error
+                    self.leases.pop()
+                    lease.keep_server = False
+                    lease.close()
+            if last_error is not None:
+                self.start_failed = True
+                raise last_error
+        return self
+
+    def _free_port(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]; sock.close()
+        return port
+
+    def run(self, policy, opponent):
+        seeds = self.settings["seeds"]
+        shards = [seeds[i::len(self.workers)] for i in range(len(self.workers))]
+        def one(i):
+            local = dict(self.settings); local["seeds"] = shards[i]
+            env = SimEnv(base=self.workers[i]["base"])
+            def on_start(started):
+                with self._jobs_lock:
+                    self.active_jobs[i] = (env, started.get("id"))
+            def on_finish(_started):
+                with self._jobs_lock:
+                    self.active_jobs.pop(i, None)
+            return run_evaluation(env, policy, opponent, local, on_start=on_start, on_finish=on_finish)
+        results = []
+        with ThreadPoolExecutor(max_workers=len(self.workers)) as executor:
+            futures = {executor.submit(one, i): i for i in range(len(self.workers))}
+            for future in as_completed(futures):
+                try:
+                    results.append(future.result())
+                except Exception as error:
+                    failed_seeds = shards[futures[future]]
+                    results.append({"status": "error", "error": str(error), "seeds": failed_seeds,
+                                    "runs": [{"seed": seed, "ok": False, "error": str(error)} for seed in failed_seeds]})
+        return merge_evaluation_results(results, seeds)
+
+    def close(self):
+        with self._jobs_lock:
+            active = list(self.active_jobs.values())
+        for env, job_id in active:
+            if not job_id:
+                continue
+            try:
+                env.cancel_evaluation(job_id)
+            except (HTTPError, URLError, OSError, ValueError):
+                pass
+        for lease in reversed(self.leases):
+            if self.start_failed:
+                lease.keep_server = False
+            lease.close()
+
+    def payload(self):
+        first = self.workers[0] if self.workers else {}
+        return {
+            "enabled": True,
+            "requestedWorkers": self.settings["workers"],
+            "actualWorkers": len(self.workers),
+            "workers": self.workers,
+            "coreHash": first.get("coreHash"),
+            "localCoreHash": first.get("localCoreHash"),
+            "coreHashMatch": all(w.get("coreHashMatch") for w in self.workers),
+            "startedByRunner": all(w.get("startedByRunner") for w in self.workers),
+            "fieldGray": first.get("fieldGray"),
+            "fidelitySummary": first.get("fidelitySummary"),
+        }
+
+
+def merge_evaluation_results(results, seeds):
+    by_seed = {}
+    errors = []
+    metadata = None
+    first = results[0] if results else {}
+    for result in results:
+        for row in result.get("runs") or []:
+            if row.get("seed") in seeds:
+                by_seed[row.get("seed")] = row
+        known = {row.get("seed") for row in result.get("runs") or []}
+        failure = result.get("error") or "worker 评测失败"
+        for seed in result.get("seeds") or []:
+            if seed not in known and seed not in by_seed:
+                by_seed[seed] = {"seed": seed, "ok": False, "error": failure}
+        if result.get("error"):
+            errors.append(result["error"])
+        if metadata is None and result.get("metadata"):
+            metadata = result.get("metadata")
+    ordered_runs = [by_seed[s] for s in seeds if s in by_seed]
+    ok = [row for row in ordered_runs if row.get("ok")]
+    failed = len(seeds) - len(ok)
+    if not ok:
+        status = "error"
+    elif failed:
+        status = "partial"
+    else:
+        status = "done"
+    def score(row, key):
+        try:
+            return float(row.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    nets = [score(row, "netScore") for row in ok]
+    us_scores = [score(row, "usScore") for row in ok]
+    them_scores = [score(row, "themScore") for row in ok]
+    mounts = [bool((row.get("metrics") or {}).get("us", {}).get("mounted")) for row in ok]
+    summary = {
+        "status": status,
+        "count": len(ok),
+        "failed": failed,
+        "meanNetScore": round(sum(nets) / len(ok), 3) if ok else None,
+        "meanUsScore": round(sum(us_scores) / len(ok), 3) if ok else None,
+        "meanThemScore": round(sum(them_scores) / len(ok), 3) if ok else None,
+        "winRate": round(sum(1 for value in nets if value > 0) / len(ok), 3) if ok else None,
+        "drawRate": round(sum(1 for value in nets if value == 0) / len(ok), 3) if ok else None,
+        "mountRate": round(sum(1 for value in mounts if value) / len(ok), 3) if ok else None,
+        "bestNetScore": max(nets) if nets else None,
+        "worstNetScore": min(nets) if nets else None,
+    }
+    for key in ("meanNetScore", "meanUsScore", "meanThemScore", "winRate", "drawRate", "mountRate"):
+        if summary[key] is not None:
+            summary[key] = float(summary[key])
+    return {
+        "id": (first.get("id") or "pool") + "-pool",
+        "status": status,
+        "createdAt": first.get("createdAt"),
+        "startedAt": min((r.get("startedAt") for r in results if r.get("startedAt")), default=None),
+        "finishedAt": max((r.get("finishedAt") for r in results if r.get("finishedAt")), default=None),
+        "candidate": first.get("candidate"), "us": first.get("us"), "them": first.get("them"),
+        "seeds": seeds,
+        "progress": {"completed": len(ordered_runs), "total": len(seeds), "currentSeed": None},
+        "summary": summary,
+        "runs": ordered_runs,
+        "error": "; ".join(errors) if errors else None,
+        "metadata": metadata,
+    }
+
+
 def assert_core_available(health):
     if health.get("coreBusy"):
         raise RunnerError("比赛核心正被远程对战或评测占用；等待完成后重试")
@@ -286,14 +461,20 @@ def wait_for_evaluation(env, started, poll, timeout):
         delay = min(1.0, max(0.1, delay * 1.15))
 
 
-def run_evaluation(env, policy, opponent, settings):
+def run_evaluation(env, policy, opponent, settings, on_start=None, on_finish=None):
     started = env.start_evaluation(
         us=policy, them=opponent, seeds=settings["seeds"], params=settings["params"],
         vehicles=settings["vehicles"], field_gray=settings["field_gray"], max_steps=settings["max_steps"],
         trace_every=settings["trace_every"], include_trace=settings["trace"],
         realtime=settings["realtime"],
     )
-    return wait_for_evaluation(env, started, settings["poll"], settings["timeout"])
+    if on_start:
+        on_start(started)
+    try:
+        return wait_for_evaluation(env, started, settings["poll"], settings["timeout"])
+    finally:
+        if on_finish:
+            on_finish(started)
 
 
 def concise_summary(label, result):
@@ -336,6 +517,8 @@ def build_settings(args):
         raise RunnerError("--trace-every 必须在 1 到 1000 之间")
     if args.timeout <= 0 or args.poll <= 0:
         raise RunnerError("--timeout 和 --poll 必须大于 0")
+    if args.workers < 1 or args.workers > 32:
+        raise RunnerError("--workers 必须在 1 到 32 之间")
     return {
         "seeds": parse_seeds(args.seeds),
         "params": read_json_object(args.params, "--params"),
@@ -347,6 +530,7 @@ def build_settings(args):
         "trace_every": args.trace_every,
         "timeout": args.timeout,
         "poll": args.poll,
+        "workers": args.workers,
     }
 
 
@@ -360,24 +544,34 @@ def evaluate_command(args):
     settings = build_settings(args)
     run_dir = make_run_dir("eval", candidate)
     lease = ServiceLease(args.base, resolve_node(args.node), args.keep_server, run_dir / "server.log")
+    pool = None
     payload = {
         "format": "robocup-sim-run/v1", "mode": "eval", "createdAt": now_utc(),
         "candidate": candidate, "opponent": args.opponent, "settings": settings,
         "argv": sys.argv[1:], "server": {"base": args.base},
     }
     try:
-        health = lease.ensure()
-        assert_core_available(health)
-        local_hash, hash_match = assert_core_compatible(health, args.allow_stale_core)
-        payload["server"].update({
-            "coreHash": health.get("coreHash"),
-            "localCoreHash": local_hash,
-            "coreHashMatch": hash_match,
-            "startedByRunner": lease.started_by_runner,
-            "fieldGray": health.get("fieldGray"),
-            "fidelitySummary": health.get("fidelitySummary"),
-        })
-        result = run_evaluation(SimEnv(base=args.base), policy_command(candidate), args.opponent, settings)
+        if settings["workers"] == 1:
+            health = lease.ensure()
+            assert_core_available(health)
+            local_hash, hash_match = assert_core_compatible(health, args.allow_stale_core)
+            payload["server"].update({
+                "coreHash": health.get("coreHash"), "localCoreHash": local_hash,
+                "coreHashMatch": hash_match, "startedByRunner": lease.started_by_runner,
+                "fieldGray": health.get("fieldGray"), "fidelitySummary": health.get("fidelitySummary"),
+            })
+        if settings["workers"] > 1:
+            pool = EvaluationPool(args, run_dir, settings)
+            pool.start()
+            result = pool.run(policy_command(candidate), args.opponent)
+            pool_info = pool.payload()
+            payload["server"].update({key: pool_info[key] for key in (
+                "coreHash", "localCoreHash", "coreHashMatch", "startedByRunner", "fieldGray", "fidelitySummary")})
+            payload["server"]["pool"] = {key: pool_info[key] for key in (
+                "enabled", "requestedWorkers", "actualWorkers", "workers")}
+        else:
+            result = run_evaluation(SimEnv(base=args.base), policy_command(candidate), args.opponent, settings)
+            payload["server"]["pool"] = {"enabled": False, "requestedWorkers": 1, "actualWorkers": 1, "workers": []}
         payload["result"] = result
         concise_summary("候选", result)
         if result.get("status") not in ("done", "partial"):
@@ -386,6 +580,8 @@ def evaluate_command(args):
         payload["error"] = str(error)
         raise
     finally:
+        if pool:
+            pool.close()
         lease.close()
         payload["finishedAt"] = now_utc()
         write_result(run_dir, payload)
@@ -398,27 +594,40 @@ def compare_command(args):
     settings = build_settings(args)
     run_dir = make_run_dir("compare", candidate)
     lease = ServiceLease(args.base, resolve_node(args.node), args.keep_server, run_dir / "server.log")
+    pool = None
     payload = {
         "format": "robocup-sim-run/v1", "mode": "compare", "createdAt": now_utc(),
         "candidate": candidate, "baseline": baseline or {"name": "fsm"}, "opponent": args.opponent,
         "settings": settings, "argv": sys.argv[1:], "server": {"base": args.base},
     }
     try:
-        health = lease.ensure()
-        assert_core_available(health)
-        local_hash, hash_match = assert_core_compatible(health, args.allow_stale_core)
-        payload["server"].update({
-            "coreHash": health.get("coreHash"),
-            "localCoreHash": local_hash,
-            "coreHashMatch": hash_match,
-            "startedByRunner": lease.started_by_runner,
-            "fieldGray": health.get("fieldGray"),
-            "fidelitySummary": health.get("fidelitySummary"),
-        })
-        env = SimEnv(base=args.base)
-        candidate_result = run_evaluation(env, policy_command(candidate), args.opponent, settings)
+        if settings["workers"] == 1:
+            health = lease.ensure()
+            assert_core_available(health)
+            local_hash, hash_match = assert_core_compatible(health, args.allow_stale_core)
+            payload["server"].update({
+                "coreHash": health.get("coreHash"), "localCoreHash": local_hash,
+                "coreHashMatch": hash_match, "startedByRunner": lease.started_by_runner,
+                "fieldGray": health.get("fieldGray"), "fidelitySummary": health.get("fidelitySummary"),
+            })
+        if settings["workers"] > 1:
+            pool = EvaluationPool(args, run_dir, settings)
+            pool.start()
+            pool_info = pool.payload()
+            payload["server"].update({key: pool_info[key] for key in (
+                "coreHash", "localCoreHash", "coreHashMatch", "startedByRunner", "fieldGray", "fidelitySummary")})
+            payload["server"]["pool"] = {key: pool_info[key] for key in (
+                "enabled", "requestedWorkers", "actualWorkers", "workers")}
+            candidate_result = pool.run(policy_command(candidate), args.opponent)
+        else:
+            env = SimEnv(base=args.base)
+            candidate_result = run_evaluation(env, policy_command(candidate), args.opponent, settings)
         baseline_policy = "fsm" if baseline is None else policy_command(baseline)
-        baseline_result = run_evaluation(env, baseline_policy, args.opponent, settings)
+        if pool:
+            baseline_result = pool.run(baseline_policy, args.opponent)
+        else:
+            baseline_result = run_evaluation(env, baseline_policy, args.opponent, settings)
+            payload["server"]["pool"] = {"enabled": False, "requestedWorkers": 1, "actualWorkers": 1, "workers": []}
         payload["candidateResult"] = candidate_result
         payload["baselineResult"] = baseline_result
         candidate_conditions = evaluation_conditions(candidate_result)
@@ -455,6 +664,8 @@ def compare_command(args):
         payload["error"] = str(error)
         raise
     finally:
+        if pool:
+            pool.close()
         lease.close()
         payload["finishedAt"] = now_utc()
         write_result(run_dir, payload)
@@ -501,6 +712,7 @@ def add_evaluation_args(parser):
     parser.add_argument("--poll", type=float, default=0.2, help="评测状态轮询秒数")
     parser.add_argument("--keep-server", action="store_true", help="保留由本命令自动启动的 sim_server")
     parser.add_argument("--allow-stale-core", action="store_true", help="允许复用 coreHash 与当前文件不一致的已有服务（不推荐）")
+    parser.add_argument("--workers", type=int, default=1, help="并行评测 worker 进程数，默认 1")
 
 
 def make_parser():

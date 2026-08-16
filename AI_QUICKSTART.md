@@ -27,7 +27,7 @@ If `python` is not on PATH, use the full interpreter path for the commands below
 
 ## Fastest AI Workflow
 
-The recommended entry point is `sim_runner.py`. It starts `sim_server.js` only when necessary, reuses an already-running local server, and never shuts down a server it did not start. If `doctor` reports a different `coreHash` than the current checkout, restart that existing server before evaluating; `eval/compare` reject stale cores by default (`--allow-stale-core` is an explicit escape hatch).
+The recommended entry point is `sim_runner.py`. With the default `--workers 1`, it starts `sim_server.js` only when necessary, reuses an already-running local server, and never shuts down a server it did not start. With `--workers N` (`N > 1`), it starts an isolated temporary server pool and leaves any existing local server untouched. If `doctor` reports a different `coreHash` than the current checkout, restart that existing server before a single-worker evaluation; pooled workers always validate the current checkout hash.
 
 ```powershell
 # From the repository root
@@ -39,11 +39,15 @@ python sim_runner.py eval --candidate candidate.py
 
 # Compare two candidates using identical seeds, profiles, parameters, and opponent.
 python sim_runner.py compare --candidate candidate.py --baseline fsm
+
+# Run seeds in four isolated worker processes; default is --workers 1.
+python sim_runner.py eval --candidate candidate.py --workers 4
+python sim_runner.py compare --candidate candidate.py --baseline fsm --workers 4
 ```
 
-Each `eval` or `compare` writes a reproducible record to `.sim_runs/<UTC-name>/result.json`. It includes the request payload, candidate SHA-256, server `coreHash`, vehicle profile, seed set, timing, and complete server result. `.sim_runs/` is intentionally ignored by Git.
+Each `eval` or `compare` writes a reproducible record to `.sim_runs/<UTC-name>/result.json`. It includes the request payload, candidate SHA-256, server `coreHash`, vehicle profile, seed set, timing, worker pool metadata (when enabled), and complete server result. `.sim_runs/` is intentionally ignored by Git. The pool parallelizes AI batch evaluation only; the HTTP API and browser remote battle remain single-core.
 
-Use `--trace` only when the trajectory is needed for diagnosis. The default is fast deterministic evaluation (`realtime=false`). Use `--realtime` only to exercise a real robot program whose internal threads or sleeps must advance in wall-clock time.
+Use `--trace` only when the trajectory is needed for diagnosis. The default is fast deterministic evaluation (`realtime=false`). For very short FSM-only runs, worker startup overhead can outweigh the gain; use multiple workers for larger seed sets, slower candidates, or `--realtime` runs. Use `--realtime` only to exercise a real robot program whose internal threads or sleeps must advance in wall-clock time.
 
 ## Define a Strategy
 

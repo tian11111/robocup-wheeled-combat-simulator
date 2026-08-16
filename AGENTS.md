@@ -18,6 +18,7 @@ node sim_server.js 8932                                       # 无头 API
 node sim_battle.js --us fsm --them fsm --seed 42              # FSM 对战
 node sim_battle.js --us "python robot_adapter.py example_robot.py" --them fsm --seed 7   # 子进程对战
 "C:/Users/Neco/AppData/Local/Programs/Python/Python312/python.exe" sim_env.py --sweep    # 扫参
+python sim_runner.py eval --candidate example_robot.py --workers 4                    # 并行 seed 评测（隔离临时服务池）
 ```
 
 注意：Git Bash 里 `python` 不在 PATH，Python 用完整路径
@@ -26,6 +27,7 @@ node sim_battle.js --us "python robot_adapter.py example_robot.py" --them fsm --
 ## 典型任务
 
 - **调参迭代**：起 server → `sim_env.py` 或 curl 跑多 seed 基线 → `/params` 改参数 → 对比比分与 `logTail`。
+- **AI 批量评测**：默认 `sim_runner.py eval/compare` 使用单 worker；显式传 `--workers N` 时按 seed 启动隔离 Node 进程池并行评测，不修改已有 `8932` 服务。
 - **接入自己的小车程序**：写 `decide(obs) -> {"v","w"}`，用 `robot_adapter.py` 跑（协议见 SIMULATOR.md）。
 - **复现 bug**：`sim_selftest.js` 里加场景（固定 seed），确定性复现后修 CORE。
 - **视觉**：目前 `classifyRate` 概率模拟，实车视觉由用户另行配置，勿改接口。
