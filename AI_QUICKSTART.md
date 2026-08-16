@@ -27,7 +27,7 @@ If `python` is not on PATH, use the full interpreter path for the commands below
 
 ## Fastest AI Workflow
 
-The recommended entry point is `sim_runner.py`. It starts `sim_server.js` only when necessary, reuses an already-running local server, and never shuts down a server it did not start.
+The recommended entry point is `sim_runner.py`. It starts `sim_server.js` only when necessary, reuses an already-running local server, and never shuts down a server it did not start. If `doctor` reports a different `coreHash` than the current checkout, restart that existing server before evaluating; `eval/compare` reject stale cores by default (`--allow-stale-core` is an explicit escape hatch).
 
 ```powershell
 # From the repository root
@@ -124,7 +124,7 @@ node --check sim_server.js
 git diff --check
 ```
 
-`sim_selftest.js` currently has 29 deterministic scenarios. A legitimate code change that alters a decision contract must update or add a fixed-seed scenario and update [AGENTS.md](AGENTS.md), [CONTRACT.md](CONTRACT.md), and [SIMULATOR.md](SIMULATOR.md).
+`sim_selftest.js` currently has 31 deterministic scenarios. A legitimate code change that alters a decision contract must update or add a fixed-seed scenario and update [AGENTS.md](AGENTS.md), [CONTRACT.md](CONTRACT.md), and [SIMULATOR.md](SIMULATOR.md).
 
 Also run these after changing the process bridge or API:
 

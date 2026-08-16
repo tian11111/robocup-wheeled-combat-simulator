@@ -474,5 +474,58 @@ console.log('== 场景 29: 实测灰度表与同步 SimVision 插件 ==');
     '清除视觉插件后应恢复默认 classifyRate');
 }
 
+console.log('== 场景 30: 高速跨台阶扫掠与低速顶台阻挡 ==');
+{
+  resetScene(45);
+  const beforeUs=T.getVehicleFor('us'), beforeThem=T.getVehicleFor('them');
+  T.setVehicleFor('us',{maxSpeed:3,accelK:40,frontExtent:0.16,rearExtent:0.14,sideExtent:0.12});
+  T.setVehicleFor('them',{maxSpeed:0.05});
+  T.setPoseFor(T.US,1.9,0.50,Math.PI/2);
+  T.THEM.fsm.armed=false; T.THEM.fsm.state='WAIT_START';
+  T.stepSimExt(0.1,{us:{v:3,w:0},them:null});
+  assert(T.US.y>0.7 && T.onPlatform(T.US.x,T.US.y),
+    `明确高速冲台跨帧后应进入台面, 实际 y=${T.US.y.toFixed(3)}`);
+
+  resetScene(46);
+  T.setVehicleFor('us',{maxSpeed:0.2,accelK:40,frontExtent:0.16,rearExtent:0.14,sideExtent:0.12});
+  T.setVehicleFor('them',{maxSpeed:0.05});
+  T.setPoseFor(T.US,1.9,0.69,Math.PI/2);
+  T.THEM.fsm.armed=false; T.THEM.fsm.state='WAIT_START';
+  T.stepSimExt(0.1,{us:{v:0.2,w:0},them:null});
+  assert(T.US.y<0.7,
+    `低速顶台应被扫掠阻挡, 实际 y=${T.US.y.toFixed(3)}`);
+  T.setVehicleFor('us',beforeUs); T.setVehicleFor('them',beforeThem);
+}
+
+console.log('== 场景 31: 紧凑状态、独立传感器随机流与视觉错误诊断 ==');
+{
+  resetScene(47);
+  const compact=T.getState({compact:true});
+  assert(compact.scores && compact.robots.us && compact.sensors.us && !Object.prototype.hasOwnProperty.call(compact,'logTail'),
+    '紧凑状态应保留 AI 所需位姿/传感器并省略完整日志');
+  assert(compact.robots.us.vehicle.maxSpeed===T.getVehicleFor('us').maxSpeed,
+    '紧凑状态应保留车辆控制上限');
+
+  const beforeProfile=T.getVehicleFor('us');
+  resetScene(48);
+  const baseRaw=T.getState().rawSensors.us;
+  const extended=JSON.parse(JSON.stringify(beforeProfile.sensors));
+  extended.channels.push({id:'extra_gray',type:'gray',forward:0.02,lateral:0.02,angle:0,range:0.2,fov:0.2});
+  T.setVehicleFor('us',{sensors:extended});
+  T.resetAll({seed:48});
+  const extendedRaw=T.getState().rawSensors.us;
+  const stableIds=Object.keys(baseRaw).filter(id=>id!=='extra_gray');
+  assert(stableIds.every(id=>Math.abs(baseRaw[id]-extendedRaw[id])<1e-9),
+    '增加传感器通道不应重排既有通道的 seeded 噪声');
+  T.setVehicleFor('us',beforeProfile);
+
+  T.setSimVision({id:'throwing-vision',classify:()=>{ throw new Error('fixture vision failure'); }});
+  T.classifyTargetFor(T.US,{obj:T.buffs[0],d:0.2,rel:'左前'});
+  const visionState=T.getState().perception.vision;
+  assert(visionState.errorCount===1 && /fixture vision failure/.test(visionState.lastError||''),
+    '视觉插件异常应写入 errorCount/lastError');
+  T.setSimVision(null);
+}
+
 console.log(failures===0 ? '\n全部通过 ✔' : `\n${failures} 项失败 ✘`);
 process.exit(failures===0?0:1);

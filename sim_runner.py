@@ -36,7 +36,7 @@ class RunnerError(RuntimeError):
 
 
 def now_utc():
-    return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def read_json_object(value, flag):
@@ -143,6 +143,11 @@ def request_health(base, timeout=1.0):
     return SimEnv(base=base, timeout=timeout).health()
 
 
+def local_core_hash():
+    """当前 checkout 的 CORE 源摘要，用来发现复用中的旧 sim_server。"""
+    return hashlib.sha256((ROOT / "wushu_ring_sim.html").read_bytes()).hexdigest()[:16]
+
+
 def resolve_node(value):
     if value:
         node = Path(value).expanduser()
@@ -228,10 +233,18 @@ def assert_core_available(health):
         raise RunnerError("比赛核心正被远程对战或评测占用；等待完成后重试")
 
 
+def assert_core_compatible(health, allow_stale=False):
+    local = local_core_hash()
+    remote = health.get("coreHash")
+    if remote and remote != local and not allow_stale:
+        raise RunnerError("服务 coreHash=%s 与当前文件=%s 不一致；请重启已有 sim_server.js，或显式传 --allow-stale-core" % (remote, local))
+    return local, remote == local if remote else None
+
+
 def make_run_dir(mode, candidate):
     root = ROOT / ".sim_runs"
     root.mkdir(exist_ok=True)
-    stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     stem = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in candidate["name"])[:36] or "candidate"
     base = "%s-%s-%s-%s" % (stamp, mode, stem, candidate["sha256"][:8])
     path = root / base
@@ -246,20 +259,37 @@ def make_run_dir(mode, candidate):
 def wait_for_evaluation(env, started, poll, timeout):
     deadline = time.time() + timeout
     job_id = started["id"]
+    # 轮询请求使用短超时，避免一次网络/服务卡顿把整个 runner 卡住十秒；
+    # 轮询间隔采用有限退避，服务繁忙时减少无意义请求。
+    poller = SimEnv(base=env.base, timeout=max(0.5, min(2.0, max(poll, 0.2) * 4)))
+    delay = max(0.05, min(0.5, poll))
     while True:
-        result = env.evaluation(job_id)
-        if result.get("status") in ("done", "error", "cancelled"):
+        result = poller.evaluation(job_id)
+        if result.get("status") in ("done", "partial", "error", "cancelled"):
             return result
         if time.time() >= deadline:
-            env.cancel_evaluation(job_id)
-            raise RunnerError("评测等待超时（已请求取消）: %s" % job_id)
-        time.sleep(poll)
+            poller.cancel_evaluation(job_id)
+            # 取消是异步的：确认服务端已完成当前 seed/子进程收尾，避免 runner
+            # 关闭自启服务后留下孤儿策略进程或下次启动的单例锁。
+            stop_deadline = time.time() + min(15.0, max(3.0, timeout * 0.05))
+            while time.time() < stop_deadline:
+                try:
+                    final = poller.evaluation(job_id)
+                    if final.get("status") in ("cancelled", "error", "partial", "done"):
+                        raise RunnerError("评测等待超时（已取消并完成收尾）: %s" % job_id)
+                except (HTTPError, URLError, OSError, ValueError):
+                    pass
+                time.sleep(min(1.0, delay))
+                delay = min(1.0, max(0.1, delay * 1.35))
+            raise RunnerError("评测等待超时（已请求取消，服务端仍在收尾）: %s" % job_id)
+        time.sleep(delay)
+        delay = min(1.0, max(0.1, delay * 1.15))
 
 
 def run_evaluation(env, policy, opponent, settings):
     started = env.start_evaluation(
         us=policy, them=opponent, seeds=settings["seeds"], params=settings["params"],
-        vehicles=settings["vehicles"], max_steps=settings["max_steps"],
+        vehicles=settings["vehicles"], field_gray=settings["field_gray"], max_steps=settings["max_steps"],
         trace_every=settings["trace_every"], include_trace=settings["trace"],
         realtime=settings["realtime"],
     )
@@ -268,17 +298,35 @@ def run_evaluation(env, policy, opponent, settings):
 
 def concise_summary(label, result):
     summary = result.get("summary") or {}
+    mean_net = summary.get("meanNetScore")
+    win_rate = summary.get("winRate")
+    mount_rate = summary.get("mountRate")
+    if mean_net is None or win_rate is None or mount_rate is None:
+        print("[%s] 无有效样本 | 状态=%s | 失败 %s/%s seed" % (
+            label, summary.get("status") or result.get("status"),
+            summary.get("failed", 0), len(result.get("seeds") or [])))
+        return
     print("[%s] 净胜 %+0.3f | 胜率 %0.1f%% | 登台率 %0.1f%% | %s/%s seed" % (
         label,
-        float(summary.get("meanNetScore", 0)),
-        float(summary.get("winRate", 0)) * 100,
-        float(summary.get("mountRate", 0)) * 100,
+        float(mean_net),
+        float(win_rate) * 100,
+        float(mount_rate) * 100,
         summary.get("count", 0), len(result.get("seeds") or []),
     ))
 
 
 def net_scores_by_seed(result):
     return {row.get("seed"): row.get("netScore") for row in result.get("runs", []) if row.get("ok")}
+
+
+def evaluation_conditions(result):
+    metadata = result.get("metadata") or {}
+    actual = metadata.get("actual") or {}
+    return {
+        "coreHash": actual.get("coreHash"),
+        "fieldGray": actual.get("fieldGray"),
+        "vehicles": actual.get("vehicles"),
+    }
 
 
 def build_settings(args):
@@ -291,6 +339,7 @@ def build_settings(args):
     return {
         "seeds": parse_seeds(args.seeds),
         "params": read_json_object(args.params, "--params"),
+        "field_gray": read_json_object(args.field_gray, "--field-gray"),
         "vehicles": read_vehicle_profiles(args.vehicles),
         "trace": bool(args.trace),
         "realtime": bool(args.realtime),
@@ -319,11 +368,19 @@ def evaluate_command(args):
     try:
         health = lease.ensure()
         assert_core_available(health)
-        payload["server"].update({"coreHash": health.get("coreHash"), "startedByRunner": lease.started_by_runner})
+        local_hash, hash_match = assert_core_compatible(health, args.allow_stale_core)
+        payload["server"].update({
+            "coreHash": health.get("coreHash"),
+            "localCoreHash": local_hash,
+            "coreHashMatch": hash_match,
+            "startedByRunner": lease.started_by_runner,
+            "fieldGray": health.get("fieldGray"),
+            "fidelitySummary": health.get("fidelitySummary"),
+        })
         result = run_evaluation(SimEnv(base=args.base), policy_command(candidate), args.opponent, settings)
         payload["result"] = result
         concise_summary("候选", result)
-        if result.get("status") != "done":
+        if result.get("status") not in ("done", "partial"):
             raise RunnerError("评测未完成: %s" % (result.get("error") or result.get("status")))
     except Exception as error:
         payload["error"] = str(error)
@@ -349,13 +406,30 @@ def compare_command(args):
     try:
         health = lease.ensure()
         assert_core_available(health)
-        payload["server"].update({"coreHash": health.get("coreHash"), "startedByRunner": lease.started_by_runner})
+        local_hash, hash_match = assert_core_compatible(health, args.allow_stale_core)
+        payload["server"].update({
+            "coreHash": health.get("coreHash"),
+            "localCoreHash": local_hash,
+            "coreHashMatch": hash_match,
+            "startedByRunner": lease.started_by_runner,
+            "fieldGray": health.get("fieldGray"),
+            "fidelitySummary": health.get("fidelitySummary"),
+        })
         env = SimEnv(base=args.base)
         candidate_result = run_evaluation(env, policy_command(candidate), args.opponent, settings)
         baseline_policy = "fsm" if baseline is None else policy_command(baseline)
         baseline_result = run_evaluation(env, baseline_policy, args.opponent, settings)
         payload["candidateResult"] = candidate_result
         payload["baselineResult"] = baseline_result
+        candidate_conditions = evaluation_conditions(candidate_result)
+        baseline_conditions = evaluation_conditions(baseline_result)
+        payload["comparisonConditions"] = {
+            "match": candidate_conditions == baseline_conditions,
+            "candidate": candidate_conditions,
+            "baseline": baseline_conditions,
+        }
+        if candidate_conditions != baseline_conditions:
+            raise RunnerError("候选与基线的 coreHash/灰度表/车辆 profile 不一致，拒绝比较")
         concise_summary("候选", candidate_result)
         concise_summary("基线", baseline_result)
         candidate_nets = net_scores_by_seed(candidate_result)
@@ -375,7 +449,7 @@ def compare_command(args):
         }
         payload["comparison"] = comparison
         print("[对比] 相对基线平均净胜 %+0.3f" % (comparison["meanNetDelta"] or 0))
-        if candidate_result.get("status") != "done" or baseline_result.get("status") != "done":
+        if candidate_result.get("status") not in ("done", "partial") or baseline_result.get("status") not in ("done", "partial"):
             raise RunnerError("至少一组评测未完成")
     except Exception as error:
         payload["error"] = str(error)
@@ -403,6 +477,8 @@ def doctor_command(args):
         print("服务: 未运行或不可用 (%s)%s" % (error, local))
         return 2
     print("服务: 正常 | coreHash=%s | 运行 %ss" % (health.get("coreHash"), health.get("uptimeSec")))
+    local_hash = local_core_hash()
+    print("核心文件: %s | 一致: %s" % (local_hash, "是" if health.get("coreHash") == local_hash else "否（请重启服务）"))
     print("核心: %s | 评测: %s" % (
         "占用中" if health.get("coreBusy") else "空闲",
         "运行中" if health.get("evaluationBusy") else "空闲",
@@ -415,6 +491,7 @@ def add_evaluation_args(parser):
     parser.add_argument("--opponent", default="fsm", help="对手：fsm、@注册名或子进程命令")
     parser.add_argument("--params", help="内联 JSON 或参数 JSON 文件")
     parser.add_argument("--vehicles", help="单车 profile 或 {us,them} 双车 profile JSON")
+    parser.add_argument("--field-gray", help="实测灰度表 JSON 对象或 JSON 文件")
     parser.add_argument("--seeds", help="逗号分隔 seed；默认 42,7,21,100,123")
     parser.add_argument("--trace", action="store_true", help="在结果中保留轨迹")
     parser.add_argument("--realtime", action="store_true", help="启用真实时间节流，供实车线程联调")
@@ -423,6 +500,7 @@ def add_evaluation_args(parser):
     parser.add_argument("--timeout", type=float, default=600, help="单次批量评测等待秒数")
     parser.add_argument("--poll", type=float, default=0.2, help="评测状态轮询秒数")
     parser.add_argument("--keep-server", action="store_true", help="保留由本命令自动启动的 sim_server")
+    parser.add_argument("--allow-stale-core", action="store_true", help="允许复用 coreHash 与当前文件不一致的已有服务（不推荐）")
 
 
 def make_parser():

@@ -35,7 +35,7 @@
 | `sim_lib_selftest.js` | CORE 提取、带空格路径命令解析、子进程迟到动作隔离回归 |
 | `robot_adapter.py` | 小车程序适配器：`python robot_adapter.py your_program.py` |
 | `example_robot.py` | 示例小车决策程序（`decide(obs)` 参考写法） |
-| `sim_selftest.js` | 状态机、规则边界、可插拔感知与裁判阶段自测（29 场景） |
+| `sim_selftest.js` | 状态机、规则边界、可插拔感知、物理稳定性与裁判阶段自测（31 场景） |
 
 ## 核心设计
 
@@ -92,6 +92,8 @@
 `POST /field-gray` 接收 `{ "map": <表> }`，`POST /field-gray` 加 `{ "reset": true }` 回到手绘模型；
 `GET /field-gray?values=1` 可回读当前表。`POST /reset`、`POST /battle/run`、`POST /battle/start` 和
 `POST /api/v1/evaluations` 都可带 `fieldGray:<表>`，保证固定 seed 对比使用相同场地。
+`GET /health` 与评测结果 `metadata.actual.fieldGray` 还会返回稳定的 `sha256` 摘要；只看表的尺寸或
+`id` 不足以证明两次实验使用了同一组灰度数值。
 
 视觉分类的统一接口是同步 `SimVision`：真实 YOLO/相机线程必须先在外部维护最新检测缓存，CORE 每帧只读取该缓存，
 绝不等待 Promise、相机或网络。浏览器/嵌入方可调用：
@@ -353,17 +355,19 @@ curl http://127.0.0.1:8932/api/v1/evaluations/<id>
 
 评测默认使用 `realtime:false` 快速模式，适合 AI 搜索；需要验证实车线程时序的 `@realcar` 等控制器传
 `realtime:true`。评测结果包含每个 seed 的比分、净胜分、结束原因、登台指标和可选轨迹，汇总字段包括
-`meanNetScore`、`winRate`、`drawRate`、`mountRate`、`bestNetScore`、`worstNetScore`。
+`meanNetScore`、`winRate`、`drawRate`、`mountRate`、`bestNetScore`、`worstNetScore`；如果所有 seed 都失败，
+汇总状态为 `error` 且这些分数为 `null`，不会伪装成有效的 0 分策略。`metadata.actual` 固定记录实际
+`coreHash`、灰度 `sha256`、归一化双车 profile 和 `fidelity` 快照。
 当前核心为单例，因此同一服务同一时刻只运行一个批量评测任务；完成后再提交下一组候选。
 
 | 端点 | 请求体 | 说明 |
 |---|---|---|
 | `GET /field-gray` | `?values=1` 可选 | 返回当前场地灰度表元数据；加 `values=1` 回传完整表 |
 | `POST /field-gray` | `{map}` 或 `{reset:true}` | 加载实测灰度表，或恢复默认手绘模型；核心忙时返回 `409` |
-| `POST /reset` | `{seed, params, scene, fieldGray, vehicles, manual}` | 重置并进入 `PREP`（seed 固定可复现）；`fieldGray` 可为二维/平铺灰度表 |
+| `POST /reset` | `{seed, params, scene, fieldGray, vehicles, manual, compact?}` | 重置并进入 `PREP`（seed 固定可复现）；`fieldGray` 可为二维/平铺灰度表 |
 | `POST /arm` | — | 发令（双车 FSM 开跑） |
-| `POST /step` | `{dt, action:{v,w}}` | 单步（action 控制我方，对手 FSM） |
-| `POST /step2` | `{dt, us:{v,w}, them:{v,w}}` | 分别控制两车（null=该车 FSM） |
+| `POST /step` | `{dt, action:{v,w}, compact?}` | 单步（action 控制我方，对手 FSM）；`compact:true` 省略日志和完整复制字段 |
+| `POST /step2` | `{dt, us:{v,w}, them:{v,w}, compact?}` | 分别控制两车（null=该车 FSM） |
 | `POST /params` | `{EDGE_THRESHOLD:300, ...}` | 实时改参数 |
 | `GET /vehicle?role=us` | — | 读取一台车当前 profile |
 | `POST /vehicle` | `{role:'us', vehicle:{length:0.32, width:0.24, maxSpeed:1.2}}` | 修改单台车 profile，立即影响碰撞/运动 |
@@ -371,11 +375,11 @@ curl http://127.0.0.1:8932/api/v1/evaluations/<id>
 | `POST /battle/run` | `{us, them, seed, params, fieldGray, vehicles, dt, maxSteps, actionTimeout, traceEvery}` | 跑一整场；`fieldGray` 与车辆 profile 会在开局一起固定；us/them 为 `'fsm'` 或子进程命令；返回含轨迹 `trace` |
 | `POST /battle/start` | `{us, them, seed?, params?, fieldGray?, vehicles?, dt?, maxSteps?, realtime?}` | 启动后台远程对战，返回 `controlToken`；默认实时 20Hz |
 | `POST /battle/control` | `{token, command, ...}` | 持 `/battle/start` 返回的令牌控制进行中的后台对战；`command` 为 `arm/pause/resume/restart/scene/params` |
-| `POST /battle/stop` | — | 请求停止后台对战并终止其策略子进程 |
+| `POST /battle/stop` | — | 幂等请求停止后台对战并终止其策略子进程；运行中返回 `202/stopping`，收尾后回到 `idle` |
 | `POST /api/v1/evaluations` | `{us, them, candidate?, seeds[], params?, fieldGray?, vehicles?, scene?, includeTrace?, realtime?}` | 异步多 seed 评测，返回 `id`；候选可直接提交 Python `code` |
 | `GET /api/v1/evaluations/:id` | — | 查询评测进度、逐 seed 结果和汇总指标 |
 | `DELETE /api/v1/evaluations/:id` | — | 请求取消正在运行的评测 |
-| `GET /state` | — | 全量状态（双车传感器/FSM/比分/日志） |
+| `GET /state` | `?compact=1` 可选 | 全量状态；紧凑模式保留位姿、传感器、车辆控制上限、比分和感知诊断，省略日志等大字段 |
 | `GET /log` | — | 事件日志 |
 | `GET /referee/state` | — | 裁判阶段、准备/正赛剩余时间、重启判罚 |
 | `POST /referee/pause` | `{reason?}` | 暂停正赛 |
@@ -387,6 +391,10 @@ curl http://127.0.0.1:8932/api/v1/evaluations/<id>
 `sensorLayout.us/them`（通道类型/位置/朝向）、`perception.fieldGray/vision`（当前感知实现元数据）、
 `scores{us,them}`、`done/doneReason`。
 `/step` 额外返回 `reward`（本步得分增量）与 `done`，可直接做 gym 式循环。
+
+紧凑状态通过 `GET /state?compact=1` 或 step 请求体 `compact:true` 启用，仍保留
+`perception.vision.errorCount/lastError`。策略进程连续 8 次动作超时会自动熔断停车；每个 seed 的评测结果会记录
+`policyStats` 和 `warnings`，便于区分策略变差与桥接故障。
 
 比赛核心是单例。批量评测、`/battle/run` 或后台 `/battle/start` 占用期间，通用状态修改接口会返回 `409`；后台远程局必须改用带 `controlToken` 的 `/battle/control`。这样可防止 AI、浏览器和人工调试请求互相串改同一局物理状态。
 

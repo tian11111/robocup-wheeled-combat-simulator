@@ -86,8 +86,11 @@ function spawnPolicy(cmd, role, onLog){
   const policy = {
     pending: new Map(), alive: true, nextRequestId: 0,
     supportsRequestId: null, legacyQuarantine: null, invalidOutputCount: 0,
+    protocolFault: 0, timeoutCount: 0, consecutiveTimeouts: 0,
+    maxConsecutiveTimeouts: 8, tripped: false,
   };
   const warnProtocol = message => {
+    policy.protocolFault++;
     if (policy.invalidOutputCount++ < 4) onLog(`[${role}子进程] 协议警告: ${message}`);
   };
   const settle = (request, action) => {
@@ -117,7 +120,7 @@ function spawnPolicy(cmd, role, onLog){
         policy.supportsRequestId = true;
         const id = String(act.requestId);
         const request = policy.pending.get(id);
-        if (request) settle(request, { v:act.v, w:act.w });
+        if (request){ policy.consecutiveTimeouts=0; settle(request, { v:act.v, w:act.w }); }
         else {
           if (policy.legacyQuarantine && policy.legacyQuarantine.id === id) policy.legacyQuarantine = null;
           warnProtocol(`收到过期或未知 requestId=${id} 的动作，已丢弃`);
@@ -136,7 +139,7 @@ function spawnPolicy(cmd, role, onLog){
         continue;
       }
       const request = policy.pending.values().next().value;
-      if (request) settle(request, { v:act.v, w:act.w });
+      if (request){ policy.consecutiveTimeouts=0; settle(request, { v:act.v, w:act.w }); }
       else warnProtocol('没有等待请求的旧协议动作，已丢弃');
     }
   });
@@ -163,8 +166,15 @@ function spawnPolicy(cmd, role, onLog){
       if (!policy.pending.has(id)) return;
       policy.pending.delete(id);
       request.done = true;
+      policy.timeoutCount++;
+      policy.consecutiveTimeouts++;
       if (policy.supportsRequestId !== true) policy.legacyQuarantine = { id };
       resolve(null);
+      if (policy.consecutiveTimeouts >= policy.maxConsecutiveTimeouts && !policy.tripped){
+        policy.tripped=true;
+        onLog(`[${role}子进程] 连续 ${policy.consecutiveTimeouts} 次超时，已熔断并停车`);
+        policy.kill();
+      }
     }, timeoutMs || 300);
     try { child.stdin.write(JSON.stringify({ ...obs, requestId:id }) + '\n'); }
     catch (e) { settle(request, null); }
@@ -176,6 +186,11 @@ function spawnPolicy(cmd, role, onLog){
     closePending();
     try { child.kill(); } catch (e) {}
   };
+  policy.stats = () => ({
+    alive:!!policy.alive, tripped:!!policy.tripped,
+    timeoutCount:policy.timeoutCount, consecutiveTimeouts:policy.consecutiveTimeouts,
+    protocolFault:policy.protocolFault, invalidOutputCount:policy.invalidOutputCount,
+  });
   return policy;
 }
 
@@ -228,7 +243,8 @@ function resolveController(spec){
 // ---------- 对战运行器 ----------
 // opts: { api, seed, params, scene, fieldGray, vehicles:{us:{...},them:{...}}, dt, maxSteps,
 //         us: 'fsm'|cmd|@name, them: 'fsm'|cmd|@name,
-//         actionTimeout, traceEvery, realtime, shouldAbort, onLog, onProgress }
+//         actionTimeout, traceEvery, realtime, shouldAbort, onLog, onProgress,
+//         skipReset }
 async function runBattle(opts){
   const api = opts.api;
   const { resetAll, arm, stepSimExt, getState, getLog, US, THEM, onStage } = api;
@@ -239,12 +255,17 @@ async function runBattle(opts){
   const realtime = opts.realtime !== false;
   const shouldAbort = opts.shouldAbort || (() => false);
 
-  resetAll({ seed: opts.seed, params: opts.params, scene: opts.scene, fieldGray: opts.fieldGray, vehicles: opts.vehicles });
+  // 后台远程会话需要在 HTTP 响应前先完成一次 reset 以便 GUI 立即看到初始场景；
+  // 通过 skipReset 复用该实例，避免 /battle/start 与 runBattle 重复初始化。
+  if (!opts.skipReset){
+    resetAll({ seed: opts.seed, params: opts.params, scene: opts.scene, fieldGray: opts.fieldGray, vehicles: opts.vehicles });
+  }
   const usCmd = resolveController(opts.us);
   const themCmd = resolveController(opts.them);
   const usPol  = usCmd  && usCmd  !== 'fsm' ? spawnPolicy(usCmd,  '我方', onLog) : null;
   const themPol = themCmd && themCmd !== 'fsm' ? spawnPolicy(themCmd, '对手', onLog) : null;
   const stopPolicies = () => { if (usPol) usPol.kill(); if (themPol) themPol.kill(); };
+  const policyStats = () => ({ us:usPol ? usPol.stats() : null, them:themPol ? themPol.stats() : null });
   // GUI 后台会话保存这个句柄，使 /battle/stop 能直接终止策略进程，
   // 而不是仅在下一帧规则循环中被动检查 abort 标记。
   if (opts.onPolicies) opts.onPolicies({ stop: stopPolicies });
@@ -312,6 +333,13 @@ async function runBattle(opts){
   stopPolicies();
 
   const st = getState();
+  const policies = policyStats();
+  const warnings=[];
+  for(const [role,stats] of Object.entries(policies)) if(stats){
+    if(stats.tripped) warnings.push(`${role}:policy_timeout_circuit_breaker`);
+    else if(stats.timeoutCount) warnings.push(`${role}:policy_timeout`);
+    if(stats.protocolFault) warnings.push(`${role}:policy_protocol_fault`);
+  }
   return {
     steps,
     simT: st.simT,
@@ -319,6 +347,9 @@ async function runBattle(opts){
     robots: st.robots,
     done: st.done,
     doneReason: st.doneReason,
+    perception: st.perception,
+    policyStats: policies,
+    warnings,
     metrics: {
       us: { mounted: seen.us.mounted, mountTime: seen.us.mountTime, finalOnPlatform: !!st.robots.us.onPlatform, finalHang: !!st.robots.us.hang },
       them: { mounted: seen.them.mounted, mountTime: seen.them.mountTime, finalOnPlatform: !!st.robots.them.onPlatform, finalHang: !!st.robots.them.hang },

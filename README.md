@@ -60,9 +60,13 @@ python sim_runner.py eval --candidate candidate.py
 
 # 用相同车辆、参数、对手和 seed 集对比候选与基线
 python sim_runner.py compare --candidate candidate.py --baseline fsm
+
+# 使用实测灰度表评测（将路径替换为你实际导出的 JSON 文件）
+# JSON 至少包含 values；可选 width/height/bounds/interpolation/id
+python sim_runner.py eval --candidate candidate.py --field-gray path\to\measured_gray.json
 ```
 
-`--params` 与 `--vehicles` 均可传内联 JSON 或 JSON 文件；单车 profile 会自动作为我方 profile 使用。每次 `eval/compare` 都把请求、策略 SHA-256、`coreHash` 和完整结果保存到 `.sim_runs/`，该目录不会提交到 Git。默认是快速确定性评测；实车线程时序验证时附加 `--realtime`。
+`--params`、`--vehicles` 和 `--field-gray` 均可传内联 JSON 或 JSON 文件；单车 profile 会自动作为我方 profile 使用。仓库不附带真实灰度表，需先将实测数据导出为灰度表 JSON；不要直接把原始遥测目录当作 `--field-gray` 文件。每次 `eval/compare` 都把请求、策略 SHA-256、实际 `coreHash`、灰度表摘要和完整结果保存到 `.sim_runs/`，该目录不会提交到 Git。默认是快速确定性评测；实车线程时序验证时附加 `--realtime`。如果 `doctor` 显示服务的 `coreHash` 与当前文件不一致，请先重启已有的 `sim_server.js`；runner 默认拒绝复用旧核心，只有明确传 `--allow-stale-core` 才会继续。
 
 ### 真实遥测标定
 

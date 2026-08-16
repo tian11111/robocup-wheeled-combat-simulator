@@ -25,7 +25,7 @@
     "desc": "巡台+锁敌推块(test_push_block 逻辑接入仿真): ring 巡台→红外锁敌→视觉分类→推buff/绕debuff(需 scene=center 车在台上)"
   },
   "robocup-2026-wheeled-combat": {
-    "cmd": "python robot_adapter.py D:\\project\\robocup\\robocup-2026-wheeled-combat\\tools\\sim_patrol.py",
-    "desc": "文件夹导入: D:\\project\\robocup\\robocup-2026-wheeled-combat (入口 sim_patrol.py)"
+    "cmd": "python robot_adapter.py D:\\project\\robocup\\robocup-2026-wheeled-combat\\tools\\sim_robot_main.py",
+    "desc": "文件夹导入: D:\\project\\robocup\\robocup-2026-wheeled-combat (入口 sim_robot_main.py)"
   }
 }

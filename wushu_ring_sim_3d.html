@@ -549,6 +549,10 @@ const params = {
 
 // ---------- 可复现随机 ----------
 let rng = Math.random;
+// 传感器噪声使用独立的按(seed, step, role, channel)派生流，避免新增/删除
+// 一个通道时重排比赛逻辑中的视觉、摆块等 rng() 序列。
+let seedValue = null;
+let simStepIndex = 0;
 function mulberry32(a){
   return function(){
     a |= 0; a = a + 0x6D2B79F5 | 0;
@@ -557,7 +561,27 @@ function mulberry32(a){
     return ((t ^ t >>> 14) >>> 0) / 4294967296;
   };
 }
-function setSeed(s){ rng = (s === undefined || s === null) ? Math.random : mulberry32(s); }
+function setSeed(s){
+  if(s === undefined || s === null){ seedValue=null; rng=Math.random; }
+  else { seedValue=Number(s)|0; rng=mulberry32(seedValue); }
+}
+function mix32(value){
+  let x=value|0;
+  x=Math.imul(x ^ (x>>>16), 0x45d9f3b);
+  x=Math.imul(x ^ (x>>>16), 0x45d9f3b);
+  return (x ^ (x>>>16))|0;
+}
+function hashString32(value){
+  let h=0x811c9dc5;
+  for(const ch of String(value||'')) h=Math.imul(h ^ ch.charCodeAt(0), 0x01000193);
+  return h|0;
+}
+function sensorNoiseRandom(r,ch){
+  if(seedValue===null) return Math.random();
+  const roleKey=r===US ? 0x13579bdf : 0x2468ace0;
+  const stepKey=Math.imul((simStepIndex+1)|0, 0x9e3779b9);
+  return (mix32(seedValue ^ roleKey ^ stepKey ^ hashString32(ch&&ch.id))>>>0)/4294967296;
+}
 
 // ---------- 状态机枚举 ----------
 const S = Object.freeze({
@@ -881,7 +905,7 @@ function sampleSensorChannelFor(r,ch){
       value=Math.max(value,onPlatform(sp.x,sp.y)?1:0.12);
     }
   }
-  value += (rng()*2-1)*sensorNoiseFor(ch);
+  value += (sensorNoiseRandom(r,ch)*2-1)*sensorNoiseFor(ch);
   // 非理想特性滤波: 数字红外施密特二值 / 连续距离红外值级迟滞(死区)。
   if(ch.type==='digital') value = irHysteresis(r, ch.id, value);
   else if(ch.type==='ir_distance' || ch.type==='ir_ground' || ch.type==='ir_edge') value = valueHysteresis(r, ch.id, value);
@@ -1171,11 +1195,19 @@ const DEFAULT_SIM_VISION=Object.freeze({
   },
 });
 let simVision=DEFAULT_SIM_VISION;
-function getSimVisionInfo(){ return { id:String(simVision.id||'custom'), mode:simVision===DEFAULT_SIM_VISION?'default':'custom', synchronous:true }; }
+const simVisionStats={ errorCount:0, lastError:null, lastAt:null };
+function resetSimVisionStats(){ simVisionStats.errorCount=0; simVisionStats.lastError=null; simVisionStats.lastAt=null; }
+function getSimVisionInfo(){
+  return {
+    id:String(simVision.id||'custom'), mode:simVision===DEFAULT_SIM_VISION?'default':'custom', synchronous:true,
+    errorCount:simVisionStats.errorCount, lastError:simVisionStats.lastError, lastAt:simVisionStats.lastAt,
+  };
+}
 function setSimVision(adapter){
-  if(adapter===null || adapter===undefined){ simVision=DEFAULT_SIM_VISION; return getSimVisionInfo(); }
+  if(adapter===null || adapter===undefined){ simVision=DEFAULT_SIM_VISION; resetSimVisionStats(); return getSimVisionInfo(); }
   if(!adapter || typeof adapter.classify!=='function') throw new Error('SimVision 必须提供同步 classify(context) 函数');
   simVision={ id:String(adapter.id||'custom-sim-vision').slice(0,80), classify:adapter.classify };
+  resetSimVisionStats();
   return getSimVisionInfo();
 }
 function classifyTargetFor(r,target){
@@ -1187,7 +1219,12 @@ function classifyTargetFor(r,target){
     opponent:{x:other(r).x,y:other(r).y,th:other(r).th},
   };
   try { return normalizeVisionDetection(simVision.classify(context),simVision.id); }
-  catch(error){ return { label:'unknown', confidence:0, source:`${simVision.id||'custom'}:error` }; }
+  catch(error){
+    simVisionStats.errorCount++;
+    simVisionStats.lastError=String(error && error.message || error).slice(0,240);
+    simVisionStats.lastAt=+Number(r.fsm.simT||0).toFixed(3);
+    return { label:'unknown', confidence:0, source:`${simVision.id||'custom'}:error` };
+  }
 }
 function searchTick(r, dt){
   const sc = r.fsm.scan;
@@ -1340,8 +1377,13 @@ function stageWall(r, px, py){
     { nx:1,  ny:0,  axis:'x', boundary:EL },                 // 西边，向东入台
     { nx:-1, ny:0,  axis:'x', boundary:ER },                 // 东边，向西入台
   ];
-  const vCmd = (r.cmdV !== undefined && r.cmdV !== null) ? r.cmdV : r.v;
-  const desiredVx = vCmd*Math.cos(r.th), desiredVy = vCmd*Math.sin(r.th);
+  // 登台判定使用已经积分后的实际速度，而不是尚未执行的控制指令。
+  // 这样指令延迟、加速度限制和碰撞阻挡都会真实反映到能否登台。
+  const actualVx = Number(r.vx)||0, actualVy = Number(r.vy)||0;
+  const desiredVx = actualVx, desiredVy = actualVy;
+  // 首次接触时加速度尚未完全建立，允许一个明确的高速冲台指令作为
+  //“起步意图”补偿；低速(例如 0.2m/s)仍严格按实际速度拒绝登台。
+  const cmdV = Number(r.cmdV)||0;
   const contacts=[];
   for(const wall of walls){
     const coord0 = wall.axis==='x' ? px : py;
@@ -1349,18 +1391,26 @@ function stageWall(r, px, py){
     const nAxis = wall.axis==='x' ? wall.nx : wall.ny;
     const in0 = (coord0-wall.boundary)*nAxis;
     const in1 = (coord1-wall.boundary)*nAxis;
-    if(in0 >= 0) continue;                                  // 原来中心已在台内，出沿不阻挡
     const tangentSupport = footprintSupport(r, -wall.ny, wall.nx);
-    const tangentCoord = wall.axis==='x' ? r.y : r.x;
-    if(tangentCoord < EL-tangentSupport || tangentCoord > ER+tangentSupport) continue;
     const support = footprintSupport(r, wall.nx, wall.ny);
-    if(in1 < -support-0.001) continue;                      // 车身仍未接触台沿
-    // 登台门槛看当前控制意图速度；实际速度仍用于碰撞后的速度清零。
-    // 这样首帧加速度尚未收敛时不会把正常冲台误判成“低速顶台”。
-    const vn = desiredVx*wall.nx + desiredVy*wall.ny;
+    const safeIn = -(support+0.002);
+    // 对中心线做连续时间扫掠：即便一帧从台外直接跨到台内，仍在首次
+    // 接触台沿时执行登台门槛；台上向台外则保持自由掉落语义。
+    const entering = in0 < safeIn && in1 >= safeIn;
+    if(in0 >= 0) continue;                                   // 中心已在台内，向外掉落不阻挡
+    if(in0 < safeIn && in1 < safeIn) continue;               // 尚未接触台沿
+    const crossT = entering && Math.abs(in1-in0)>1e-12 ? (safeIn-in0)/(in1-in0) : 1;
+    const contactX = px + (r.x-px)*clamp(crossT,0,1);
+    const contactY = py + (r.y-py)*clamp(crossT,0,1);
+    const tangentCoord = wall.axis==='x' ? contactY : contactX;
+    if(tangentCoord < EL-tangentSupport || tangentCoord > ER+tangentSupport) continue;
+    // 登台门槛看当前实际接触速度；控制指令不能绕过物理减速/延迟。
+    let vn = desiredVx*wall.nx + desiredVy*wall.ny;
+    const cmdN = cmdV*Math.cos(r.th)*wall.nx + cmdV*Math.sin(r.th)*wall.ny;
+    if(vn > 0.05 && vn < MOUNT_VMIN && cmdN > MOUNT_VMIN) vn = cmdN;
     if(vn <= 0.0001) continue;                              // 没有向台内运动
     const vt = Math.abs(desiredVx*wall.ny - desiredVy*wall.nx);
-    contacts.push({ wall, support, in1, vn, vt });
+    contacts.push({ wall, support, in1, in0, vn, vt, entering, crossT });
   }
   if(!contacts.length) return;
 
@@ -1541,29 +1591,77 @@ function keepBlockInsideFence(o){
   if(o.y<B){ o.y=B; if(o.vy<0) o.vy*=-0.10; }
   else if(o.y>3.8-B){ o.y=3.8-B; if(o.vy>0) o.vy*=-0.10; }
 }
-function resolveRobotBlockCollision(r, o, px, py){
+function collectRobotBlockContact(r, o, px, py, blockIndex){
   const R=(r.r||BODY)+o.r;
   let dx=o.x-r.x, dy=o.y-r.y, d=Math.hypot(dx,dy);
   let hit=null;
-  if(!(d<R)) hit=sweptCircleContact(px,py,r.x,r.y,o.x,o.y,R);
+  // 即使帧末已经穿到块的另一侧，只要起帧仍分离，就优先使用首次
+  // 接触点；否则用帧末法线分离会把目标块沿反方向“弹走”。
+  const startD=Math.hypot(o.x-px,o.y-py);
+  if(startD>=R-1e-9) hit=sweptCircleContact(px,py,r.x,r.y,o.x,o.y,R);
   if(!(d<R) && !hit) return false;
   let nx, ny, overlap=0;
-  if(d<R){
-    if(d<1e-9){ const h=Math.hypot(r.vx,r.vy)||1; nx=r.vx/h; ny=r.vy/h; }
-    else { nx=dx/d; ny=dy/d; }
-    overlap=R-d;
-  } else {
+  if(hit && startD>=R-1e-9){
     nx=hit.nx; ny=hit.ny;
     // Put the car back at first contact so a swept hit cannot cross the block.
     r.x=hit.qx-nx*0.0005; r.y=hit.qy-ny*0.0005;
+  } else if(d<R){
+    if(d<1e-9){ const h=Math.hypot(r.vx,r.vy)||1; nx=r.vx/h; ny=r.vy/h; }
+    else { nx=dx/d; ny=dy/d; }
+    overlap=R-d;
   }
-  markBlockContact(o, r);
-  separatePair(r,o,nx,ny,overlap);
-  const push=clamp(Number(r.vehicle?.pushFactor)||1,0.1,3);
-  const impulse=applyPairImpulse(r,o,nx,ny,0.08,push);
-  // 偏心力矩: 接触点取车身矩形上离块最近的点, 力臂 = 接触点 - 质心 → 撞角打转
-  const cp = closestPointOnRobot(r, o.x, o.y);
-  applyContactTorque(r, -nx*impulse, -ny*impulse, cp.x - r.x, cp.y - r.y);
+  return { r, o, nx, ny, overlap, hit, t:hit ? hit.t : 1, blockIndex };
+}
+function resolveRobotBlockContacts(contacts){
+  if(!contacts.length) return false;
+  // 先收集所有接触，再按首次接触时间/实体索引稳定排序；速度冲量基于
+  // 同一帧的快照累加，避免 US/THEM 遍历顺序改变同一能量块的结果。
+  contacts.sort((a,b)=>a.t-b.t || a.blockIndex-b.blockIndex || (a.r===US?0:1)-(b.r===US?0:1));
+  const baseVel=new Map(), deltaVel=new Map(), deltaPos=new Map(), firstSweep=new Map();
+  for(const entity of robots.concat(blocks)){
+    baseVel.set(entity,{x:Number(entity.vx)||0,y:Number(entity.vy)||0});
+    deltaVel.set(entity,{x:0,y:0});
+    deltaPos.set(entity,{x:0,y:0});
+  }
+  const add=(table, entity, x, y)=>{ const d=table.get(entity); d.x+=x; d.y+=y; };
+  for(const c of contacts){
+    const {r,o,nx,ny,overlap}=c;
+    markBlockContact(o,r);
+    if(c.hit){
+      const old=firstSweep.get(r);
+      if(!old || c.t<old.t) firstSweep.set(r,c);
+    } else if(overlap>0){
+      const invR=1/bodyMass(r), invO=1/bodyMass(o), total=invR+invO;
+      add(deltaPos,r,-nx*overlap*(invR/total),-ny*overlap*(invR/total));
+      add(deltaPos,o,nx*overlap*(invO/total),ny*overlap*(invO/total));
+    }
+    const rv=baseVel.get(r), ov=baseVel.get(o);
+    const rel=(rv.x-ov.x)*nx+(rv.y-ov.y)*ny;
+    if(rel<=0) continue;
+    const invR=1/bodyMass(r), invO=1/bodyMass(o);
+    const push=clamp(Number(r.vehicle?.pushFactor)||1,0.1,3);
+    const impulse=rel*(1+0.08)*push/(invR+invO);
+    add(deltaVel,r,-nx*impulse*invR,-ny*impulse*invR);
+    add(deltaVel,o,nx*impulse*invO,ny*impulse*invO);
+    const contactX=c.hit ? c.hit.qx : r.x, contactY=c.hit ? c.hit.qy : r.y;
+    applyContactTorque(r,-nx*impulse,-ny*impulse,contactX-r.x,contactY-r.y);
+  }
+  // 同一车辆若一帧跨过多个块，只回退到最早接触点；之后的块由下一帧
+  // 的扫掠继续处理，避免一次解析把车辆瞬移回更晚的接触位置。
+  for(const [r,c] of firstSweep){
+    r.x=c.hit.qx-c.nx*0.0005; r.y=c.hit.qy-c.ny*0.0005;
+  }
+  for(const entity of robots.concat(blocks)){
+    const dp=deltaPos.get(entity), dv=deltaVel.get(entity);
+    entity.x+=dp.x; entity.y+=dp.y;
+    entity.vx=(Number(entity.vx)||0)+dv.x; entity.vy=(Number(entity.vy)||0)+dv.y;
+  }
+  return true;
+}
+function resolveRobotBlockCollision(r, o, px, py){
+  const contact=collectRobotBlockContact(r,o,px,py,0);
+  if(!contact) return false;
+  resolveRobotBlockContacts([contact]);
   return true;
 }
 function resolveBlockPair(a,b){
@@ -1622,7 +1720,17 @@ function resolveRobotPair(a, b, a0, b0){
 
   const avn=a.vx*nx+a.vy*ny;
   const bvn=b.vx*nx+b.vy*ny;
-  if(avn<=bvn+0.02) return true;
+  // 已分离但仍有很小的向内相对速度时，清除该速度而不是每帧只做
+  // 位置分离；否则会出现“贴住—重叠—再分离”的低速抖动。
+  if(avn<=bvn+0.02){
+    if(avn>bvn){
+      const invA=1/bodyMass(a), invB=1/bodyMass(b);
+      const correction=(avn-bvn)/(invA+invB);
+      a.vx-=nx*correction*invA; a.vy-=ny*correction*invA;
+      b.vx+=nx*correction*invB; b.vy+=ny*correction*invB;
+    }
+    return true;
+  }
   const rel=avn-bvn;
   const configuredE=params.COLLISION_RESTITUTION===null || params.COLLISION_RESTITUTION===undefined
     ? NaN
@@ -1661,13 +1769,13 @@ function resolveRobotPair(a, b, a0, b0){
   }
   return true;
 }
-function motionFor(r, dt){
+function motionFor(r, dt, applyLatency=true){
   const vehicle = r.vehicle || DEFAULT_VEHICLE;
   // 控制指令限幅 (保持原有 {v,w} 接口不变)
   r.v = clamp(r.v, -vehicle.maxSpeed, vehicle.maxSpeed);
   r.w = clamp(r.w, -vehicle.maxTurnRate, vehicle.maxTurnRate);
   // 指令延迟环形队列: 模拟传感器采集/主控运算/电机响应的时钟周期差
-  applyCommandLatency(r);
+  if(applyLatency) applyCommandLatency(r);
 
   // ---- 轮式驱动动力学 (车身坐标系) ----
   // 将上一帧世界速度投影回车身坐标: 纵向 vF(车头)、侧向 vL(左)、碰撞打转 spinOmega。
@@ -1709,17 +1817,26 @@ function motionFor(r, dt){
   else if(r.x > 3.8-B){ r.x = 3.8-B; if(r.vx>0) r.vx = 0; }
   if(r.y < B){ r.y = B; if(r.vy<0) r.vy = 0; }
   else if(r.y > 3.8-B){ r.y = 3.8-B; if(r.vy>0) r.vy = 0; }
+}
+// 统一处理本帧所有车-块接触，再推进能量块一次。这样两辆车同时接触
+// 同一块时看到的是同一个几何位置，不再因 robots 遍历顺序产生动力学偏置。
+function integrateBlocks(dt, previousPos){
+  const contacts=[];
+  for(const r of robots){
+    if(!(r.fsm.armed || r.fsm.manual)) continue;
+    const prev=previousPos.get(r) || {x:r.x,y:r.y};
+    for(let i=0;i<blocks.length;i++){
+      const o=blocks[i];
+      if(o.dragLock) continue;
+      const contact=collectRobotBlockContact(r,o,prev.x,prev.y,i);
+      if(contact) contacts.push(contact);
+    }
+  }
+  resolveRobotBlockContacts(contacts);
   // out means "already scored", not "remove this block". A fallen block is
   // still solid on the walkway and can be pushed into the perimeter fence.
   for(const o of blocks){
     if(o.dragLock) continue;
-    // 拖拽运动学控制: o 正与某拖拽中的块接触时, 其位置由 pushDraggedBlock
-    // 瞬移管理, 本步冻结物理(跳过碰撞/速度积分/摩擦)并把速度清零——避免
-    // 冻结速度在拖拽块微动离开冻结半径时被"爆发式"积分, 导致目标块抽搐。
-    // 松手后 dragLock=false 物理自动恢复。
-    const dragControlled = blocks.some(d => d.dragLock && Math.hypot(d.x-o.x, d.y-o.y) < (d.r||0.075) + (o.r||0.075) + 0.02);
-    if(dragControlled){ o.vx = 0; o.vy = 0; continue; }
-    resolveRobotBlockCollision(r,o,px,py);
     o.x+=o.vx*dt; o.y+=o.vy*dt;
     // 库仑摩擦: 低速粘住(消除无限微滑), 高速库仑动摩擦 + 指数背压。
     let spd=Math.hypot(o.vx,o.vy);
@@ -1911,6 +2028,7 @@ function stepSimExt(d, acts){
   if(hasExternalAction && (matchControl.phase==='PREP' || matchControl.phase==='READY')){
     matchControl.phase='RUNNING'; matchControl.paused=false; matchControl.prepRemaining=0;
   }
+  simStepIndex++;
   for(const o of blocks) o.contactThisStep=[];
   for(const r of robots){
     const act = acts && acts[r.name==='我方'?'us':'them'];
@@ -1942,14 +2060,32 @@ function stepSimExt(d, acts){
   }
   // 每步先清空楔入标记, 由本帧碰撞重新判定 (碰撞只在车-车接触时置位)
   for(const r of robots){ r.wedgedFront = false; }
-  // 记录双方同一时刻的起始位姿，供统一 pair resolver 做相对扫掠。
+  // 记录整个外层步的起始位姿，供统一 pair/block resolver 做相对扫掠。
+  // 高速自定义车辆在 100ms 步长内可能跨过台沿或多个接触点；只细分
+  //“单车积分 + 台壁”而不在子步重复解车车冲量，最终仍由每对实体只解一次。
   const previousPos=new Map(robots.map(r=>[r,{x:r.x,y:r.y}]));
+  let maxSweep=0;
   for(const r of robots){
-    if(r.fsm.armed || r.fsm.manual) motionFor(r, d);
+    if(!(r.fsm.armed || r.fsm.manual)) continue;
+    const v=r.vehicle || DEFAULT_VEHICLE;
+    const commandSpeed=Math.max(Math.abs(Number(r.v)||0),Math.abs(Number(r.cmdV)||0),
+      Math.hypot(Number(r.vx)||0,Number(r.vy)||0),Number(v.maxSpeed)||0);
+    const commandTurn=Math.max(Math.abs(Number(r.w)||0),Math.abs(Number(r.cmdW)||0));
+    const extent=Math.max(Number(v.frontExtent)||0,Number(v.rearExtent)||0,Number(v.sideExtent)||0);
+    maxSweep=Math.max(maxSweep, commandSpeed*d + commandTurn*extent*d);
+  }
+  const physicsSubsteps=clamp(Math.max(1,Math.ceil(d/0.025),Math.ceil(maxSweep/0.035)),1,16);
+  const physicsDt=d/physicsSubsteps;
+  for(let sub=0;sub<physicsSubsteps;sub++){
+    for(const r of robots){
+      if(r.fsm.armed || r.fsm.manual) motionFor(r, physicsDt, sub===0);
+    }
+    // 4 轮采样姿态也在子步更新，避免高速跨台阶时 pitch/roll 一帧跳变。
+    for(const r of robots) computeRobotPose(r,physicsDt);
   }
   // 先完成双方独立积分，再只解析这一对实体一次；静止车仍是有效碰撞体。
-  for(const r of robots) computeRobotPose(r,d);
   resolveRobotPair(US,THEM,previousPos.get(US),previousPos.get(THEM));
+  integrateBlocks(d, previousPos);
   for(const r of robots) finishRobotMotion(r,d);
   objFallCheckAll(d);
   updateScoreClock(d);
@@ -1989,7 +2125,8 @@ function resetAll(opts){
   opts = opts || {};
   if(opts.params) Object.assign(params, opts.params);
   // 灰度表是场地配置而非车辆参数；未传时保留当前表，便于固定多 seed 评测复用。
-  if(Object.prototype.hasOwnProperty.call(opts,'fieldGray')) setFieldGrayMap(opts.fieldGray);
+  // 未提供 fieldGray 时保留当前场地；显式 null 才恢复手绘默认模型。
+  if(Object.prototype.hasOwnProperty.call(opts,'fieldGray') && opts.fieldGray!==undefined) setFieldGrayMap(opts.fieldGray);
   // 每台车的物理/动力参数独立保存；reset 不会悄悄恢复默认值，
   // 只有显式传入 vehicles.us / vehicles.them 时才替换对应配置。
   // 这样 GUI、HTTP API 和批量对战都能复用同一套车辆 profile。
@@ -1998,6 +2135,8 @@ function resetAll(opts){
     if(opts.vehicles.them && typeof opts.vehicles.them==='object') setVehicleFor('them', opts.vehicles.them);
   }
   setSeed(opts.seed);
+  simStepIndex=0;
+  resetSimVisionStats();
   matchControl.phase='PREP'; matchControl.prepRemaining=60; matchControl.matchTimer=120;
   matchControl.paused=false; matchControl.restartPenalties.us=0; matchControl.restartPenalties.them=0;
   US.x=0.95; US.y=0.3; US.th=-Math.PI/2;   // 黄区中部(正对南台边): 车头朝南, 车尾朝北
@@ -2032,7 +2171,8 @@ function resetAll(opts){
   matchScore.phase='both_off'; matchScore.t=0;
   logEvents.length = 0;
   log('[fsm] 重置完成 → WAIT_START, 发令(arm) 或 手动/外部策略模式');
-  if(opts.scene) scenePreset(opts.scene);
+  if(typeof opts.scene==='string') scenePreset(opts.scene);
+  else if(opts.scene && typeof opts.scene==='object' && typeof opts.scene.preset==='string') scenePreset(opts.scene.preset);
   respawnBlock(buffs[0]); respawnBlock(buffs[1]); respawnBlock(deb);
   // 重置/场景摆放后立即刷新一次各车 profile 传感器，避免 PREP 阶段面板显示旧位置数据。
   for(const r of robots) sampleSensorsFor(r);
@@ -2105,11 +2245,14 @@ function pushDraggedBlock(source, oldX, oldY){
     const target=entry.target, beforeX=target.x, beforeY=target.y;
     target.x=clamp(source.x+dirX*centreDistance,0.12,3.68);
     target.y=clamp(source.y+dirY*centreDistance,0.12,3.68);
-    // Kinematic push contact owns the target while it is in the chain. Do not
-    // accumulate velocity that would fight the next pointer position.
-    target.vx=0; target.vy=0;
     const displacement=Math.hypot(target.x-beforeX,target.y-beforeY);
     if(displacement>1e-5){
+      // 拖拽源是运动学输入，但被撞目标仍获得有限的瞬时速度；下一物理步
+      // 会通过库仑摩擦和块-块解算自然减速，避免“冻结后突然爆发”的抽搐。
+      const dragDt=1/60;
+      const pushSpeed=clamp(displacement/dragDt,0,2.4);
+      target.vx=dirX*pushSpeed*0.55;
+      target.vy=dirY*pushSpeed*0.55;
       queueDragImpact(source,target,(source.x+target.x)/2,(source.y+target.y)/2,dirX,dirY,
         Math.max(0.4,Math.min(2.4,displacement*16+distance*5)));
     }
@@ -2135,7 +2278,52 @@ function scenePreset(name){
   else return false;
   return true;
 }
-function getState(){
+function getCompactState(){
+  const compactRobot = r => ({
+    x:+r.x.toFixed(4), y:+r.y.toFixed(4), th:+r.th.toFixed(4),
+    v:+r.v.toFixed(4), w:+r.w.toFixed(4), speed:+Math.hypot(r.vx,r.vy).toFixed(4),
+    omega:+Number(r.omega||0).toFixed(4), pitch:+Number(r.pitch||0).toFixed(4),
+    roll:+Number(r.roll||0).toFixed(4), zG:+Number(r.zG||0).toFixed(4),
+    isStalled:!!r.isStalled, onPlatform:onStage(r), hang:hangOn(r),
+    state:r.fsm.state, action:r.fsm.action, timer:+r.fsm.timer.toFixed(2),
+    simT:+r.fsm.simT.toFixed(3),
+    vehicle:{
+      id:r.vehicle.id, length:r.vehicle.length, width:r.vehicle.width,
+      frontExtent:r.vehicle.frontExtent, rearExtent:r.vehicle.rearExtent,
+      sideExtent:r.vehicle.sideExtent, collisionRadius:r.vehicle.collisionRadius,
+      maxSpeed:r.vehicle.maxSpeed, maxTurnRate:r.vehicle.maxTurnRate,
+    },
+  });
+  const sensOf = r => { const s={}; for(const k in r.sens) s[k]=+Number(r.sens[k]).toFixed(3); return s; };
+  const rawSensOf = r => { const s={}; for(const k in r.rawSens) s[k]=+Number(r.rawSens[k]).toFixed(3); return s; };
+  const layoutOf = r => ({
+    id:r.sensorLayout.id,
+    channels:(r.sensorLayout.channels||[]).map(ch=>({
+      id:ch.id, type:ch.type, forward:ch.forward, lateral:ch.lateral,
+      angle:ch.angle, range:ch.range, fov:ch.fov, mode:ch.mode,
+    })),
+  });
+  return {
+    simT:+US.fsm.simT.toFixed(3), timer:+US.fsm.timer.toFixed(2),
+    match:{ phase:matchControl.phase, paused:matchControl.paused,
+      prepRemaining:+matchControl.prepRemaining.toFixed(2), timer:+matchControl.matchTimer.toFixed(2),
+      restartPenalties:{...matchControl.restartPenalties} },
+    scores:{ us:scoreBoard.us, them:scoreBoard.them },
+    robots:{ us:compactRobot(US), them:compactRobot(THEM) },
+    sensors:{ us:sensOf(US), them:sensOf(THEM) },
+    rawSensors:{ us:rawSensOf(US), them:rawSensOf(THEM) },
+    sensorLayout:{ us:layoutOf(US), them:layoutOf(THEM) },
+    perception:{ fieldGray:getFieldGrayInfo(), vision:getSimVisionInfo() },
+    objects:{
+      buffs:buffs.map(b=>({x:+b.x.toFixed(4),y:+b.y.toFixed(4),onPlatform:onPlatform(b.x,b.y),out:!!b.out})),
+      debuff:{x:+deb.x.toFixed(4),y:+deb.y.toFixed(4),onPlatform:onPlatform(deb.x,deb.y),out:!!deb.out},
+    },
+    done:US.fsm.state===S.DONE && THEM.fsm.state===S.DONE,
+    doneReason:US.fsm.doneReason || THEM.fsm.doneReason,
+  };
+}
+function getState(options){
+  if(options && options.compact) return getCompactState();
   const rState = r => ({
     x:+r.x.toFixed(4), y:+r.y.toFixed(4), th:+r.th.toFixed(4), v:+r.v.toFixed(4), w:+r.w.toFixed(4),
     speed:+Math.hypot(r.vx,r.vy).toFixed(4), omega:+Number(r.omega||0).toFixed(4),

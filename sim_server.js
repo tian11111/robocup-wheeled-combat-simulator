@@ -23,7 +23,7 @@
  *   GET   /api/v1/schema → AI 动作/观测/评测协议
  *   POST  /api/v1/evaluations → 异步多 seed 评测(默认快速模式)
  *   GET   /api/v1/evaluations/:id → 评测进度与汇总
- *   GET   /state          → 全量状态(双车传感器/FSM/比分/日志)
+ *   GET   /state          → 全量状态；?compact=1 返回 AI/远程 UI 所需紧凑状态
  *   GET   /log            → 事件日志
  * ============================================================ */
 'use strict';
@@ -58,6 +58,23 @@ function fidelitySnapshot(){
     return { available: false, error: `无法读取 fidelity.json: ${error.message}`, byStatus: {} };
   }
 }
+function fieldGraySnapshot(){
+  const info = getFieldGrayInfo();
+  const map = getFieldGrayMap();
+  // 评测复现需要区分“同尺寸、同 id 但数值不同”的灰度表；默认手绘模型
+  // 没有数组值，因此用版本化描述串作为稳定摘要。
+  const material = map
+    ? JSON.stringify({ id:map.id, width:map.width, height:map.height, values:map.values,
+      bounds:map.bounds, interpolation:map.interpolation })
+    : 'hand_drawn:fieldGray-v1';
+  const sha256 = crypto.createHash('sha256').update(material, 'utf8').digest('hex');
+  return { ...info, sha256 };
+}
+function stateForRequest(url, body){
+  const compact = url && url.searchParams && url.searchParams.get('compact') === '1'
+    || !!(body && body.compact === true);
+  return getState(compact ? { compact:true } : undefined);
+}
 
 // ---------- 计分基准(每步返回奖励增量) ----------
 let scoreBase = { us: 0, them: 0 };
@@ -72,7 +89,7 @@ function snapshotReward(){
 const ROBOTS_DIR = path.join(__dirname, 'robots');
 const REGISTRY_FILE = path.join(__dirname, 'sim_robots.json');
 if (!fs.existsSync(ROBOTS_DIR)) fs.mkdirSync(ROBOTS_DIR);
-let battleSession = { running: false, abort: false, stop: null, controlToken: '', startedAt: 0, result: null, error: null, usName: '', themName: '', output: [] };
+let battleSession = { status: 'idle', running: false, abort: false, stop: null, controlToken: '', startedAt: 0, stopStartedAt: 0, result: null, error: null, usName: '', themName: '', output: [] };
 let foregroundBattleRunning = false;
 
 // ---------- AI 批量评测任务 ----------
@@ -82,6 +99,7 @@ const EVAL_SEEDS = [42, 7, 21, 100, 123];
 const evaluations = new Map();
 let evaluationSeq = 0;
 const MAX_EVALUATIONS = 24;
+const MAX_INLINE_CANDIDATES = 128;
 
 function safeName(value, fallback='candidate'){
   const s = String(value || '').trim().replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
@@ -89,6 +107,25 @@ function safeName(value, fallback='candidate'){
 }
 function codeHash(code){
   return crypto.createHash('sha256').update(code, 'utf8').digest('hex').slice(0, 12);
+}
+function pruneInlineCandidates(keepFile){
+  let files=[];
+  try {
+    files=fs.readdirSync(ROBOTS_DIR)
+      .filter(name=>/^ai_[a-zA-Z0-9_-]+_[a-f0-9]{12}\.py$/.test(name))
+      .map(name=>{
+        const file=path.join(ROBOTS_DIR,name);
+        let mtime=0;
+        try { mtime=fs.statSync(file).mtimeMs; } catch (e) {}
+        return {name,file,mtime};
+      }).sort((a,b)=>b.mtime-a.mtime);
+  } catch (e) { return; }
+  const keep=new Set([keepFile]);
+  for(const item of files){
+    if(keep.has(item.name)) continue;
+    if(keep.size < MAX_INLINE_CANDIDATES){ keep.add(item.name); continue; }
+    try { fs.unlinkSync(item.file); } catch (e) {}
+  }
 }
 function materializeCandidate(body){
   const candidate = body && body.candidate && typeof body.candidate === 'object' ? body.candidate : null;
@@ -101,6 +138,7 @@ function materializeCandidate(body){
   const file = stem + '.py';
   const filePath = path.join(ROBOTS_DIR, file);
   fs.writeFileSync(filePath, code, 'utf8');
+  pruneInlineCandidates(file);
   const command = `python robot_adapter.py robots/${file}`;
   return {
     us: role === 'us' ? command : (body.us || 'fsm'),
@@ -132,15 +170,20 @@ function summarizeEvaluation(runs){
   const wins = okRuns.filter(r => r.netScore > 0).length;
   const draws = okRuns.filter(r => r.netScore === 0).length;
   const mounts = okRuns.filter(r => r.metrics && r.metrics.us && r.metrics.us.mounted).length;
+  const status = !runs.length ? 'pending' : (count === 0 ? 'error' : (count < runs.length ? 'partial' : 'ok'));
+  const hasData = count > 0;
   return {
+    status,
     count,
     failed: runs.length - count,
-    meanNetScore: +mean(netScores).toFixed(3),
-    meanUsScore: +(sum('usScore') / (count || 1)).toFixed(3),
-    meanThemScore: +(sum('themScore') / (count || 1)).toFixed(3),
-    winRate: +(wins / (count || 1)).toFixed(3),
-    drawRate: +(draws / (count || 1)).toFixed(3),
-    mountRate: +(mounts / (count || 1)).toFixed(3),
+    // 全失败不能伪装成“0 分表现”：调用方应依据 status/error 处理，
+    // 而不是把桥接故障误判成一个有效的零分策略。
+    meanNetScore: hasData ? +mean(netScores).toFixed(3) : null,
+    meanUsScore: hasData ? +(sum('usScore') / count).toFixed(3) : null,
+    meanThemScore: hasData ? +(sum('themScore') / count).toFixed(3) : null,
+    winRate: hasData ? +(wins / count).toFixed(3) : null,
+    drawRate: hasData ? +(draws / count).toFixed(3) : null,
+    mountRate: hasData ? +(mounts / count).toFixed(3) : null,
     bestNetScore: netScores.length ? Math.max(...netScores) : null,
     worstNetScore: netScores.length ? Math.min(...netScores) : null,
   };
@@ -160,6 +203,7 @@ function publicEvaluation(job){
     summary: job.summary,
     runs: job.runs,
     error: job.error,
+    metadata: job.metadata,
   };
 }
 function trimEvaluations(){
@@ -185,6 +229,7 @@ async function runEvaluation(job, opts){
           seed,
           params: opts.params,
           scene: opts.scene,
+          fieldGray: opts.fieldGray,
           vehicles: opts.vehicles,
           dt: opts.dt,
           maxSteps: opts.maxSteps,
@@ -208,17 +253,37 @@ async function runEvaluation(job, opts){
           done: result.done,
           doneReason: result.doneReason,
           metrics: result.metrics,
+          perception: result.perception,
+          policyStats: result.policyStats,
+          warnings: result.warnings || [],
           elapsedMs: Date.now() - started,
           logTail: result.logTail,
         };
         if (opts.includeTrace) row.trace = result.trace;
         job.runs.push(row);
+        job.metadata.actual = {
+          coreHash: CORE_HASH,
+          fieldGray: fieldGraySnapshot(),
+          vehicles: { us: getVehicleFor('us'), them: getVehicleFor('them') },
+          fidelity: fidelitySnapshot(),
+        };
       } catch (e) {
         job.runs.push({ seed, ok: false, error: String(e && e.message || e), elapsedMs: Date.now() - started });
       }
+      // 记录本次 seed 实际使用的环境，而不是只记录请求值；这对中途失败和
+      // 未来扩展运行时 profile/感知插件尤其重要。
+      job.metadata.actual = {
+        coreHash: CORE_HASH,
+        fieldGray: fieldGraySnapshot(),
+        vehicles: { us: getVehicleFor('us'), them: getVehicleFor('them') },
+        fidelity: fidelitySnapshot(),
+      };
       job.summary = summarizeEvaluation(job.runs);
     }
-    job.status = job.cancelRequested ? 'cancelled' : 'done';
+    if (job.cancelRequested) job.status = 'cancelled';
+    else if (!job.runs.length || job.runs.every(r => r.error)) job.status = 'error';
+    else if (job.runs.some(r => r.error)) job.status = 'partial';
+    else job.status = 'done';
   } catch (e) {
     job.status = 'error';
     job.error = String(e && e.message || e);
@@ -226,6 +291,7 @@ async function runEvaluation(job, opts){
     job.currentSeed = null;
     job.finishedAt = new Date().toISOString();
     job.summary = summarizeEvaluation(job.runs);
+    if (job.status === 'error' && !job.error) job.error = '所有 seed 评测均失败';
     trimEvaluations();
   }
 }
@@ -242,11 +308,13 @@ function registryList(){
 function battleStatus(state){
   const s = state || getState();
   return {
-    running: battleSession.running,
+    status: battleSession.status,
+    running: battleSession.status === 'running',
+    stopping: battleSession.status === 'stopping',
     startedAt: battleSession.startedAt,
     us: battleSession.usName, them: battleSession.themName,
     simT: s.simT, scores: s.scores,
-    done: !battleSession.running && !!battleSession.result,
+    done: battleSession.status === 'idle' && !!battleSession.result,
     doneReason: (battleSession.result && battleSession.result.doneReason) || battleSession.error || '',
     logTail: getLog().slice(-25),
     output: battleSession.output.slice(-60),   // 子进程输出(对手/我方程序 stderr 等)
@@ -258,7 +326,7 @@ function battleStatus(state){
 
 function coreBusyReason(){
   if (evaluationBusy()) return '评测任务运行中，单例核心不能接受外部状态修改';
-  if (battleSession.running) return '远程对战运行中，请使用 /battle/control 或先 /battle/stop';
+  if (battleSession.status !== 'idle') return battleSession.status === 'stopping' ? '上一场远程对战仍在停止，请稍后再试' : '远程对战运行中，请使用 /battle/control 或先 /battle/stop';
   if (foregroundBattleRunning) return '单场对战运行中，单例核心不能接受外部状态修改';
   return '';
 }
@@ -347,11 +415,11 @@ const server = http.createServer(async (req, res) => {
         evaluationBusy: evaluationBusy(),
         coreBusy: !!coreBusyReason(),
         fidelitySummary: fidelitySnapshot().byStatus,
-        fieldGray: getFieldGrayInfo(),
+        fieldGray: fieldGraySnapshot(),
         endpoints: {
           schema: '/api/v1/schema',
           evaluate: '/api/v1/evaluations',
-          state: '/state',
+          state: '/state (全量) 或 /state?compact=1 (紧凑)',
           fidelity: '/fidelity',
           fieldGray: '/field-gray',
         },
@@ -370,14 +438,14 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && (u.pathname === '/field-gray' || u.pathname === '/api/v1/field-gray')) {
       const includeValues = u.searchParams.get('values') === '1';
-      return json(res, 200, { ok:true, fieldGray:getFieldGrayInfo(), map:includeValues ? getFieldGrayMap() : undefined });
+      return json(res, 200, { ok:true, fieldGray:fieldGraySnapshot(), map:includeValues ? getFieldGrayMap() : undefined });
     }
     if (req.method === 'POST' && (u.pathname === '/field-gray' || u.pathname === '/api/v1/field-gray')) {
       if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
       const map = b.reset === true || b.map === null ? null : (b.map === undefined ? b : b.map);
-      const fieldGray = setFieldGrayMap(map);
-      return json(res, 200, { ok:true, fieldGray, state:getState() });
+      setFieldGrayMap(map);
+      return json(res, 200, { ok:true, fieldGray:fieldGraySnapshot(), state:getState() });
     }
     if (req.method === 'GET' && (u.pathname === '/schema' || u.pathname === '/api/v1/schema')) {
       return json(res, 200, {
@@ -443,6 +511,10 @@ const server = http.createServer(async (req, res) => {
         runs: [],
         summary: summarizeEvaluation([]),
         error: null,
+        metadata: {
+          requested: { coreHash: CORE_HASH, fieldGray: b.fieldGray || null, vehicles: b.vehicles || null, fidelity: fidelitySnapshot() },
+          actual: null,
+        },
       };
       evaluations.set(id, job);
       trimEvaluations();
@@ -468,7 +540,8 @@ const server = http.createServer(async (req, res) => {
       if (!job) return json(res, 404, { error: '评测任务不存在', id: evalPathMatch[1] });
       if (req.method === 'DELETE'){
         if (job.status === 'queued' || job.status === 'running') job.cancelRequested = true;
-        return json(res, 202, { ok: true, id: job.id, status: job.status === 'done' ? job.status : 'cancelling' });
+        const terminal = ['done','partial','error','cancelled'].includes(job.status);
+        return json(res, terminal ? 200 : 202, { ok: true, id: job.id, status: terminal ? job.status : 'cancelling' });
       }
       return json(res, 200, publicEvaluation(job));
     }
@@ -491,19 +564,19 @@ const server = http.createServer(async (req, res) => {
       resetAll({ seed: b.seed ?? params.seed, params: b.params, scene: b.scene, fieldGray: b.fieldGray, vehicles: b.vehicles });
       if (b.manual) startManual();
       scoreBase = { us: scoreBoard.us, them: scoreBoard.them };
-      return json(res, 200, { ok: true, state: getState() });
+      return json(res, 200, { ok: true, state: stateForRequest(u, b) });
     }
     if (req.method === 'POST' && u.pathname === '/arm') {
       if (rejectWhenCoreBusy(res)) return;
       arm();
-      return json(res, 200, { ok: true, state: getState() });
+      return json(res, 200, { ok: true, state: stateForRequest(u) });
     }
     if (req.method === 'POST' && u.pathname === '/step') {
       if (rejectWhenCoreBusy(res)) return;
       const b = await readBody(req);
       const dt = typeof b.dt === 'number' ? b.dt : 0.05;
       stepSim(dt, b.action);
-      const st = getState();
+      const st = stateForRequest(u, b);
       return json(res, 200, { state: st, reward: snapshotReward(), done: st.done, doneReason: st.doneReason, step: b });
     }
     if (req.method === 'POST' && u.pathname === '/step2') {
@@ -511,7 +584,7 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       const dt = typeof b.dt === 'number' ? b.dt : 0.05;
       stepSimExt(dt, { us: b.us || null, them: b.them || null });
-      const st = getState();
+      const st = stateForRequest(u, b);
       return json(res, 200, { state: st, reward: snapshotReward(), done: st.done, doneReason: st.doneReason });
     }
     if (req.method === 'POST' && u.pathname === '/params') {
@@ -623,46 +696,53 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && u.pathname === '/battle/start') {
       const b = await readBody(req);
       if (rejectWhenCoreBusy(res)) return;
-      resetAll({ seed: b.seed, params: b.params, fieldGray: b.fieldGray, vehicles: b.vehicles });
+      resetAll({ seed: b.seed, params: b.params, scene: b.scene, fieldGray: b.fieldGray, vehicles: b.vehicles });
       scoreBase = { us: scoreBoard.us, them: scoreBoard.them };
-      battleSession = {
-        running: true, abort: false, stop: null, controlToken: crypto.randomBytes(24).toString('hex'), startedAt: Date.now(), result: null, error: null,
+      const session = {
+        status: 'running', running: true, abort: false, stop: null, controlToken: crypto.randomBytes(24).toString('hex'), startedAt: Date.now(), stopStartedAt: 0, result: null, error: null,
         usName: b.us || 'fsm', themName: b.them || 'fsm', output: [],
       };
+      battleSession = session;
+      const isCurrentSession = () => battleSession === session;
       runBattle({
         api,
         seed: b.seed, params: b.params,
         fieldGray: b.fieldGray,
         vehicles: b.vehicles,
+        skipReset: true,
         dt: b.dt, maxSteps: b.maxSteps || 2400,
         us: b.us ?? 'fsm', them: b.them ?? 'fsm',
         actionTimeout: b.actionTimeout,
         traceEvery: b.traceEvery,
         realtime: b.realtime,
-        shouldAbort: () => battleSession.abort,
-        onPolicies: controls => { battleSession.stop = controls.stop; },
+        shouldAbort: () => !isCurrentSession() || session.abort,
+        onPolicies: controls => { if (isCurrentSession()) session.stop = controls.stop; },
         onLog: m => {
-          battleSession.output.push(m);
-          if (battleSession.output.length > 200) battleSession.output.shift();
+          session.output.push(m);
+          if (session.output.length > 200) session.output.shift();
         },
       }).then(r => {
-        battleSession.result = r;
-        battleSession.running = false;
-        battleSession.stop = null;
-        battleSession.controlToken = '';
+        if (!isCurrentSession()) return;
+        session.result = r;
+        session.status = 'idle';
+        session.running = false;
+        session.stop = null;
+        session.controlToken = '';
       }).catch(e => {
-        battleSession.error = String(e && e.message || e);
-        battleSession.running = false;
-        battleSession.stop = null;
-        battleSession.controlToken = '';
+        if (!isCurrentSession()) return;
+        session.error = String(e && e.message || e);
+        session.status = 'idle';
+        session.running = false;
+        session.stop = null;
+        session.controlToken = '';
       });
-      return json(res, 200, { ok: true, started: true, us: battleSession.usName, them: battleSession.themName, controlToken: battleSession.controlToken });
+      return json(res, 200, { ok: true, started: true, us: session.usName, them: session.themName, controlToken: session.controlToken });
     }
     // 后台对战占用同一个 CORE。只有握有启动响应令牌的页面能在比赛中调裁判、场景和参数，
     // 既避免外部请求串改物理状态，也保留远程 GUI 所需的比赛内控制。
     if (req.method === 'POST' && u.pathname === '/battle/control') {
       const b = await readBody(req);
-      if (!battleSession.running) return json(res, 409, { error: '没有进行中的远程对战' });
+      if (battleSession.status !== 'running') return json(res, 409, { error: battleSession.status === 'stopping' ? '上一场远程对战仍在停止' : '没有进行中的远程对战' });
       if (typeof b.token !== 'string' || b.token !== battleSession.controlToken){
         return json(res, 403, { error: '远程对战控制令牌无效' });
       }
@@ -687,12 +767,27 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, command, state: getState() });
     }
     if (req.method === 'POST' && u.pathname === '/battle/stop') {
+      if (battleSession.status === 'idle') return json(res, 200, { ok: true, abortRequested: false, status: 'idle', alreadyStopped: true });
+      if (battleSession.status === 'stopping') return json(res, 202, { ok: true, abortRequested: true, status: 'stopping' });
+      battleSession.status = 'stopping';
+      battleSession.running = false;
+      battleSession.stopStartedAt = Date.now();
       battleSession.abort = true;
       if (battleSession.stop) battleSession.stop();
-      return json(res, 200, { ok: true, abortRequested: true });
+      const stoppingSession = battleSession;
+      // 策略子进程通常会在当前 step 内退出；若异常策略阻塞，有限兜底释放会话锁。
+      setTimeout(() => {
+        if (battleSession === stoppingSession && stoppingSession.status === 'stopping' && Date.now() - stoppingSession.stopStartedAt >= 5000) {
+          stoppingSession.error = stoppingSession.error || '远程对战停止超时，已释放会话锁';
+          stoppingSession.status = 'idle';
+          stoppingSession.stop = null;
+          stoppingSession.controlToken = '';
+        }
+      }, 5100).unref?.();
+      return json(res, 202, { ok: true, abortRequested: true, status: 'stopping' });
     }
     if (req.method === 'GET' && u.pathname === '/battle/status') {
-      return json(res, 200, battleStatus());
+      return json(res, 200, battleStatus(stateForRequest(u)));
     }
     if (req.method === 'GET' && u.pathname === '/registry') {
       return json(res, 200, registryList());
@@ -719,7 +814,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok:true, points, state:getState() });
     }
     if (req.method === 'GET' && u.pathname === '/state') {
-      return json(res, 200, getState());
+      return json(res, 200, stateForRequest(u));
     }
     if (req.method === 'GET' && u.pathname === '/log') {
       return json(res, 200, { log: getLog() });

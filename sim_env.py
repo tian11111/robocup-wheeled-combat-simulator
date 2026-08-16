@@ -57,43 +57,49 @@ class SimEnv:
         return self._get("/api/v1/schema")
 
     # ---------- gym 风格接口 ----------
-    def reset(self, seed=None, params=None, scene=None, manual=False, vehicles=None):
+    def reset(self, seed=None, params=None, scene=None, manual=False, vehicles=None, field_gray=None):
         """重置。seed 固定后整集可复现; scene 可用 'center'/'edge'/'walkway'/'hang' 等预设;
         manual=True 进入手动策略模式(step 需传 action)。返回 obs。"""
-        r = self._post("/reset", {"seed": seed, "params": params, "scene": scene,
-                                   "vehicles": vehicles, "manual": manual})
+        payload = {"seed": seed, "params": params, "scene": scene,
+                   "vehicles": vehicles, "manual": manual}
+        if field_gray is not None:
+            payload["fieldGray"] = field_gray
+        r = self._post("/reset", payload)
         return r["state"]
 
     def arm(self):
         """FSM 模式发令。"""
         return self._post("/arm")["state"]
 
-    def step(self, action=None, dt=0.05):
+    def step(self, action=None, dt=0.05, compact=False):
         """推进一步。action={'v','w'} 时按手动策略控制我方; None 时 FSM 自决策。
         返回 (obs, reward, done, info); reward 为本步得分增量, done=True 时 info['doneReason'] 说明原因。"""
-        r = self._post("/step", {"dt": dt, "action": action})
+        r = self._post("/step", {"dt": dt, "action": action, "compact": compact})
         return r["state"], r["reward"], r["done"], {"doneReason": r["doneReason"]}
 
-    def step2(self, us=None, them=None, dt=0.05):
+    def step2(self, us=None, them=None, dt=0.05, compact=False):
         """分别控制两车: us/them 为 {'v','w'} 或 None(该车由自身 FSM 决策)。"""
-        r = self._post("/step2", {"dt": dt, "us": us, "them": them})
+        r = self._post("/step2", {"dt": dt, "us": us, "them": them, "compact": compact})
         return r["state"], r["reward"], r["done"], {"doneReason": r["doneReason"]}
 
     def run_battle(self, us="fsm", them="fsm", seed=None, params=None, dt=0.05,
-                   max_steps=2400, trace_every=20, vehicles=None):
+                   max_steps=2400, trace_every=20, vehicles=None, field_gray=None):
         """跑一整场对战。us/them 可为 'fsm'(内置算法) 或子进程命令,
         如 'python robot_adapter.py example_robot.py'(运行你自己的小车程序)。
         params 可传参数字典(如 {'EDGE_THRESHOLD':250})；vehicles 为 {'us': {...}, 'them': {...}}。
         返回 {scores, robots, simT, steps, done, doneReason, trace, logTail}。"""
-        return self._post("/battle/run", {
+        payload = {
             "us": us, "them": them, "seed": seed, "params": params, "vehicles": vehicles,
             "dt": dt, "maxSteps": max_steps, "traceEvery": trace_every,
-        })
+        }
+        if field_gray is not None:
+            payload["fieldGray"] = field_gray
+        return self._post("/battle/run", payload)
 
     def start_evaluation(self, us="fsm", them="fsm", seeds=None, params=None,
                          vehicles=None, scene=None, dt=0.05, max_steps=2400,
                          trace_every=20, action_timeout=300, include_trace=False,
-                         candidate=None, realtime=False):
+                         candidate=None, realtime=False, field_gray=None):
         """异步批量评测。返回 job 信息，随后用 wait_evaluation 轮询。
 
         candidate 可传 {name, role, code}，代码会保存为本机临时候选并自动运行；
@@ -107,6 +113,8 @@ class SimEnv:
             "actionTimeout": action_timeout, "includeTrace": include_trace,
             "realtime": realtime,
         }
+        if field_gray is not None:
+            body["fieldGray"] = field_gray
         if candidate is not None:
             body["candidate"] = candidate
         return self._post("/api/v1/evaluations", body)
@@ -128,7 +136,7 @@ class SimEnv:
         deadline = time.time() + timeout
         while True:
             result = self.evaluation(job_id)
-            if result.get("status") in ("done", "error", "cancelled"):
+            if result.get("status") in ("done", "partial", "error", "cancelled"):
                 return result
             if time.time() >= deadline:
                 raise TimeoutError("评测任务等待超时: %s" % job_id)
@@ -161,8 +169,8 @@ class SimEnv:
         if debuff: payload["debuff"] = debuff
         return self._post("/scene", payload)["state"]
 
-    def state(self):
-        return self._get("/state")
+    def state(self, compact=False):
+        return self._get("/state?compact=1" if compact else "/state")
 
     def log(self):
         return self._get("/log")["log"]
