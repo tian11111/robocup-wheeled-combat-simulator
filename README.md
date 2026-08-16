@@ -5,6 +5,8 @@
 > 这是**决策逻辑仿真**。台阶、传感器、摩擦与碰撞均为可调的简化模型，不能替代实车标定。
 
 > 给 Codex 等本机 AI 的克隆后部署、评测和改动约束见 [AI_QUICKSTART.md](AI_QUICKSTART.md)。
+> 
+> 在线体验：[https://tian11111.github.io/robocup-wheeled-combat-simulator/wushu_ring_sim_3d.html](https://tian11111.github.io/robocup-wheeled-combat-simulator/wushu_ring_sim_3d.html)。
 
 ![3D 仿真器运行界面](docs/assets/simulator-overview.png)
 
@@ -194,4 +196,4 @@ Windows 上如果 `python` 不在 PATH，请使用你的 Python 解释器完整�
 - 修改 3D UI 请编辑 `wushu_ring_sim_3d.template.html`，不要直接修改生成页面中的核心代码。
 - 同一台 `sim_server.js` 在任一时刻只运行一场远程对战或一个批量评估任务。
 
-在线体验：[https://tian11111.github.io/robocup-wheeled-combat-simulator/wushu_ring_sim_3d.html](https://tian11111.github.io/robocup-wheeled-combat-simulator/wushu_ring_sim_3d.html)
+
