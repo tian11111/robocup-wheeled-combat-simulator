@@ -407,7 +407,7 @@ curl http://127.0.0.1:8932/api/v1/evaluations/<id>
 | `GET /vehicle?role=us` | — | 读取一台车当前 profile |
 | `POST /vehicle` | `{role:'us', vehicle:{length:0.32, width:0.24, maxSpeed:1.2}}` | 修改单台车 profile，立即影响碰撞/运动 |
 | `POST /scene` | `{preset} / {us:{x,y,th}, them:{x,y,th}, vehicles?, buffs, debuff}` | 摆场景；`robot/opp` 旧字段仍兼容，`vehicles` 可同时更新双车 profile |
-| `POST /battle/run` | `{us, them, seed, params, fieldGray, vehicles, dt, maxSteps, actionTimeout, traceEvery}` | 跑一整场；`fieldGray` 与车辆 profile 会在开局一起固定；us/them 为 `'fsm'` 或子进程命令；返回含轨迹 `trace` |
+| `POST /battle/run` | `{us, them, seed, params, fieldGray, vehicles, dt, maxSteps, actionTimeout, traceEvery, includeTrace?}` | 跑一整场；`fieldGray` 与车辆 profile 会在开局一起固定；传 `includeTrace:true` 返回 `diagnostic-v1` 轨迹、完整 `events` 和 `diagnostics` |
 | `POST /battle/start` | `{us, them, seed?, params?, fieldGray?, vehicles?, dt?, maxSteps?, realtime?}` | 启动后台远程对战，返回 `controlToken`；默认实时 20Hz |
 | `POST /battle/control` | `{token, command, ...}` | 持 `/battle/start` 返回的令牌控制进行中的后台对战；`command` 为 `arm/pause/resume/restart/scene/params` |
 | `POST /battle/stop` | — | 幂等请求停止后台对战并终止其策略子进程；运行中返回 `202/stopping`，收尾后回到 `idle` |
@@ -499,6 +499,52 @@ python sim_runner.py compare --candidate candidate.py --baseline fsm --workers 4
 短小的 FSM 评测可能被 worker 启动开销主导；较多 seed、较慢的候选程序或 `--realtime` 评测更适合提高 `--workers`。
 
 每次 `eval/compare` 会写入 `.sim_runs/<UTC-实验名>/result.json`：含请求参数、候选策略 SHA-256、`coreHash`、车辆 profile、种子、完整服务端结果及执行时间。该目录被 Git 忽略，便于 AI 比较策略版本或按结果文件复现。需要可视化时，再打开 `wushu_ring_sim_3d.html` 观察轨迹与裁判阶段。
+
+### 诊断日志 v2：从结果反推失败原因
+
+默认评测不写详细逐步轨迹，以保持五个 seed 的快速运行和较小结果文件。需要分析某个退化 seed 时显式打开诊断模式：
+
+```bash
+# 单 seed 逐步记录，最适合掉台/撞击/登台失败复盘
+python sim_runner.py eval --candidate candidate.py --seeds 100 --trace --trace-every 1
+
+# 候选与基线同时保留诊断轨迹
+python sim_runner.py compare --candidate candidate.py --baseline fsm --trace
+```
+
+`.sim_runs/.../result.json` 中每个 `runs[]` 行都会有 `diagnostics`；失败样本还会保留 `ok=false`、错误文本和 `runner_error`。开启 `--trace` 后，行内增加 `traceFormat=diagnostic-v1`、`traceMeta`、`trace` 和完整 `events`：
+
+```text
+rawSensors
+  → actions.requested（限幅后的策略请求）
+  → actions.applied（指令延迟队列后实际送入动力学的 v/w）
+  → velocity/pose（积分后的实际速度、位置、pitch/roll/zG）
+  → FSM state/flags（堵转、楔入、前轮载荷）
+  → objects/events（能量块、碰撞/裁判日志）
+  → scores/reward（本采样点比分增量）
+```
+
+轨迹中双方机器人仍保留旧的 `x/y/th/state/action/onPlatform/hang` 平铺字段；新增字段位于 `us`/`them` 内：
+
+| 字段 | 用途 |
+|---|---|
+| `pose` | `x/y/th/pitch/roll/zG`，判断台阶姿态和掉台前几何位置 |
+| `velocity` | 实际 `v/w/speed/omega`，与请求动作区分，判断打滑/堵转/碰撞响应 |
+| `actions` | `requested` 与延迟后的 `applied`，判断策略错误还是控制管线延迟 |
+| `sensors/rawSensors` | 兼容别名与车辆真实通道，定位灰度/红外误触发 |
+| `flags` | `isStalled/wedgedFront/frontLoad`，定位堵转和铲斗楔入 |
+| `objects` | 增益/减益块的逐点位置、是否仍在台上、是否已报废 |
+| `events` | 当前采样点新增的结构化 `{seq,t,msg,cls}` 裁判/FSM/警告事件；`seq` 用于跨 500 条日志环回去重 |
+
+`diagnostics.failure` 是自动归因摘要：
+
+- `policy_timeout`：策略连续超时并触发熔断；配合 `policyStats.timeoutCount/consecutiveTimeouts` 查看。
+- `policy_protocol`：stdout 没有输出合法有限 `v/w`，或输出污染动作协议。
+- `mount_failed`：FSM 结束时登台/恢复次数失败。
+- `fell`：曾经登台后离开完整 footprint；`falls[]` 给出角色、时间和状态。
+- `time_limit`：达到比赛时间或 `maxSteps`；`unfinished`：循环结束但没有完成裁判状态。
+
+AI 分析顺序应先核对 `server.coreHash`、`result.metadata.actual.fieldGray/vehicles/fidelity`，再用相同 seed 对比 `trace`。`logTail` 只保留末尾 30 条，适合快速提示，不应作为完整因果证据。详细轨迹会显著增大 JSON，常规筛选保持默认关闭；定位完成后再关闭 `--trace` 进行批量搜索。仿真中的 `hand_drawn/random_stub/uncalibrated` 保真度状态仍不能支持真机物理结论。
 
 Python 客户端也提供等价封装：
 

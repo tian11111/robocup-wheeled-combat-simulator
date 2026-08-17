@@ -6,7 +6,7 @@
 'use strict';
 const assert = require('assert');
 const readline = require('readline');
-const { extractCoreScript, splitCommand, spawnPolicy } = require('./sim_lib');
+const { extractCoreScript, splitCommand, spawnPolicy, loadCore, runBattle } = require('./sim_lib');
 
 if (process.argv.includes('--fixture')) {
   const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -47,6 +47,29 @@ async function testSpawnPolicy(){
   }
 }
 
+async function testDiagnosticTrace(){
+  const api = loadCore(__dirname);
+  const result = await runBattle({
+    api,
+    seed: 42,
+    us: 'fsm',
+    them: 'fsm',
+    maxSteps: 2,
+    realtime: false,
+    includeTrace: true,
+    traceEvery: 1,
+  });
+  assert.ok(result.trace.length >= 3, '诊断轨迹应包含初始帧和每个采样步');
+  assert.ok(result.trace[1].us.pose, '诊断轨迹应包含位姿');
+  assert.ok(result.trace[1].us.velocity, '诊断轨迹应包含实际速度');
+  assert.ok(result.trace[1].us.rawSensors, '诊断轨迹应包含原始传感器');
+  assert.ok(result.trace[1].objects, '诊断轨迹应包含能量块');
+  assert.ok(Array.isArray(result.trace[1].events), '诊断轨迹应包含本帧事件');
+  assert.strictEqual(result.traceFormat, 'diagnostic-v1');
+  assert.strictEqual(result.diagnostics.format, 'diagnostic-v1');
+  assert.ok(result.diagnostics.termination);
+}
+
 (async () => {
   const html = '<script src="vendor.js"></script><script type="text/javascript">\n// CORE-BEGIN\nmodule.exports = { ok:true };\n// CORE-END\n</script>';
   assert.ok(extractCoreScript(html, 'fixture.html').includes('module.exports = { ok:true }'));
@@ -55,6 +78,7 @@ async function testSpawnPolicy(){
     ['C:\\Program Files\\Python\\python.exe', 'robot_adapter.py', 'D:\\Project Dir\\robot.py'],
   );
   await testSpawnPolicy();
+  await testDiagnosticTrace();
   console.log('sim_lib 自测通过 ✔');
 })().catch(error => {
   console.error('sim_lib 自测失败:', error && error.stack || error);

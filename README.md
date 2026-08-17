@@ -75,6 +75,27 @@ python sim_runner.py eval --candidate candidate.py --field-gray path\to\measured
 
 `--params`、`--vehicles` 和 `--field-gray` 均可传内联 JSON 或 JSON 文件；单车 profile 会自动作为我方 profile 使用。仓库不附带真实灰度表，需先将实测数据导出为灰度表 JSON；不要直接把原始遥测目录当作 `--field-gray` 文件。`--workers N` 只并行 AI 批量评测，不改变网页远程对战和 HTTP 单例 API；每次实验结果会记录 worker 数、端口、`coreHash`、灰度表摘要和完整结果。每次 `eval/compare` 都把请求、策略 SHA-256、实际 `coreHash`、灰度表摘要和完整结果保存到 `.sim_runs/`，该目录不会提交到 Git。默认是快速确定性评测；实车线程时序验证时附加 `--realtime`。如果 `doctor` 显示服务的 `coreHash` 与当前文件不一致，请先重启已有的 `sim_server.js`；runner 默认拒绝复用旧核心，只有明确传 `--allow-stale-core` 才会继续。
 
+### 让 AI 分析失败原因
+
+普通评测只保存比分、登台指标、策略统计和 `logTail`，适合快速筛选；需要定位“传感器是否误判、动作是否被延迟/限幅、车辆为什么没有移动或掉台”时，显式开启诊断轨迹：
+
+```powershell
+# 单个退化 seed，逐步保存完整因果链
+python sim_runner.py eval --candidate candidate.py --seeds 100 --trace --trace-every 1
+
+# 候选与 FSM 基线都保留轨迹，便于按相同 seed 对照
+python sim_runner.py compare --candidate candidate.py --baseline fsm --trace
+```
+
+结果位于 `.sim_runs/<UTC-实验名>/result.json`。AI 建议按下面顺序读取：
+
+1. `server.coreHash`、`result.metadata.actual.fidelity`、`result.metadata.actual.fieldGray`：确认比较的是同一份规则核心、灰度表和保真度边界；`hand_drawn`、`random_stub`、`uncalibrated` 不能当作真机结论。
+2. `result.summary` 与 `runs[]`：先找净胜下降、未登台或失败的 seed；`runs[].diagnostics.failure` 是服务端的自动归因摘要，常见类别为 `policy_timeout`、`policy_protocol`、`mount_failed`、`fell`、`time_limit`、`unfinished`。
+3. `runs[].policyStats`、`warnings`：确认是否是策略进程连续超时、stdout 输出污染、非法动作或熔断停车；`logTail` 只保留最后 30 条，不能代替完整轨迹。
+4. `runs[].trace` 和 `runs[].events`（仅 `--trace`）：逐采样点按 `rawSensors → actions.requested → actions.applied → velocity/pose → state → objects/events → reward` 复盘。`requested` 是限幅后的策略请求，`applied` 是经过指令延迟队列后送入动力学的指令，`velocity` 是积分后的实际运动，不是请求速度。
+
+诊断轨迹格式为 `diagnostic-v1`：每条轨迹包含 `step/t/match/scores/reward`，双方车辆包含 `pose`（含 pitch/roll/zG）、`velocity`（实际 v/w/speed/omega）、`actions`、`flags`（堵转/楔入/前轮载荷）、`sensors`、`rawSensors`，并附当前能量块 `objects` 与本采样间新增 `events`。`--trace-every 1` 最适合分析掉台、撞击和登台瞬间，但文件会明显变大；默认不启用详细轨迹以保持批量评测速度。修改策略后应使用相同 seed、参数、车辆 profile 和灰度表重跑，避免把环境变化误判成算法收益。
+
 ### 真实遥测标定
 
 仿真评分在完成相应真机标定前不能当作真机成绩。将推块、撞墙/对冲、滑移、堵转和登台的真实位姿遥测整理为 JSON 后运行：

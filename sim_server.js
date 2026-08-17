@@ -325,6 +325,7 @@ async function runEvaluation(job, opts){
           maxSteps: opts.maxSteps,
           actionTimeout: opts.actionTimeout,
           traceEvery: opts.traceEvery,
+          includeTrace: opts.includeTrace,
           realtime: opts.realtime,
           us: job.us,
           them: job.them,
@@ -346,10 +347,16 @@ async function runEvaluation(job, opts){
           perception: result.perception,
           policyStats: result.policyStats,
           warnings: result.warnings || [],
+          diagnostics: result.diagnostics,
           elapsedMs: Date.now() - started,
           logTail: result.logTail,
         };
-        if (opts.includeTrace) row.trace = result.trace;
+        if (opts.includeTrace) {
+          row.trace = result.trace;
+          row.events = result.events;
+          row.traceMeta = result.traceMeta;
+          row.traceFormat = result.traceFormat;
+        }
         job.runs.push(row);
         job.metadata.actual = {
           coreHash: CORE_HASH,
@@ -358,7 +365,15 @@ async function runEvaluation(job, opts){
           fidelity: fidelitySnapshot(),
         };
       } catch (e) {
-        job.runs.push({ seed, ok: false, error: String(e && e.message || e), elapsedMs: Date.now() - started });
+        job.runs.push({
+          seed,
+          ok: false,
+          error: String(e && e.message || e),
+          diagnostics: { format: opts.includeTrace ? 'diagnostic-v1' : 'summary-v1', failure: {
+            category: 'runner_error', reason: String(e && e.message || e),
+          }},
+          elapsedMs: Date.now() - started,
+        });
       }
       // 记录本次 seed 实际使用的环境，而不是只记录请求值；这对中途失败和
       // 未来扩展运行时 profile/感知插件尤其重要。
@@ -810,6 +825,7 @@ const server = http.createServer(async (req, res) => {
           us: b.us ?? 'fsm', them: b.them ?? 'fsm',
           actionTimeout: b.actionTimeout,
           traceEvery: b.traceEvery,
+          includeTrace: !!b.includeTrace,
         });
         return json(res, 200, r);
       } finally {

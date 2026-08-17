@@ -28,6 +28,7 @@ python sim_runner.py eval --candidate example_robot.py --workers 4              
 
 - **调参迭代**：起 server → `sim_env.py` 或 curl 跑多 seed 基线 → `/params` 改参数 → 对比比分与 `logTail`。
 - **AI 批量评测**：默认 `sim_runner.py eval/compare` 使用单 worker；显式传 `--workers N` 时按 seed 启动隔离 Node 进程池并行评测，不修改已有 `8932` 服务。
+- **AI 失败诊断**：先用 `python sim_runner.py eval --candidate candidate.py --seeds 100 --trace --trace-every 1` 复现单个 seed；读取 `.sim_runs/.../result.json` 中的 `diagnostics.failure`、`policyStats`、`trace` 和 `events`，按 `rawSensors → requested/applied → 实际速度/姿态 → FSM → 事件/得分` 判断是策略、协议还是物理响应问题。
 - **接入自己的小车程序**：写 `decide(obs) -> {"v","w"}`，用 `robot_adapter.py` 跑（协议见 SIMULATOR.md）。
 - **复现 bug**：`sim_selftest.js` 里加场景（固定 seed），确定性复现后修 CORE。
 - **视觉**：默认使用 `classifyRate` 概率模拟；3D 页右侧独立“YOLO 设置”标签可选接入外部 HTTP 视觉，超时/过期自动回退，勿改 `decide(obs)` 接口。
@@ -53,3 +54,10 @@ python sim_runner.py eval --candidate example_robot.py --workers 4              
   2. 改动大的时候先写方案给人确认，不要直接写一堆代码
   3. 不要私自扩大项目范围，spec写的“不做”就坚决不做
   4. 每完成一个子任务，更新spec文档
+
+## AI 诊断结果约定
+
+- 默认评测保持快速模式，不保存详细逐步轨迹；只有显式传 `--trace` 才在每个 seed 的结果中写入 `diagnostic-v1`。
+- `trace` 里的 `actions.requested` 是限幅后的策略请求，`actions.applied` 是指令延迟队列后的动力学输入，`velocity` 是积分后的实际运动；不要把三者混为一个“速度”。
+- `diagnostics.failure` 只提供自动归因起点，不代替人工复核；`hand_drawn/random_stub/uncalibrated` 保真度状态下，日志只能支持决策逻辑调试，不能宣称真机物理结论。
+- 修改 CORE 或日志格式后，除既有规则/拖拽回归外，至少运行 `node sim_lib_selftest.js` 验证诊断轨迹、子进程协议和核心提取；若修改 3D 模板，再运行 `node build_3d.js`。

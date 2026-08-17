@@ -41,6 +41,21 @@
 评测任务使用单例比赛核心，同一服务同一时间只允许一个任务运行，以保证每个 seed 的状态隔离和确定性。
 候选代码直传和 `/import-dir` 仅限本机可信调用，不得把该执行接口裸露到公网。
 
+### 2.2 诊断轨迹契约
+
+评测默认只返回结果级摘要；只有请求 `includeTrace:true`（CLI 为 `--trace`）才保存
+`traceFormat=diagnostic-v1`、逐采样 `trace`、完整 `events` 和详细 `diagnostics`。诊断记录必须保持
+`decide(obs) -> {v,w}` 不变，并区分：
+
+- `actions.requested`：经过车辆 profile 限幅的策略请求；
+- `actions.applied`：指令延迟队列后实际送入动力学的控制量；
+- `velocity`：积分得到的实际线速度/角速度，不得冒充请求动作；
+- `rawSensors`：当前车辆真实 profile 通道，`sensors` 仅为兼容别名。
+
+每条详细轨迹还包含比赛阶段、比分增量、车辆姿态/动力学状态、能量块和本采样点新增事件；事件带单调
+`seq`，用于日志最多保留 500 条时的增量去重。`diagnostics.failure` 只允许作为自动归因起点，不能把
+`hand_drawn`、`random_stub` 或 `uncalibrated` 保真度下的轨迹解释为真机物理证据。
+
 后台 `/battle/start` 运行时也独占该核心：`/step`、`/step2`、`/params`、`/scene`、`/vehicle`、裁判通用写接口会返回 `409`，避免第三方请求串改比赛。启动响应带一次会话 `controlToken`；仅持令牌的 `POST /battle/control` 可执行 `arm/pause/resume/restart/scene/params`，供远程 3D 页面控制当前比赛。
 
 ## 3. 传感器量纲映射契约（SimDriver）

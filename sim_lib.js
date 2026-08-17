@@ -217,6 +217,44 @@ function normAct(a, vehicle){
   const w = typeof a.w === 'number' ? Math.max(-maxTurnRate, Math.min(maxTurnRate, a.w)) : 0;
   return { v, w };
 }
+function traceNumber(value, digits=4){
+  const n=Number(value);
+  return Number.isFinite(n) ? +n.toFixed(digits) : 0;
+}
+function traceAction(action){
+  if(!action || typeof action!=='object') return null;
+  return { v:traceNumber(action.v), w:traceNumber(action.w) };
+}
+function traceRobot(st, role, requested, detailed=true){
+  const r=st && st.robots && st.robots[role] ? st.robots[role] : {};
+  const command=r.command || {};
+  const applied=command.applied || {v:r.cmdV ?? r.v, w:r.cmdW ?? r.w};
+  const heading=Number(r.th)||0;
+  const vx=Number(r.vx)||0, vy=Number(r.vy)||0;
+  const actualV=vx*Math.cos(heading)+vy*Math.sin(heading);
+  const out={
+    // 保留旧 trace 的平铺字段，新增诊断字段不破坏已有消费者。
+    x:traceNumber(r.x,3), y:traceNumber(r.y,3), th:traceNumber(r.th,3),
+    state:r.state || '', action:r.action || '', onPlatform:!!r.onPlatform, hang:!!r.hang,
+  };
+  if(!detailed) return out;
+  Object.assign(out,{
+    pose:{x:traceNumber(r.x),y:traceNumber(r.y),th:traceNumber(r.th),pitch:traceNumber(r.pitch),roll:traceNumber(r.roll),zG:traceNumber(r.zG)},
+    // velocity 是积分后的实际运动；控制器请求/延迟后的电机指令单独放在 actions。
+    velocity:{v:traceNumber(actualV),w:traceNumber(r.omega),speed:traceNumber(Math.hypot(vx,vy)),omega:traceNumber(r.omega)},
+    actions:{requested:traceAction(requested),applied:traceAction(applied)},
+    flags:{isStalled:!!r.isStalled,wedgedFront:!!r.wedgedFront,frontLoad:traceNumber(r.frontLoad,3)},
+    sensors:st.sensors && st.sensors[role] ? st.sensors[role] : {},
+    rawSensors:st.rawSensors && st.rawSensors[role] ? st.rawSensors[role] : {},
+  });
+  return out;
+}
+function traceEventList(events){
+  return (Array.isArray(events) ? events : []).map(e=>({
+    seq:Number.isFinite(Number(e && e.seq)) ? Number(e.seq) : null,
+    t:traceNumber(e && e.t,2), msg:String(e && e.msg || ''), cls:String(e && e.cls || ''),
+  }));
+}
 
 // ---------- 小车程序注册表 (@名字 快捷方式) ----------
 let robotRegistry = null;
@@ -248,16 +286,17 @@ function resolveController(spec){
 // ---------- 对战运行器 ----------
 // opts: { api, seed, params, scene, fieldGray, vehicles:{us:{...},them:{...}}, dt, maxSteps,
 //         us: 'fsm'|cmd|@name, them: 'fsm'|cmd|@name,
-//         actionTimeout, traceEvery, realtime, shouldAbort, onLog, onProgress,
+//         actionTimeout, traceEvery, includeTrace, realtime, shouldAbort, onLog, onProgress,
 //         skipReset }
 async function runBattle(opts){
   const api = opts.api;
-  const { resetAll, arm, stepSimExt, getState, getLog, US, THEM, onStage } = api;
+  const { resetAll, arm, stepSimExt, getState, getLog, US, THEM, onStage, hangOn } = api;
   const onLog = opts.onLog || (() => {});
   const dt = opts.dt || 0.05;
   const maxSteps = opts.maxSteps || 2400;
   const traceEvery = opts.traceEvery || 20;
   const realtime = opts.realtime !== false;
+  const includeTrace = opts.includeTrace === true;
   const shouldAbort = opts.shouldAbort || (() => false);
 
   // 后台远程会话需要在 HTTP 响应前先完成一次 reset 以便 GUI 立即看到初始场景；
@@ -281,6 +320,14 @@ async function runBattle(opts){
     us: { mounted: false, mountTime: null },
     them: { mounted: false, mountTime: null },
   };
+  const diagnostics = {
+    stateTransitions: { us: 0, them: 0 },
+    falls: [],
+    lastState: { us: null, them: null },
+    lastMounted: { us: false, them: false },
+    eventCount: 0,
+    eventClasses: {},
+  };
   function observeMilestones(st){
     for (const role of ['us', 'them']){
       const r = st ? st.robots[role] : (role === 'us' ? US : THEM);
@@ -291,17 +338,78 @@ async function runBattle(opts){
       }
     }
   }
-  const rec = st => trace.push({
-    t: +st.simT.toFixed(2),
-    scores: st.scores,
-    us: { x: +st.robots.us.x.toFixed(3), y: +st.robots.us.y.toFixed(3), th: +st.robots.us.th.toFixed(3), state: st.robots.us.state, action: st.robots.us.action, onPlatform: !!st.robots.us.onPlatform, hang: !!st.robots.us.hang },
-    them: { x: +st.robots.them.x.toFixed(3), y: +st.robots.them.y.toFixed(3), th: +st.robots.them.th.toFixed(3), state: st.robots.them.state, action: st.robots.them.action, onPlatform: !!st.robots.them.onPlatform, hang: !!st.robots.them.hang },
-  });
+  function observeDiagnostics(){
+    for(const role of ['us','them']){
+      const r=role==='us'?US:THEM;
+      const state=r.fsm.state;
+      const mounted=!!onStage(r);
+      if(diagnostics.lastState[role]!==null && diagnostics.lastState[role]!==state)
+        diagnostics.stateTransitions[role]++;
+      if(diagnostics.lastMounted[role] && !mounted){
+        diagnostics.falls.push({role,t:traceNumber(r.fsm.simT,2),state});
+      }
+      diagnostics.lastState[role]=state;
+      diagnostics.lastMounted[role]=mounted;
+    }
+  }
+  let traceLogCursor=0;
+  let traceScores={us:0,them:0};
+  const eventLog=[];
+  function takeTraceEvents(){
+    if(!includeTrace) return [];
+    const all=getLog();
+    const hasSequence=all.some(event=>Number.isFinite(Number(event && event.seq)));
+    const fresh=hasSequence
+      ? all.filter(event=>Number(event && event.seq)>traceLogCursor)
+      : (traceLogCursor>all.length ? all : all.slice(traceLogCursor));
+    const events=traceEventList(fresh);
+    if(events.length){
+      const latest=events[events.length-1].seq;
+      traceLogCursor=Number.isFinite(latest) ? latest : all.length;
+    } else if(!hasSequence) {
+      traceLogCursor=all.length;
+    }
+    if(events.length){
+      eventLog.push(...events);
+      diagnostics.eventCount += events.length;
+      for(const event of events){
+        const cls=event.cls || 'info';
+        diagnostics.eventClasses[cls]=(diagnostics.eventClasses[cls]||0)+1;
+      }
+    }
+    return events;
+  }
+  const rec = (st, requested, step) => {
+    const scoreDelta={
+      us:Number(st.scores.us||0)-traceScores.us,
+      them:Number(st.scores.them||0)-traceScores.them,
+    };
+    traceScores={us:Number(st.scores.us||0),them:Number(st.scores.them||0)};
+    const entry={
+      step,
+      t: +st.simT.toFixed(2),
+      scores: st.scores,
+      us: traceRobot(st,'us',requested && requested.us,includeTrace),
+      them: traceRobot(st,'them',requested && requested.them,includeTrace),
+    };
+    if(includeTrace){
+      entry.match=st.match;
+      entry.reward={...scoreDelta,total:scoreDelta.us-scoreDelta.them};
+      entry.objects=st.objects;
+      entry.events=takeTraceEvents();
+    }
+    trace.push(entry);
+  };
   const initialState = getState();
   observeMilestones(initialState);
-  rec(initialState);
+  diagnostics.lastState.us=initialState.robots.us.state;
+  diagnostics.lastState.them=initialState.robots.them.state;
+  diagnostics.lastMounted.us=!!initialState.robots.us.onPlatform;
+  diagnostics.lastMounted.them=!!initialState.robots.them.onPlatform;
+  rec(initialState,null,0);
 
   let steps = 0;
+  let lastRequested = { us:null, them:null };
   const progressEvery = opts.onProgress ? Math.max(1, Math.ceil(maxSteps / 10)) : 0;
   for (let i = 0; i < maxSteps; i++){
     if (shouldAbort()) { onLog('[sim] 对战被手动停止'); break; }
@@ -312,13 +420,25 @@ async function runBattle(opts){
       usPol  ? usPol.ask(mkObs(st, 'us'), opts.actionTimeout) : Promise.resolve(null),
       themPol ? themPol.ask(mkObs(st, 'them'), opts.actionTimeout) : Promise.resolve(null),
     ]);
-    stepSimExt(dt, {
+    // normAct 是“请求动作”的边界：记录限幅后的请求，同时把超时/退出
+    // 明确转换成零动作，不能让 null 落回内置 FSM 或沿用上一帧速度。
+    const requested = {
       us: usPol ? normAct(au, st.robots.us.vehicle) : null,
       them: themPol ? normAct(at, st.robots.them.vehicle) : null,
+    };
+    lastRequested = requested;
+    const control = {
+      us: usPol ? (requested.us || {v:0, w:0}) : null,
+      them: themPol ? (requested.them || {v:0, w:0}) : null,
+    };
+    stepSimExt(dt, {
+      us: control.us,
+      them: control.them,
     });
     steps = i + 1;
     // 登台指标只读核心机器人对象，不为每一帧额外创建全量状态快照。
     observeMilestones();
+    observeDiagnostics();
     // 1:1 真实时间节流 (2026-08-12): 实车 FSM 线程按真实时间 50Hz 节流决策，
     // realtime=true 时每帧真实时间 ≥ dt，保证登台时序与实车线程一致；
     // AI 批量搜索可用 realtime=false 跳过等待，保持决策输入/输出协议不变。
@@ -331,13 +451,23 @@ async function runBattle(opts){
     const needsProgress = progressEvery && steps % progressEvery === 0;
     if (needsTrace || needsProgress){
       const sampled = getState();
-      if (needsTrace) rec(sampled);
+      if (needsTrace) rec(sampled, requested, steps);
       if (needsProgress) opts.onProgress(steps, sampled);
     }
   }
   stopPolicies();
 
   const st = getState();
+  observeDiagnostics();
+  if(includeTrace){
+    const lastTrace = trace[trace.length-1];
+    if(lastTrace && lastTrace.step===steps){
+      lastTrace.events.push(...takeTraceEvents());
+    } else {
+      // 诊断模式总是保留最终状态，即使最后一步不落在 traceEvery 采样点上。
+      rec(st, lastRequested, steps);
+    }
+  }
   const policies = policyStats();
   const warnings=[];
   for(const [role,stats] of Object.entries(policies)) if(stats){
@@ -361,6 +491,61 @@ async function runBattle(opts){
     },
     trace,
     logTail: getLog().slice(-30),
+    ...(includeTrace ? {
+      events: eventLog,
+      traceFormat: 'diagnostic-v1',
+      traceMeta: {
+        dt,
+        traceEvery,
+        maxSteps,
+        fields: ['match','scores','reward','pose','velocity','actions','flags','sensors','rawSensors','objects','events'],
+      },
+    } : {}),
+    diagnostics: {
+      format: includeTrace ? 'diagnostic-v1' : 'summary-v1',
+      termination: {
+        done: !!st.done,
+        doneReason: st.doneReason || '',
+        steps,
+        maxSteps,
+        stepLimitHit: !st.done && steps >= maxSteps,
+        aborted: !!shouldAbort(),
+      },
+      milestones: seen,
+      stateTransitions: diagnostics.stateTransitions,
+      finalState: diagnostics.lastState,
+      falls: diagnostics.falls,
+      events: {
+        recorded: includeTrace,
+        count: includeTrace ? diagnostics.eventCount : null,
+        classes: includeTrace ? diagnostics.eventClasses : null,
+      },
+      failure: (() => {
+        const policyRole = Object.entries(policies).find(([, stats]) => stats && stats.tripped);
+        if(policyRole) return { category:'policy_timeout', role:policyRole[0], time:st.simT, reason:'连续动作超时触发熔断', state:st.robots[policyRole[0]].state };
+        const timeoutRole = Object.entries(policies).find(([, stats]) => stats && stats.timeoutCount);
+        if(timeoutRole) return { category:'policy_timeout', role:timeoutRole[0], time:st.simT, reason:'策略动作响应超时', state:st.robots[timeoutRole[0]].state };
+        const protocolRole = Object.entries(policies).find(([, stats]) => stats && stats.protocolFault);
+        if(protocolRole) return { category:'policy_protocol', role:protocolRole[0], time:st.simT, reason:'策略 stdout 协议错误', state:st.robots[protocolRole[0]].state };
+        if(diagnostics.falls.length){
+          const fall=diagnostics.falls[0];
+          return { category:'fell', role:fall.role, time:fall.t, reason:'车辆离开擂台 footprint', state:fall.state };
+        }
+        if(/登台失败|恢复次数超限/.test(String(st.doneReason||''))){
+          const role=st.robots.us.state==='FINISHED' ? 'us' : (st.robots.them.state==='FINISHED' ? 'them' : null);
+          return { category:'mount_failed', role, time:st.simT, reason:st.doneReason, state:role ? st.robots[role].state : null };
+        }
+        if(st.doneReason && /比赛时间结束/.test(String(st.doneReason)))
+          return { category:'time_limit', role:null, time:st.simT, reason:st.doneReason, state:null };
+        if(!st.done && steps>=maxSteps)
+          return { category:'time_limit', role:null, time:st.simT, reason:'达到 maxSteps', state:null };
+        if(!st.done && shouldAbort())
+          return { category:'cancelled', role:null, time:st.simT, reason:'调用方请求停止', state:null };
+        if(!st.done)
+          return { category:'unfinished', role:null, time:st.simT, reason:'循环结束时比赛尚未完成', state:null };
+        return null;
+      })(),
+    },
   };
 }
 

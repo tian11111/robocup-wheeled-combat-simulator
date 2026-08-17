@@ -505,9 +505,10 @@ const matchControl = {
 
 // ---------- 日志 ----------
 const logEvents = [];
+let logSeq = 0;
 let onLog = null;
 function logFor(r, msg, cls){
-  const e = { t: +r.fsm.simT.toFixed(1), msg: `[${r.name}] ${msg}`, cls: cls || (r===US?'us':'them') };
+  const e = { seq: ++logSeq, t: +r.fsm.simT.toFixed(1), msg: `[${r.name}] ${msg}`, cls: cls || (r===US?'us':'them') };
   logEvents.push(e);
   if(logEvents.length > 500) logEvents.shift();
   if(onLog) onLog(e);
@@ -2133,6 +2134,7 @@ function resetAll(opts){
   dragImpactEvents.length=0;
   matchScore.phase='both_off'; matchScore.t=0;
   logEvents.length = 0;
+  logSeq = 0;
   log('[fsm] 重置完成 → WAIT_START, 发令(arm) 或 手动/外部策略模式');
   if(typeof opts.scene==='string') scenePreset(opts.scene);
   else if(opts.scene && typeof opts.scene==='object' && typeof opts.scene.preset==='string') scenePreset(opts.scene.preset);
@@ -2247,9 +2249,13 @@ function getCompactState(){
     v:+r.v.toFixed(4), w:+r.w.toFixed(4), speed:+Math.hypot(r.vx,r.vy).toFixed(4),
     omega:+Number(r.omega||0).toFixed(4), pitch:+Number(r.pitch||0).toFixed(4),
     roll:+Number(r.roll||0).toFixed(4), zG:+Number(r.zG||0).toFixed(4),
-    isStalled:!!r.isStalled, onPlatform:onStage(r), hang:hangOn(r),
-    state:r.fsm.state, action:r.fsm.action, timer:+r.fsm.timer.toFixed(2),
-    simT:+r.fsm.simT.toFixed(3),
+     isStalled:!!r.isStalled, onPlatform:onStage(r), hang:hangOn(r),
+     state:r.fsm.state, action:r.fsm.action, timer:+r.fsm.timer.toFixed(2),
+     simT:+r.fsm.simT.toFixed(3),
+     command:{
+       requested:{v:+Number(r.v||0).toFixed(4),w:+Number(r.w||0).toFixed(4)},
+       applied:{v:+Number(r.cmdV||0).toFixed(4),w:+Number(r.cmdW||0).toFixed(4)},
+     },
     vehicle:{
       id:r.vehicle.id, length:r.vehicle.length, width:r.vehicle.width,
       frontExtent:r.vehicle.frontExtent, rearExtent:r.vehicle.rearExtent,
@@ -2291,8 +2297,12 @@ function getState(options){
     x:+r.x.toFixed(4), y:+r.y.toFixed(4), th:+r.th.toFixed(4), v:+r.v.toFixed(4), w:+r.w.toFixed(4),
     speed:+Math.hypot(r.vx,r.vy).toFixed(4), omega:+Number(r.omega||0).toFixed(4),
     pitch:+Number(r.pitch||0).toFixed(4), roll:+Number(r.roll||0).toFixed(4), zG:+Number(r.zG||0).toFixed(4),
-    isStalled:!!r.isStalled, wedgedFront:!!r.wedgedFront, frontLoad:+Number(r.frontLoad||1).toFixed(3),
-    vehicle:cloneVehicle(r.vehicle),
+     isStalled:!!r.isStalled, wedgedFront:!!r.wedgedFront, frontLoad:+Number(r.frontLoad||1).toFixed(3),
+     command:{
+       requested:{v:+Number(r.v||0).toFixed(4),w:+Number(r.w||0).toFixed(4)},
+       applied:{v:+Number(r.cmdV||0).toFixed(4),w:+Number(r.cmdW||0).toFixed(4)},
+     },
+     vehicle:cloneVehicle(r.vehicle),
     onPlatform:onStage(r), hang:hangOn(r),
     state:r.fsm.state, action:r.fsm.action,
     mountPhase:r.fsm.mount.phase, recPhase:r.fsm.rec.phase, recCount:r.fsm.rec.count,

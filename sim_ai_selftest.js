@@ -80,6 +80,11 @@ async function waitHealth(timeoutMs=10000){
   assert.strictEqual(result.runs.length, 2);
   assert.ok(typeof result.summary.meanNetScore === 'number');
   assert.ok(result.runs[0].metrics && result.runs[0].trace);
+  assert.strictEqual(result.runs[0].traceFormat, 'diagnostic-v1');
+  assert.strictEqual(result.runs[0].diagnostics.format, 'diagnostic-v1');
+  assert.ok(result.runs[0].trace[1].us.actions);
+  assert.ok(result.runs[0].trace[1].us.rawSensors);
+  assert.ok(Array.isArray(result.runs[0].events));
 
   const candidate = await request('/api/v1/evaluations', {
     method: 'POST',

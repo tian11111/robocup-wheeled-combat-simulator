@@ -49,6 +49,24 @@ Each `eval` or `compare` writes a reproducible record to `.sim_runs/<UTC-name>/r
 
 Use `--trace` only when the trajectory is needed for diagnosis. The default is fast deterministic evaluation (`realtime=false`). For very short FSM-only runs, worker startup overhead can outweigh the gain; use multiple workers for larger seed sets, slower candidates, or `--realtime` runs. Use `--realtime` only to exercise a real robot program whose internal threads or sleeps must advance in wall-clock time.
 
+### Diagnose a bad seed
+
+When a candidate loses, fails to mount, or behaves differently from the baseline, first reproduce the same seed with a detailed trace:
+
+```powershell
+python sim_runner.py eval --candidate candidate.py --seeds 100 --trace --trace-every 1
+python sim_runner.py compare --candidate candidate.py --baseline fsm --seeds 100 --trace
+```
+
+Read `.sim_runs/<UTC-name>/result.json` in this order:
+
+1. Verify `server.coreHash` and `result.metadata.actual` (`fieldGray`, vehicle profiles, and `fidelity`) before comparing behavior.
+2. Use `result.runs[]` (or `candidateResult.runs[]` / `baselineResult.runs[]` in `compare`) to find the failing seed and `diagnostics.failure` category.
+3. Check `policyStats`, `warnings`, and `logTail` for child-process timeout/protocol faults. `logTail` is only the last 30 events.
+4. In `trace`, compare `rawSensors` → `actions.requested` → `actions.applied` → actual `velocity/pose` → FSM `state`/`flags` → `objects/events` → `reward`. A requested action that never appears as applied indicates command delay/timeout; an applied action with little actual velocity indicates friction, collision, stall, or wedge behavior.
+
+Detailed traces use `diagnostic-v1`. Each robot keeps the legacy flat pose/state fields and adds `pose`, actual `velocity`, `actions`, `flags`, `sensors`, and `rawSensors`; each sample also includes match phase, score delta, objects, and new events. The automatic failure categories are `policy_timeout`, `policy_protocol`, `mount_failed`, `fell`, `time_limit`, and `unfinished`. Use `--trace-every 1` around a failure window, then turn tracing off for large batch searches. These logs explain the simulator's decision-logic model; they do not turn hand-drawn gray maps, random vision stubs, or uncalibrated friction into real-robot evidence.
+
 ## Define a Strategy
 
 An external Python strategy only needs this interface:
