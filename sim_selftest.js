@@ -555,5 +555,20 @@ console.log('== 场景 32: 超时停车、custom footprint 与移动能量块扫
     `高速移动能量块扫掠应撞到静止车, 实际 carV=${T.US.vx.toFixed(3)} blockV=${moving.vx.toFixed(3)}`);
 }
 
+console.log('== 场景 33: SCORE_BLOCK 无进展恢复与正赛结束收敛 ==');
+{
+  resetScene(21); T.arm();
+  for(let i=0;i<2400;i++) T.stepSimExt(0.05, {us:null, them:null});
+  const final=T.getState();
+  const recoveryLogs=T.getLog().filter(e=>/目标无进展超时|目标被占用/.test(e.msg));
+  assert(recoveryLogs.length>0, 'SCORE_BLOCK 卡住后应触发目标恢复 watchdog');
+  assert(final.done && final.match.phase==='FINISHED' && final.doneReason==='比赛时间结束',
+    `120s 后应统一 FINISHED, 实际 done=${final.done} phase=${final.match.phase} reason=${final.doneReason}`);
+  assert(final.robots.us.state==='FINISHED' && final.robots.them.state==='FINISHED',
+    `双方状态应收敛 FINISHED, 实际 ${final.robots.us.state}/${final.robots.them.state}`);
+  assert(Number.isFinite(final.robots.us.vx) && Number.isFinite(final.robots.us.vy),
+    '完整状态应暴露实际 vx/vy 供诊断');
+}
+
 console.log(failures===0 ? '\n全部通过 ✔' : `\n${failures} 项失败 ✘`);
 process.exit(failures===0?0:1);

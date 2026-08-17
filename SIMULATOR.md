@@ -51,6 +51,7 @@
   ATTACK / SCORE_BLOCK / RECOVER(掉台→屁股朝擂台→贴边回中→超限 FINISHED) → FINISHED），
   危机门控（on_stage + 前红外悬空 + 运动 → 急刹进 RECOVER），SEARCH 扫描时前端压黑带朝外
   会先"扫描避边"倒车回台（用 EDGE_THRESHOLD）。
+- `SCORE_BLOCK` 会锁定 SEARCH 阶段识别到的具体增益块；目标被另一台车占用或连续约 2 秒无位移时，自动切换另一块或退回 SEARCH，避免双方永久夹住同一块。
 - **任意一侧可换成外部控制器**：内置 FSM / HTTP 手动策略 / 你自己的小车程序（子进程）。
 - **确定性**：`resetAll({seed})` 后噪声/识别/能量块摆放全部可复现，便于参数迭代。
 - **车辆 profile 独立**：US/THEM 各自保存一份车辆参数，不再假定所有队伍都是同一尺寸、质量或速度。GUI 可直接编辑/复制/导入 JSON；HTTP、CLI 和 `resetAll` 也可传入同一 profile。
@@ -210,14 +211,14 @@ Ultralytics/ONNX 运行时均由用户自行部署，不会成为仿真器依赖
 | **能量块库仑摩擦** | 低速低于 `BLOCK_STICK_SPEED` 直接粘住归零，消除无限微滑；高速库仑动摩擦 `BLOCK_MU_K` + 指数背压 |
 | **传感器非理想特性** | 数字红外施密特迟滞（`D_on`/`D_off` 双阈值防临界抖动）；灰度单点 → 近地圆形区域加权采样；红外命中目标按光束-表面法线夹角余弦 `cosθ` 衰减（对手矩形车身，能量块圆近似 cosθ≈1） |
 | **铲子楔入（Shovel Wedging）** | 两车正面对冲时比较铲刃相对高度（`zG+shovelHeight`），铲刃更低方切入对手底盘，被挑车辆前轮法向正压力 `N→0` → `frontLoad→0` → 驱动推力急剧下降 |
-| **堵转/过流检测** | 指令 `v≠0` 且实际线速度持续低于 `STALL_SPEED` 超过 `STALL_TIME` → `isStalled=true`，供决策层反馈受阻 |
+| **堵转/过流检测** | 指令 `v≠0` 且实际线速度过低，或在 `STALL_DISPLACEMENT` 窗口内几乎没有位移，持续超过 `STALL_TIME` → `isStalled=true`，供决策层反馈受阻 |
 | **指令延迟环形队列** | `cmdLatencyFrames`（默认 0=关闭）>0 时用环形队列模拟“传感器采集→主控运算→电机响应”的时钟周期差 |
 
 新增可调参数（`params`）：
 
 | 参数 | 默认 | 作用 |
 |---|---|---|
-| `STALL_TIME` / `STALL_SPEED` / `STALL_RELEASE` | 0.4s / 0.03 / 0.06 | 堵转判定持续时长与速度阈值 |
+| `STALL_TIME` / `STALL_SPEED` / `STALL_RELEASE` / `STALL_DISPLACEMENT` | 0.4s / 0.03 / 0.06 / 0.006 | 堵转持续时长、速度阈值、解除阈值和无进展位移阈值 |
 | `cmdLatencyFrames` | 0 | 指令延迟环形队列长度（帧）；0=直通零回归 |
 | `IR_HYST_BAND` | 0.10 | 数字红外施密特迟滞带宽（围绕 `IR_TRIGGER`） |
 | `graySpotRadius` | 0.025 | 灰度近地光斑采样半径（m） |
@@ -529,7 +530,7 @@ rawSensors
 | 字段 | 用途 |
 |---|---|
 | `pose` | `x/y/th/pitch/roll/zG`，判断台阶姿态和掉台前几何位置 |
-| `velocity` | 实际 `v/w/speed/omega`，与请求动作区分，判断打滑/堵转/碰撞响应 |
+| `velocity` | 实际 `v/w/speed/omega`；完整状态同时提供世界坐标 `vx/vy`，与请求动作区分，判断打滑/堵转/碰撞响应 |
 | `actions` | `requested` 与延迟后的 `applied`，判断策略错误还是控制管线延迟 |
 | `sensors/rawSensors` | 兼容别名与车辆真实通道，定位灰度/红外误触发 |
 | `flags` | `isStalled/wedgedFront/frontLoad`，定位堵转和铲斗楔入 |

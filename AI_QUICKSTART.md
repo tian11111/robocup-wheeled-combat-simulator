@@ -65,7 +65,7 @@ Read `.sim_runs/<UTC-name>/result.json` in this order:
 3. Check `policyStats`, `warnings`, and `logTail` for child-process timeout/protocol faults. `logTail` is only the last 30 events.
 4. In `trace`, compare `rawSensors` → `actions.requested` → `actions.applied` → actual `velocity/pose` → FSM `state`/`flags` → `objects/events` → `reward`. A requested action that never appears as applied indicates command delay/timeout; an applied action with little actual velocity indicates friction, collision, stall, or wedge behavior.
 
-Detailed traces use `diagnostic-v1`. Each robot keeps the legacy flat pose/state fields and adds `pose`, actual `velocity`, `actions`, `flags`, `sensors`, and `rawSensors`; each sample also includes match phase, score delta, objects, and new events. The automatic failure categories are `policy_timeout`, `policy_protocol`, `mount_failed`, `fell`, `time_limit`, and `unfinished`. Use `--trace-every 1` around a failure window, then turn tracing off for large batch searches. These logs explain the simulator's decision-logic model; they do not turn hand-drawn gray maps, random vision stubs, or uncalibrated friction into real-robot evidence.
+Detailed traces use `diagnostic-v1`. Each robot keeps the legacy flat pose/state fields and adds `pose`, actual `velocity` (with world-frame `vx/vy` in the full state), `actions`, `flags`, `sensors`, and `rawSensors`; each sample also includes match phase, score delta, objects, and new events. The automatic failure categories are `policy_timeout`, `policy_protocol`, `mount_failed`, `fell`, `time_limit`, and `unfinished`. Use `--trace-every 1` around a failure window, then turn tracing off for large batch searches. These logs explain the simulator's decision-logic model; they do not turn hand-drawn gray maps, random vision stubs, or uncalibrated friction into real-robot evidence.
 
 ## Define a Strategy
 
@@ -173,7 +173,7 @@ node --check sim_server.js
 git diff --check
 ```
 
-`sim_selftest.js` currently has 32 deterministic scenarios. A legitimate code change that alters a decision contract must update or add a fixed-seed scenario and update [AGENTS.md](AGENTS.md), [CONTRACT.md](CONTRACT.md), and [SIMULATOR.md](SIMULATOR.md).
+`sim_selftest.js` currently has 33 deterministic scenarios. A legitimate code change that alters a decision contract must update or add a fixed-seed scenario and update [AGENTS.md](AGENTS.md), [CONTRACT.md](CONTRACT.md), and [SIMULATOR.md](SIMULATOR.md).
 
 Also run these after changing the process bridge or API:
 

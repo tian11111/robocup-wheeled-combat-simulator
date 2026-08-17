@@ -70,6 +70,16 @@ async function testDiagnosticTrace(){
   assert.ok(result.diagnostics.termination);
 }
 
+async function testUnexpectedPolicyExit(){
+  const api = loadCore(__dirname);
+  const command = `"${process.execPath}" -e "process.exit(0)"`;
+  await assert.rejects(
+    runBattle({ api, seed: 43, us: command, them: 'fsm', maxSteps: 3, realtime: false, actionTimeout: 50 }),
+    /runner_error\/policy_process/,
+    '策略子进程意外退出不能静默按零动作继续评测',
+  );
+}
+
 (async () => {
   const html = '<script src="vendor.js"></script><script type="text/javascript">\n// CORE-BEGIN\nmodule.exports = { ok:true };\n// CORE-END\n</script>';
   assert.ok(extractCoreScript(html, 'fixture.html').includes('module.exports = { ok:true }'));
@@ -79,6 +89,7 @@ async function testDiagnosticTrace(){
   );
   await testSpawnPolicy();
   await testDiagnosticTrace();
+  await testUnexpectedPolicyExit();
   console.log('sim_lib 自测通过 ✔');
 })().catch(error => {
   console.error('sim_lib 自测失败:', error && error.stack || error);

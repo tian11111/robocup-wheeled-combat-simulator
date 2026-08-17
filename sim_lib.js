@@ -83,11 +83,21 @@ function spawnPolicy(cmd, role, onLog){
     onLog(`[${role}子进程] 启动失败: ${e.message}`);
     return null;
   }
+  let resolveStartup, rejectStartup;
+  const startup = new Promise((resolve, reject) => {
+    resolveStartup = resolve;
+    rejectStartup = reject;
+  });
+  // 直接调用 spawnPolicy 的旧测试/工具可能不读取 ready；挂一个空 catch
+  // 避免启动失败时产生未处理 rejection，真正的 runBattle 仍会 await 它。
+  startup.catch(() => {});
   const policy = {
     pending: new Map(), alive: true, nextRequestId: 0,
     supportsRequestId: null, legacyQuarantine: null, invalidOutputCount: 0,
     protocolFault: 0, timeoutCount: 0, consecutiveTimeouts: 0,
     maxConsecutiveTimeouts: 8, tripped: false,
+    failed: false, failureReason: null, stopping: false,
+    started: false, ready: startup,
   };
   const warnProtocol = message => {
     policy.protocolFault++;
@@ -147,15 +157,40 @@ function spawnPolicy(cmd, role, onLog){
     const s = d.toString().trim();
     if (s) onLog(`[${role}子进程 stderr] ${s.slice(0, 160)}`);
   });
+  child.once('spawn', () => {
+    policy.started = true;
+    resolveStartup();
+  });
   const closePending = () => {
     policy.legacyQuarantine = null;
     for (const request of [...policy.pending.values()]) settle(request, null);
   };
-  child.on('exit', code => { policy.alive = false; closePending(); onLog(`[${role}子进程] 退出 code=${code}`); });
-  child.on('error', e => { policy.alive = false; closePending(); onLog(`[${role}子进程] 错误: ${e.message}`); });
+  child.on('exit', code => {
+    policy.alive = false;
+    if(!policy.stopping){
+      policy.failed = true;
+      policy.failureReason = `子进程意外退出 code=${code}`;
+    }
+    if(!policy.started) rejectStartup(new Error(`runner_error/policy_process: ${policy.failureReason || `子进程退出 code=${code}`}`));
+    closePending();
+    onLog(`[${role}子进程] 退出 code=${code}`);
+  });
+  child.on('error', e => {
+    policy.alive = false;
+    if(!policy.stopping){
+      policy.failed = true;
+      policy.failureReason = `子进程错误: ${e.message}`;
+    }
+    if(!policy.started) rejectStartup(new Error(`runner_error/policy_process: ${policy.failureReason || e.message}`));
+    closePending();
+    onLog(`[${role}子进程] 错误: ${e.message}`);
+  });
   policy.child = child;
-  policy.ask = (obs, timeoutMs) => new Promise(resolve => {
-    if (!policy.alive) return resolve(null);
+  policy.ask = (obs, timeoutMs) => new Promise((resolve, reject) => {
+    if (!policy.alive){
+      if(policy.failed) return reject(new Error(`runner_error/policy_process: ${policy.failureReason}`));
+      return resolve(null);
+    }
     // 对没有 requestId 回包能力的旧程序，超时后先隔离下一帧输入，直到迟到
     // 回包被丢弃；宁可安全停车，也绝不把旧帧动作错配给新观测。
     if (policy.legacyQuarantine) return resolve(null);
@@ -182,6 +217,7 @@ function spawnPolicy(cmd, role, onLog){
   policy.kill = () => {
     // 取消时立刻释放正在等待子进程动作的 Promise；否则远程“停止”只能
     // 等待 actionTimeout，连续两台车的等待会让下一场启动看似卡死。
+    policy.stopping = true;
     policy.alive = false;
     closePending();
     try { child.kill(); } catch (e) {}
@@ -190,6 +226,7 @@ function spawnPolicy(cmd, role, onLog){
     alive:!!policy.alive, tripped:!!policy.tripped,
     timeoutCount:policy.timeoutCount, consecutiveTimeouts:policy.consecutiveTimeouts,
     protocolFault:policy.protocolFault, invalidOutputCount:policy.invalidOutputCount,
+    failed:!!policy.failed, failureReason:policy.failureReason,
   });
   return policy;
 }
@@ -306,8 +343,30 @@ async function runBattle(opts){
   }
   const usCmd = resolveController(opts.us);
   const themCmd = resolveController(opts.them);
-  const usPol  = usCmd  && usCmd  !== 'fsm' ? spawnPolicy(usCmd,  '我方', onLog) : null;
-  const themPol = themCmd && themCmd !== 'fsm' ? spawnPolicy(themCmd, '对手', onLog) : null;
+  // 外部策略启动失败不能静默退回内置 FSM，否则评测对象根本没有运行。
+  let usPol = null, themPol = null;
+  try {
+    usPol = usCmd && usCmd !== 'fsm' ? spawnPolicy(usCmd, '我方', onLog) : null;
+    if (usCmd && usCmd !== 'fsm' && !usPol) throw new Error('runner_error/policy_spawn: 我方策略子进程启动失败');
+    themPol = themCmd && themCmd !== 'fsm' ? spawnPolicy(themCmd, '对手', onLog) : null;
+    if (themCmd && themCmd !== 'fsm' && !themPol) throw new Error('runner_error/policy_spawn: 对手策略子进程启动失败');
+    const startupPolicies = [usPol, themPol].filter(Boolean);
+    if (startupPolicies.length){
+      await Promise.all(startupPolicies.map(policy => policy.ready));
+      // 让已 spawn 但立即退出的子进程先派发 exit 事件，短评测也能
+      // 在第一帧前识别 runner_error，而不是误记成零动作。
+      await new Promise(resolve => setImmediate(resolve));
+      for (const [role, policy] of [['us', usPol], ['them', themPol]]){
+        if (policy && policy.failed){
+          throw new Error(`runner_error/policy_process: ${role} ${policy.failureReason || '策略进程不可用'}`);
+        }
+      }
+    }
+  } catch (e) {
+    if (usPol) usPol.kill();
+    if (themPol) themPol.kill();
+    throw e;
+  }
   const stopPolicies = () => { if (usPol) usPol.kill(); if (themPol) themPol.kill(); };
   const policyStats = () => ({ us:usPol ? usPol.stats() : null, them:themPol ? themPol.stats() : null });
   // GUI 后台会话保存这个句柄，使 /battle/stop 能直接终止策略进程，
@@ -411,51 +470,61 @@ async function runBattle(opts){
   let steps = 0;
   let lastRequested = { us:null, them:null };
   const progressEvery = opts.onProgress ? Math.max(1, Math.ceil(maxSteps / 10)) : 0;
-  for (let i = 0; i < maxSteps; i++){
-    if (shouldAbort()) { onLog('[sim] 对战被手动停止'); break; }
-    const st = getState();
-    if (st.done) break;
-    const t0 = Date.now();
-    const [au, at] = await Promise.all([
-      usPol  ? usPol.ask(mkObs(st, 'us'), opts.actionTimeout) : Promise.resolve(null),
-      themPol ? themPol.ask(mkObs(st, 'them'), opts.actionTimeout) : Promise.resolve(null),
-    ]);
-    // normAct 是“请求动作”的边界：记录限幅后的请求，同时把超时/退出
-    // 明确转换成零动作，不能让 null 落回内置 FSM 或沿用上一帧速度。
-    const requested = {
-      us: usPol ? normAct(au, st.robots.us.vehicle) : null,
-      them: themPol ? normAct(at, st.robots.them.vehicle) : null,
-    };
-    lastRequested = requested;
-    const control = {
-      us: usPol ? (requested.us || {v:0, w:0}) : null,
-      them: themPol ? (requested.them || {v:0, w:0}) : null,
-    };
-    stepSimExt(dt, {
-      us: control.us,
-      them: control.them,
-    });
-    steps = i + 1;
-    // 登台指标只读核心机器人对象，不为每一帧额外创建全量状态快照。
-    observeMilestones();
-    observeDiagnostics();
-    // 1:1 真实时间节流 (2026-08-12): 实车 FSM 线程按真实时间 50Hz 节流决策，
-    // realtime=true 时每帧真实时间 ≥ dt，保证登台时序与实车线程一致；
-    // AI 批量搜索可用 realtime=false 跳过等待，保持决策输入/输出协议不变。
-    if (realtime){
-      const elapsed = Date.now() - t0;
-      const need = dt * 1000 - elapsed;
-      if (need > 0) await new Promise(r => setTimeout(r, need));
+  try {
+    for (let i = 0; i < maxSteps; i++){
+      if (shouldAbort()) { onLog('[sim] 对战被手动停止'); break; }
+      const st = getState();
+      if (st.done) break;
+      const t0 = Date.now();
+      const [au, at] = await Promise.all([
+        usPol  ? usPol.ask(mkObs(st, 'us'), opts.actionTimeout) : Promise.resolve(null),
+        themPol ? themPol.ask(mkObs(st, 'them'), opts.actionTimeout) : Promise.resolve(null),
+      ]);
+      for(const [role, policy] of [['us', usPol], ['them', themPol]]){
+        if(policy && policy.failed){
+          throw new Error(`runner_error/policy_process: ${role} ${policy.failureReason || '策略进程不可用'}`);
+        }
+      }
+      // normAct 是“请求动作”的边界：记录限幅后的请求，同时把超时/退出
+      // 明确转换成零动作，不能让 null 落回内置 FSM 或沿用上一帧速度。
+      const requested = {
+        us: usPol ? normAct(au, st.robots.us.vehicle) : null,
+        them: themPol ? normAct(at, st.robots.them.vehicle) : null,
+      };
+      lastRequested = requested;
+      const control = {
+        us: usPol ? (requested.us || {v:0, w:0}) : null,
+        them: themPol ? (requested.them || {v:0, w:0}) : null,
+      };
+      stepSimExt(dt, {
+        us: control.us,
+        them: control.them,
+      });
+      steps = i + 1;
+      // 登台指标只读核心机器人对象，不为每一帧额外创建全量状态快照。
+      observeMilestones();
+      observeDiagnostics();
+      // 1:1 真实时间节流 (2026-08-12): 实车 FSM 线程按真实时间 50Hz 节流决策，
+      // realtime=true 时每帧真实时间 ≥ dt，保证登台时序与实车线程一致；
+      // AI 批量搜索可用 realtime=false 跳过等待，保持决策输入/输出协议不变。
+      if (realtime){
+        const elapsed = Date.now() - t0;
+        const need = dt * 1000 - elapsed;
+        if (need > 0) await new Promise(r => setTimeout(r, need));
+      }
+      const needsTrace = steps % traceEvery === 0;
+      const needsProgress = progressEvery && steps % progressEvery === 0;
+      if (needsTrace || needsProgress){
+        const sampled = getState();
+        if (needsTrace) rec(sampled, requested, steps);
+        if (needsProgress) opts.onProgress(steps, sampled);
+      }
     }
-    const needsTrace = steps % traceEvery === 0;
-    const needsProgress = progressEvery && steps % progressEvery === 0;
-    if (needsTrace || needsProgress){
-      const sampled = getState();
-      if (needsTrace) rec(sampled, requested, steps);
-      if (needsProgress) opts.onProgress(steps, sampled);
-    }
+  } finally {
+    // 无论策略正常结束、超时熔断、异常退出还是调用方取消，都必须回收
+    // 两侧子进程；否则下一场评测会残留进程并长期占用 IPC/端口。
+    stopPolicies();
   }
-  stopPolicies();
 
   const st = getState();
   observeDiagnostics();
@@ -469,6 +538,16 @@ async function runBattle(opts){
     }
   }
   const policies = policyStats();
+  // 最后一个积分步可能尚未让核心写入 FINISHED；运行器统一收敛时间到期语义。
+  const reachedLimit = !st.done && steps >= maxSteps && !shouldAbort();
+  const simTimeLimit = reachedLimit && Number(st.simT) >= 120 - 1e-9;
+  const outputDone = !!st.done || reachedLimit;
+  const outputDoneReason = st.doneReason || (simTimeLimit ? '比赛时间结束' : (reachedLimit ? '达到 maxSteps' : ''));
+  const firstFall = diagnostics.falls.length ? diagnostics.falls[0] : null;
+  const lastFall = diagnostics.falls.length ? diagnostics.falls[diagnostics.falls.length-1] : null;
+  const finalOffRoles = ['us','them'].filter(role =>
+    !!seen[role].mounted && !st.robots[role].onPlatform
+  );
   const warnings=[];
   for(const [role,stats] of Object.entries(policies)) if(stats){
     if(stats.tripped) warnings.push(`${role}:policy_timeout_circuit_breaker`);
@@ -480,8 +559,8 @@ async function runBattle(opts){
     simT: st.simT,
     scores: st.scores,
     robots: st.robots,
-    done: st.done,
-    doneReason: st.doneReason,
+    done: outputDone,
+    doneReason: outputDoneReason,
     perception: st.perception,
     policyStats: policies,
     warnings,
@@ -504,17 +583,24 @@ async function runBattle(opts){
     diagnostics: {
       format: includeTrace ? 'diagnostic-v1' : 'summary-v1',
       termination: {
-        done: !!st.done,
-        doneReason: st.doneReason || '',
+        done: outputDone,
+        doneReason: outputDoneReason,
         steps,
         maxSteps,
-        stepLimitHit: !st.done && steps >= maxSteps,
+        stepLimitHit: reachedLimit,
         aborted: !!shouldAbort(),
       },
       milestones: seen,
       stateTransitions: diagnostics.stateTransitions,
       finalState: diagnostics.lastState,
       falls: diagnostics.falls,
+      fallSummary: {
+        firstFall,
+        lastFall,
+        recoveredAfterFall: !!lastFall && finalOffRoles.length===0,
+        unrecoveredFall: finalOffRoles.length>0,
+        finalOffRoles,
+      },
       events: {
         recorded: includeTrace,
         count: includeTrace ? diagnostics.eventCount : null,
@@ -527,17 +613,16 @@ async function runBattle(opts){
         if(timeoutRole) return { category:'policy_timeout', role:timeoutRole[0], time:st.simT, reason:'策略动作响应超时', state:st.robots[timeoutRole[0]].state };
         const protocolRole = Object.entries(policies).find(([, stats]) => stats && stats.protocolFault);
         if(protocolRole) return { category:'policy_protocol', role:protocolRole[0], time:st.simT, reason:'策略 stdout 协议错误', state:st.robots[protocolRole[0]].state };
-        if(diagnostics.falls.length){
-          const fall=diagnostics.falls[0];
-          return { category:'fell', role:fall.role, time:fall.t, reason:'车辆离开擂台 footprint', state:fall.state };
-        }
         if(/登台失败|恢复次数超限/.test(String(st.doneReason||''))){
           const role=st.robots.us.state==='FINISHED' ? 'us' : (st.robots.them.state==='FINISHED' ? 'them' : null);
           return { category:'mount_failed', role, time:st.simT, reason:st.doneReason, state:role ? st.robots[role].state : null };
         }
-        if(st.doneReason && /比赛时间结束/.test(String(st.doneReason)))
-          return { category:'time_limit', role:null, time:st.simT, reason:st.doneReason, state:null };
-        if(!st.done && steps>=maxSteps)
+        if(finalOffRoles.length && lastFall){
+          return { category:'fell', role:lastFall.role, time:lastFall.t, reason:'车辆最终未回到擂台 footprint', state:lastFall.state };
+        }
+        if(outputDoneReason && /比赛时间结束/.test(String(outputDoneReason)))
+          return { category:'time_limit', role:null, time:st.simT, reason:outputDoneReason, state:null };
+        if(reachedLimit)
           return { category:'time_limit', role:null, time:st.simT, reason:'达到 maxSteps', state:null };
         if(!st.done && shouldAbort())
           return { category:'cancelled', role:null, time:st.simT, reason:'调用方请求停止', state:null };

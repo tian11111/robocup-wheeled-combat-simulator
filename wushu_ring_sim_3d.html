@@ -592,6 +592,7 @@ const params = {
   STALL_TIME: 0.4,          // 堵转判定持续时长 (s): 指令非零但实际速度持续接近 0
   STALL_SPEED: 0.03,        // 实际线速度低于此视为堵转 (m/s)
   STALL_RELEASE: 0.06,      // 实际线速度高于此解除堵转 (m/s)
+  STALL_DISPLACEMENT: 0.006,// 指令持续但位移低于此值也视为受阻 (m/窗口)
   cmdLatencyFrames: 0,      // 指令延迟环形队列长度(帧), 0=关闭(零回归)
   IR_HYST_BAND: 0.10,       // 数字红外施密特迟滞带宽(值域0-1, 围绕 IR_TRIGGER)
   graySpotRadius: 0.025,    // 灰度近地光斑采样半径 (m)
@@ -655,7 +656,7 @@ function mkRobot(cfg){
     // 动力学运行态 (2026 重构): omega=实际横摆角速度, spinOmega=碰撞打转衰减, zG/pitch/roll=台阶 3D 姿态,
     // frontLoad=前轮法向载荷(铲子楔入用), cmdQueue/cmdV/cmdW=指令延迟环形队列, irHyst=红外迟滞状态
     omega:0, spinOmega:0, zG:0, pitch:0, roll:0,
-    isStalled:false, stallT:0,
+    isStalled:false, stallT:0, stallAnchorX:cfg.x, stallAnchorY:cfg.y,
     wedgedFront:false, frontLoad:1,
     cmdQueue:[], cmdV:0, cmdW:0,
     irHyst:{},
@@ -665,6 +666,8 @@ function mkRobot(cfg){
       mount:{ phase:'posture', t:0, faces:0, rushSeen:false, climbed:false, backoffT:0, fwdAltAligned:false },
       rec:{ phase:'spin', t:0, count:0, fallDir:0 },
       scan:{ dir:1, phase:'scan', target:null, t:0, side:1 },
+      // SCORE_BLOCK 目标及无进展监视：保留 SEARCH 识别到的具体块，避免双方每帧抢同一块。
+      scoreTarget:null, scoreLastX:0, scoreLastY:0, scoreProgressT:0,
       scores:{ us:0, them:0 },
       bonusUs:0, bonusThem:0, simT:0, doneReason:'',
       inactiveT:0, inactiveWarned:false,
@@ -1045,6 +1048,7 @@ function enterSearchFor(r){
   const st = r.fsm;
   st.state=S.SEARCH; st.rec.count=0;
   st.scan = { dir: rng()<0.5?1:-1, phase:'scan', target:null, t:0, side:1 };
+  st.scoreTarget=null; st.scoreProgressT=0;
   r.v=0; r.w=0;
   logFor(r, `[fsm] SEARCH: 旋转扫描中…`);
 }
@@ -1408,6 +1412,8 @@ function searchTick(r, dt){
         const t=sc.target;
         const detection=classifyTargetFor(r,t);
         if(detection.label==='buff'){
+          r.fsm.scoreTarget = t.obj;
+          r.fsm.scoreLastX = t.obj.x; r.fsm.scoreLastY = t.obj.y; r.fsm.scoreProgressT = 0;
           logFor(r, `[fsm] 视觉分类 → 增益块 → SCORE_BLOCK`); r.fsm.state=S.SCORE; r.v=0; r.w=0;
         } else if(detection.label==='debuff'){
           logFor(r, `[fsm] 视觉分类 → 减益块 → 绕行规避`); sc.phase='evade'; sc.t=0; sc.side=rng()<0.5?1:-1;
@@ -1449,8 +1455,30 @@ function attackTick(r, dt){
   driveToward(r, o, 1.25, 2.5);
 }
 function scoreTick(r, dt){
-  const b = blocks.find(x=>x.kind==='buff');
-  if(!b || !onPlatform(b.x,b.y)){ logFor(r, `[fsm] SCORE_BLOCK: 增益块丢失 → SEARCH`); enterSearchFor(r); return; }
+  const st=r.fsm, otherR=other(r);
+  let b=st.scoreTarget;
+  if(!b || b.kind!=='buff' || b.out || !onPlatform(b.x,b.y)){
+    b=blocks.find(x=>x.kind==='buff' && !x.out && onPlatform(x.x,x.y));
+    st.scoreTarget=b||null;
+    if(!b){ logFor(r, `[fsm] SCORE_BLOCK: 增益块丢失 → SEARCH`); enterSearchFor(r); return; }
+    st.scoreLastX=b.x; st.scoreLastY=b.y; st.scoreProgressT=0;
+  }
+  // 另一台车已贴近同一块且自身并未有效推动时，让出目标，避免双方永久对冲。
+  const otherTarget=otherR.fsm && otherR.fsm.scoreTarget;
+  if(otherTarget===b && dist(otherR,b)<0.48 && dist(r,b)>0.32){
+    const alt=blocks.find(x=>x!==b && x.kind==='buff' && !x.out && onPlatform(x.x,x.y));
+    if(alt){ st.scoreTarget=alt; b=alt; st.scoreLastX=b.x; st.scoreLastY=b.y; st.scoreProgressT=0;
+      logFor(r, `[fsm] SCORE_BLOCK: 目标被占用 → 切换另一增益块`); }
+  }
+  const moved=Math.hypot(b.x-st.scoreLastX,b.y-st.scoreLastY);
+  if(moved>0.012){ st.scoreLastX=b.x; st.scoreLastY=b.y; st.scoreProgressT=0; }
+  else st.scoreProgressT += dt;
+  if(st.scoreProgressT>2.0){
+    const alt=blocks.find(x=>x!==b && x.kind==='buff' && !x.out && onPlatform(x.x,x.y));
+    if(alt){ st.scoreTarget=alt; st.scoreLastX=alt.x; st.scoreLastY=alt.y; st.scoreProgressT=0;
+      logFor(r, `[fsm] SCORE_BLOCK: 目标无进展超时 → 切换目标`); return; }
+    logFor(r, `[fsm] SCORE_BLOCK: 目标无进展超时 → SEARCH`); enterSearchFor(r); return;
+  }
   if(distToNearestEdge(b.x,b.y) < 0.45){ setAct(r,'推增益块接近边缘, 减速'); driveToward(r, b, 0.35, 2.0); }
   else { setAct(r,'推增益块'); driveToward(r, b, 0.9, 2.0); }
 }
@@ -1692,14 +1720,27 @@ function computeRobotPose(r, dt){
 }
 // 堵转/电流过载检测: 指令非零但实际线速度持续接近 0 → isStalled
 function updateStall(r, dt){
-  const commanded = Math.abs(r.v) > 0.05;
+  const commandV = Number.isFinite(Number(r.cmdV)) ? Number(r.cmdV) : Number(r.v)||0;
+  const commanded = Math.abs(commandV) > 0.05;
   const actual = Math.hypot(r.vx, r.vy);
-  if(commanded && actual < (params.STALL_SPEED||0.03)){
+  if(!Number.isFinite(Number(r.stallAnchorX)) || !Number.isFinite(Number(r.stallAnchorY))){
+    r.stallAnchorX=r.x; r.stallAnchorY=r.y;
+  }
+  const displacement=Math.hypot(r.x-r.stallAnchorX, r.y-r.stallAnchorY);
+  const lowSpeed=actual < (params.STALL_SPEED||0.03);
+  const noProgress=displacement < (params.STALL_DISPLACEMENT||0.006);
+  if(commanded && (lowSpeed || noProgress)){
     r.stallT = (r.stallT||0) + dt;
     if(r.stallT >= (params.STALL_TIME||0.4)) r.isStalled = true;
   } else {
     r.stallT = 0;
-    if(!commanded || actual > (params.STALL_RELEASE||0.06)) r.isStalled = false;
+    r.isStalled = false;
+  }
+  if(!commanded || displacement >= (params.STALL_DISPLACEMENT||0.006)){
+    r.stallAnchorX=r.x; r.stallAnchorY=r.y;
+    if(!commanded || actual > (params.STALL_RELEASE||0.06)){
+      r.stallT=0; r.isStalled=false;
+    }
   }
 }
 // 指令延迟环形队列: 模拟"传感器采集→主控运算→电机响应"的时钟周期差。
@@ -2101,9 +2142,11 @@ function scoringTickFor(r, dt){
   const st = r.fsm;
   st.simT += dt;
   st.timer -= dt;
+  // 浮点积分在最后一帧可能留下极小正数(例如 6e-14)，必须按到时处理，
+  // 否则 2400 步结束时状态仍停在 SCORE/SEARCH，HTTP 与直接 API 的 done 语义不一致。
+  if(st.timer < 1e-9) st.timer = 0;
   matchControl.matchTimer = Math.max(0, Math.min(US.fsm.timer, THEM.fsm.timer));
-  if(st.timer<=0){
-    st.timer=0;
+  if(st.timer===0){
     if(st.state!==S.DONE){ logFor(r, `[fsm] 比赛时间到 → FINISHED`); toDoneFor(r, '比赛时间结束'); }
     return;
   }
@@ -2210,7 +2253,8 @@ function stepSimExt(d, acts){
     const act = acts && acts[r.name==='我方'?'us':'them'];
     if(act){
       st.simT += d; st.timer -= d;
-      if(st.timer<=0){ st.timer=0; if(st.state!==S.DONE) toDoneFor(r, '比赛时间结束(手动模式)'); }
+      if(st.timer < 1e-9) st.timer=0;
+      if(st.timer===0 && st.state!==S.DONE) toDoneFor(r, '比赛时间结束(手动模式)');
       const vehicle = r.vehicle || DEFAULT_VEHICLE;
       r.v = clamp(act.v||0, -vehicle.maxSpeed, vehicle.maxSpeed);
       r.w = clamp(act.w||0, -vehicle.maxTurnRate, vehicle.maxTurnRate);
@@ -2316,7 +2360,7 @@ function resetAll(opts){
   for(const r of robots){
     r.v=r.w=0; r.vx=0; r.vy=0;   // 2026-08-14: 加速度限制下 vx/vy 是累加状态, 必须重置(否则残留速度破坏确定性)
     r.omega=0; r.spinOmega=0; r.zG=stageHeightAt(r.x,r.y); r.pitch=0; r.roll=0;   // 台阶 3D 姿态
-    r.isStalled=false; r.stallT=0;
+    r.isStalled=false; r.stallT=0; r.stallAnchorX=r.x; r.stallAnchorY=r.y;
     r.wedgedFront=false; r.frontLoad=1;
     r.cmdQueue=[]; r.cmdV=0; r.cmdW=0; r.irHyst={};
     const st=r.fsm;
@@ -2326,6 +2370,7 @@ function resetAll(opts){
     st.inactiveT=0; st.inactiveWarned=false;
     st.rec={ phase:'spin', t:0, count:0, fallDir:0 };
     st.scan={ dir:1, phase:'scan', target:null, t:0, side:1 };
+    st.scoreTarget=null; st.scoreLastX=0; st.scoreLastY=0; st.scoreProgressT=0;
     st.mount={ phase:'posture', t:0, faces:0, rushSeen:false, climbed:false, backoffT:0, fwdAltAligned:false };
     st.doneReason='';
     r.wasOn=false; r.dropPending=false;
@@ -2450,6 +2495,7 @@ function scenePreset(name){
 function getCompactState(){
   const compactRobot = r => ({
     x:+r.x.toFixed(4), y:+r.y.toFixed(4), th:+r.th.toFixed(4),
+    vx:+Number(r.vx||0).toFixed(4), vy:+Number(r.vy||0).toFixed(4),
     v:+r.v.toFixed(4), w:+r.w.toFixed(4), speed:+Math.hypot(r.vx,r.vy).toFixed(4),
     omega:+Number(r.omega||0).toFixed(4), pitch:+Number(r.pitch||0).toFixed(4),
     roll:+Number(r.roll||0).toFixed(4), zG:+Number(r.zG||0).toFixed(4),
@@ -2498,7 +2544,7 @@ function getCompactState(){
 function getState(options){
   if(options && options.compact) return getCompactState();
   const rState = r => ({
-    x:+r.x.toFixed(4), y:+r.y.toFixed(4), th:+r.th.toFixed(4), v:+r.v.toFixed(4), w:+r.w.toFixed(4),
+    x:+r.x.toFixed(4), y:+r.y.toFixed(4), th:+r.th.toFixed(4), vx:+Number(r.vx||0).toFixed(4), vy:+Number(r.vy||0).toFixed(4), v:+r.v.toFixed(4), w:+r.w.toFixed(4),
     speed:+Math.hypot(r.vx,r.vy).toFixed(4), omega:+Number(r.omega||0).toFixed(4),
     pitch:+Number(r.pitch||0).toFixed(4), roll:+Number(r.roll||0).toFixed(4), zG:+Number(r.zG||0).toFixed(4),
      isStalled:!!r.isStalled, wedgedFront:!!r.wedgedFront, frontLoad:+Number(r.frontLoad||1).toFixed(3),

@@ -254,7 +254,9 @@ function summarizeEvaluation(runs){
   const wins = okRuns.filter(r => r.netScore > 0).length;
   const draws = okRuns.filter(r => r.netScore === 0).length;
   const mounts = okRuns.filter(r => r.metrics && r.metrics.us && r.metrics.us.mounted).length;
-  const status = !runs.length ? 'pending' : (count === 0 ? 'error' : (count < runs.length ? 'partial' : 'ok'));
+  // 与批量 runner / 顶层评测状态统一使用 pending/error/partial/done，
+  // 避免单 worker 的 summary.status=ok 被 AI 误判成另一种结果协议。
+  const status = !runs.length ? 'pending' : (count === 0 ? 'error' : (count < runs.length ? 'partial' : 'done'));
   const hasData = count > 0;
   return {
     status,
