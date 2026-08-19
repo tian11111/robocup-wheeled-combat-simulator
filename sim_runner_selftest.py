@@ -55,6 +55,9 @@ def main():
     assert sim_runner.read_json_object('{"EDGE_THRESHOLD":300}', "--params")["EDGE_THRESHOLD"] == 300
     assert sim_runner.read_vehicle_profiles(str(ROOT / "vehicle_profiles" / "robocup_wheeled_combat_11.json"))["us"]["id"] == "robocup-wheeled-combat"
     assert sim_runner.read_vehicle_profiles('{"us":{"maxSpeed":0.8},"them":{"maxSpeed":1.1}}')["them"]["maxSpeed"] == 1.1
+    mirrored = sim_runner.mirror_vehicle_profiles(sim_runner.read_vehicle_profiles('{"id":"mbri","sensors":{"channels":[]}}'))
+    assert mirrored["us"]["id"] == mirrored["them"]["id"] == "mbri"
+    assert mirrored["us"] is not mirrored["them"]
     base_args = ["--base", unused_local_base()]
     doctor = run(base_args + ["doctor"])
     assert doctor.returncode == 2 and "服务: 未运行或不可用" in doctor.stdout

@@ -99,7 +99,8 @@ class SimEnv:
     def start_evaluation(self, us="fsm", them="fsm", seeds=None, params=None,
                          vehicles=None, scene=None, dt=0.05, max_steps=2400,
                          trace_every=20, action_timeout=300, include_trace=False,
-                         candidate=None, realtime=False, field_gray=None):
+                         candidate=None, realtime=False, field_gray=None,
+                         external_vision=False):
         """异步批量评测。返回 job 信息，随后用 wait_evaluation 轮询。
 
         candidate 可传 {name, role, code}，代码会保存为本机临时候选并自动运行；
@@ -111,7 +112,7 @@ class SimEnv:
             "params": params, "vehicles": vehicles, "scene": scene,
             "dt": dt, "maxSteps": max_steps, "traceEvery": trace_every,
             "actionTimeout": action_timeout, "includeTrace": include_trace,
-            "realtime": realtime,
+            "realtime": realtime, "externalVision": bool(external_vision),
         }
         if field_gray is not None:
             body["fieldGray"] = field_gray

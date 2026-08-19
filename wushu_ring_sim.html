@@ -711,8 +711,13 @@ function clampSensorValue(ch,v){
 }
 function edgeProbeFor(r,ch,p){
   const ang=sensorAngleFor(r,ch), range=Number(ch.range)||0.9, half=Number(ch.fov)||0.30;
-  const target=irProbeFor(r,p.x,p.y,ang,half,range,!onPlatform(p.x,p.y),false);
-  const wall=wallProbe(p.x,p.y,ang,range);
+  // `edge` measures the raised platform wall; `fence` measures the outer
+  // perimeter.  Reentry controllers that align to the outer wall and reverse
+  // onto the platform must not mistake the platform edge for that wall.
+  const fenceMode=ch.mode==='fence';
+  const target=irProbeFor(r,p.x,p.y,ang,half,range,
+    !fenceMode && !onPlatform(p.x,p.y),fenceMode);
+  const wall=fenceMode ? null : wallProbe(p.x,p.y,ang,range);
   let ground=0;
   if(!onPlatform(r.x,r.y)) ground=0.3;              // 走道地面有弱反射
   else if(onPlatform(p.x,p.y)) ground=1;            // 铲前仍在台面
@@ -1062,7 +1067,13 @@ function normalizeVisionDetection(result, fallbackSource){
   label=alias[label]||label;
   if(!['buff','debuff','opponent','unknown'].includes(label)) label='unknown';
   const confidence=Number.isFinite(Number(raw.confidence)) ? clamp(Number(raw.confidence),0,1) : (label==='unknown'?0:1);
-  return { label, confidence, source:String(raw.source||fallbackSource||'sim-vision').slice(0,80) };
+  const offset=Number(raw.offset_x);
+  return {
+    label,
+    confidence,
+    source:String(raw.source||fallbackSource||'sim-vision').slice(0,80),
+    ...(Number.isFinite(offset) ? { offset_x:clamp(offset,-1,1) } : {}),
+  };
 }
 // 外部视觉缓存：由浏览器/HTTP 桥接异步写入，CORE 只同步读取最新结果。
 // 不把仿真目标类型传给外部适配器，避免视觉结果“泄漏答案”。
@@ -1096,15 +1107,20 @@ function updateExternalVisionResult(role,result,nowMs){
   if(frame!==null && e.frameId!==null && frame===e.frameId) return false;
   const at=Number.isFinite(Number(nowMs))?Number(nowMs):Date.now();
   const detections=Array.isArray(raw.detections)?raw.detections:[];
+  const width=Math.max(1,Number(raw.width)||1), height=Math.max(1,Number(raw.height)||1);
   const valid=[];
   for(const d of detections){
     const n=normalizeVisionDetection(d,'yolo');
     if(n.label==='unknown' || n.confidence<=0) continue;
     const b=Array.isArray(d.bbox)?d.bbox.map(Number):[];
-    const cx=b.length>=4 && b.every(Number.isFinite)?b[0]+b[2]/2:0.5;
-    const cy=b.length>=4 && b.every(Number.isFinite)?b[1]+b[3]/2:0.5;
-    const dx=cx-(Number(raw.width)||1)/2, dy=cy-(Number(raw.height)||1)/2;
-    valid.push({...n,_centerDist:dx*dx+dy*dy});
+    const cx=b.length>=4 && b.every(Number.isFinite)?b[0]+b[2]/2:width/2;
+    const cy=b.length>=4 && b.every(Number.isFinite)?b[1]+b[3]/2:height/2;
+    const suppliedOffset=Number(d.offset_x);
+    const offsetX=Number.isFinite(suppliedOffset)
+      ? clamp(suppliedOffset,-1,1)
+      : clamp((cx-width/2)/Math.max(width/2,1),-1,1);
+    const dx=cx-width/2, dy=cy-height/2;
+    valid.push({...n,offset_x:offsetX,_centerDist:dx*dx+dy*dy});
   }
   valid.sort((a,b)=>b.confidence-a.confidence || a._centerDist-b._centerDist);
   e.frameId=frame; e.at=at; e.detection=valid[0]||{label:'unknown',confidence:0,source:'yolo'}; e.error=null;
@@ -1118,13 +1134,14 @@ function externalVisionClassify(context){
   if(!externalVisionCache.enabled || !e.at || age>externalVisionCache.maxAgeMs)
     return normalizeVisionDetection(DEFAULT_SIM_VISION.classify(context),'classifyRate');
   const d=e.detection||{label:'unknown',confidence:0,source:'yolo'};
-  return {label:d.label,confidence:d.confidence,source:'yolo'};
+  return {label:d.label,confidence:d.confidence,source:'yolo',offset_x:Number.isFinite(Number(d.offset_x))?d.offset_x:0};
 }
 const DEFAULT_SIM_VISION=Object.freeze({
   id:'classifyRate',
   classify(context){
     // 保留旧实现的一次 rng() 调用和阈值语义，默认确定性轨迹不变。
-    const ok=rng()*100<params.classifyRate;
+    const random = context && typeof context.random==='function' ? context.random : rng;
+    const ok=random()*100<params.classifyRate;
     return ok
       ? { label:targetKindForVision(context.target), confidence:clamp(Number(params.classifyRate)/100,0,1), source:'classifyRate' }
       : { label:'unknown', confidence:0, source:'classifyRate' };
@@ -1134,10 +1151,14 @@ let simVision=DEFAULT_SIM_VISION;
 const simVisionStats={ errorCount:0, lastError:null, lastAt:null };
 function resetSimVisionStats(){ simVisionStats.errorCount=0; simVisionStats.lastError=null; simVisionStats.lastAt=null; }
 function getSimVisionInfo(){
+  const safeDetection=d=>d&&typeof d==='object'?{
+    label:String(d.label||'unknown'), confidence:clamp(Number(d.confidence)||0,0,1),
+    source:String(d.source||'yolo'), offset_x:Number.isFinite(Number(d.offset_x))?clamp(Number(d.offset_x),-1,1):0,
+  }:null;
   return {
     id:String(simVision.id||'custom'), mode:simVision===DEFAULT_SIM_VISION?'default':'custom', synchronous:true,
     external:{enabled:!!externalVisionCache.enabled,maxAgeMs:externalVisionCache.maxAgeMs,
-      roles:Object.fromEntries(['us','them'].map(role=>{const e=externalVisionCache[role]; return [role,{frameId:e.frameId,ageMs:e.at?Math.max(0,Date.now()-e.at):null,hasResult:!!e.detection,error:e.error}]}))},
+      roles:Object.fromEntries(['us','them'].map(role=>{const e=externalVisionCache[role]; return [role,{frameId:e.frameId,ageMs:e.at?Math.max(0,Date.now()-e.at):null,hasResult:!!e.detection,error:e.error,detection:safeDetection(e.detection)}]}))},
     errorCount:simVisionStats.errorCount, lastError:simVisionStats.lastError, lastAt:simVisionStats.lastAt,
   };
 }
@@ -1149,6 +1170,7 @@ function setSimVision(adapter){
   return getSimVisionInfo();
 }
 function classifyTargetFor(r,target){
+  const options=arguments.length>=3 && arguments[2]&&typeof arguments[2]==='object' ? arguments[2] : {};
   const obj=target&&target.obj;
   const context={
     t:r.fsm.simT, role:r===US?'us':'them',
@@ -1156,6 +1178,7 @@ function classifyTargetFor(r,target){
     target:obj?{kind:targetKindForVision(obj),name:obj.name||'',x:obj.x,y:obj.y,d:target.d,rel:target.rel}:null,
     opponent:{x:other(r).x,y:other(r).y,th:other(r).th},
   };
+  if(typeof options.random==='function') context.random=options.random;
   try { return normalizeVisionDetection(simVision.classify(context),simVision.id); }
   catch(error){
     simVisionStats.errorCount++;
@@ -1163,6 +1186,48 @@ function classifyTargetFor(r,target){
     simVisionStats.lastAt=+Number(r.fsm.simT||0).toFixed(3);
     return { label:'unknown', confidence:0, source:`${simVision.id||'custom'}:error` };
   }
+}
+
+function externalVisionRandom(r, frameId){
+  if(seedValue===null) return Math.random();
+  const roleKey=r===US ? 0x13579bdf : 0x2468ace0;
+  const frameKey=hashString32(frameId==null ? simStepIndex : frameId);
+  return (mix32(seedValue ^ roleKey ^ frameKey ^ hashString32('vision.external'))>>>0)/4294967296;
+}
+function externalVisionOffset(r, target){
+  if(!target || !target.obj) return 0;
+  const dx=Number(target.obj.x)-Number(r.x), dy=Number(target.obj.y)-Number(r.y);
+  const distance=Math.hypot(dx,dy);
+  if(!Number.isFinite(distance) || distance<1e-6) return 0;
+  const lateral=(-Math.sin(r.th)*dx + Math.cos(r.th)*dy)/distance;
+  return clamp(lateral,-1,1);
+}
+function externalVisionFresh(role){
+  const e=externalVisionCache[role==='them'?'them':'us'];
+  const age=e&&e.at ? Date.now()-e.at : Infinity;
+  return !!(externalVisionCache.enabled && e && e.detection && e.at && age<=externalVisionCache.maxAgeMs && e.detection.label!=='unknown');
+}
+function getExternalVisionFor(role, frameId){
+  const r=role==='them'?THEM:US;
+  const roleName=role==='them'?'them':'us';
+  const target=findTargetFor(r);
+  // 默认 classifyRate 仍遵循内置 FSM 的“先有传感器目标，再做视觉分类”语义；
+  // 新鲜 YOLO 缓存则可独立提供相机检测，不要求数字红外先触发。
+  const canClassify=!!target || externalVisionFresh(roleName);
+  let detection=null;
+  if(canClassify){
+    detection=classifyTargetFor(r,target,{random:()=>externalVisionRandom(r,frameId)});
+    if(detection && detection.label!=='unknown' && detection.confidence>0){
+      if(!Number.isFinite(Number(detection.offset_x))) detection.offset_x=externalVisionOffset(r,target);
+    } else detection=null;
+  }
+  return {
+    frameId:String(frameId==null ? `${roleName}-${simStepIndex}` : frameId),
+    ageMs:0,
+    hasResult:!!detection,
+    simulated:!externalVisionFresh(roleName),
+    detection:detection||null,
+  };
 }
 function searchTick(r, dt){
   const sc = r.fsm.scan;
@@ -2280,6 +2345,13 @@ function setObject(kind, idx, x, y){
 }
 function scenePreset(name){
   if(name==='center'){ setPoseFor(US,CENTER,1.9,0); log('[fsm] 场景: 车上台中心'); }
+  else if(name==='duel_center'){
+    // 双车策略对接基准：两车都已登台且相向，避免把初始登台能力
+    // 与传感器、追击和碰撞策略混在同一项评测里。默认场景不受影响。
+    setPoseFor(US,1.25,1.9,0);
+    setPoseFor(THEM,2.55,1.9,Math.PI);
+    log('[fsm] 场景: 双车台上相向对冲');
+  }
   else if(name==='edge'){ setPoseFor(US,0.7,1.9,Math.PI); log('[fsm] 场景: 车放台边黑带(车头朝外, 可演示危机门控)'); }
   else if(name==='walkway'){ setPoseFor(US,1.9,0.35,-Math.PI/2); log('[fsm] 场景: 车放走道(登台演示)'); }
   else if(name==='hang'){ setPoseFor(US,0.84,1.9,Math.PI); log('[fsm] 场景: 车悬空边缘(前红外悬空)'); }
@@ -2392,7 +2464,7 @@ if (typeof module !== 'undefined' && module.exports){
     resetAll, arm, armFor, startManual, stepSim, stepSimExt, getState, getLog,
     matchControl, beginPreparation, pauseMatch, resumeMatch, restartFor,
     setParams, setVehicleFor, getVehicleFor, setPose, setPoseFor, setObject, scenePreset, consumeDragImpacts,
-    setFieldGrayMap, getFieldGrayMap, getFieldGrayInfo, setSimVision, setExternalVisionCache, updateExternalVisionResult, clearExternalVisionCache, getSimVisionInfo, classifyTargetFor,
+    setFieldGrayMap, getFieldGrayMap, getFieldGrayInfo, setSimVision, setExternalVisionCache, updateExternalVisionResult, clearExternalVisionCache, getSimVisionInfo, classifyTargetFor, getExternalVisionFor,
     onPlatform, onStage, hangOn, fullOn, fieldGray, distToNearestEdge,
     stageHeightAt, computeRobotPose, momentInertia, closestPointOnRobot, robotFaceCos,
     irHysteresis, valueHysteresis, graySpotSample, updateStall, applyCommandLatency,

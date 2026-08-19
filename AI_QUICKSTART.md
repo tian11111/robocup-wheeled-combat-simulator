@@ -88,6 +88,60 @@ python sim_runner.py eval --candidate candidate.py --vehicles vehicle_profiles/r
 
 A single vehicle profile is automatically wrapped as `{ "us": profile }`; a JSON file containing `{ "us": {...}, "them": {...} }` can describe both robots.
 
+For a mirrored two-robot evaluation from one profile, pass `--mirror-vehicles`. The `duel_center` scene puts
+both robots on the platform facing each other, which is useful when the imported controller does not implement
+the simulator's opening mount sequence:
+
+```powershell
+python sim_runner.py eval --candidate robots\mbri_adapter.py --opponent "python robot_adapter.py robots/mbri_adapter.py" --vehicles vehicle_profiles\mbri.json --mirror-vehicles --scene duel_center --sim-vision
+```
+
+`--sim-vision` is deterministic `classifyRate`, not a YOLO request. It is opt-in so ordinary AI evaluation
+remains unchanged; use it only when the external controller expects vision frames.
+
+### Reuse the MBri decision logic
+
+If the MBri checkout is available locally, use the simulator-side adapter rather than importing its hardware
+entry point. This leaves MBri's `RobotController`, FSM and calibration constants untouched:
+
+```powershell
+$env:MBRI_ROOT = 'D:\project\robocup\新建文件夹\MBri'
+$env:SIM_PYTHON = 'C:\Users\Neco\AppData\Local\Programs\Python\Python312\python.exe'
+node sim_battle.js `
+  --us "python robot_adapter.py robots/mbri_adapter.py" `
+  --them fsm --vehicles vehicle_profiles/mbri.json --seed 42
+
+# Pure strategy smoke test; this does not start Raspberry Pi hardware.
+python robots/mbri_adapter_selftest.py
+```
+
+The profile exposes MBri's 14 channels (4 gray, 6 digital IR, 2 front analog IR, 2 shovel-under IR). The
+adapter converts simulator-normalized values to MBri ADC units and maps the simulator's optional vision labels
+to MBri's `good`/`bad` detections. It is an interface adapter only: motor polarity/dead-zone, gray anchors,
+IR thresholds and camera latency still need bench validation before treating a score as a real-robot result.
+Do not pass MBri's `main.py` directly to `robot_adapter.py`; it is the hardware production entry point, not a
+`decide(obs)` module.
+
+For a reproducible MBri behavior batch with exported traces:
+
+```powershell
+node sim_mbri_batch.js --maxsteps 600 --trace-every 5
+```
+
+The batch uses ten fixed seeds, starts US on the ring, enables the optional external-policy vision bridge
+(default `classifyRate`, with a fresh YOLO cache taking priority), and enables simulation-only auto-mount after a real drop.
+Inspect `.sim_runs/mbri-*/summary.csv` and `analysis.md` first. `result.json` contains the complete
+`diagnostic-v1` trace plus `fallContexts` (the nearest raw sensors, requested/applied action and MBri state at
+each drop); `mbri-trace.jsonl` contains one raw `MBRI_TRACE` state record per control frame for line-oriented AI
+analysis. Because `autoMount` places a dropped robot back on the platform, this batch can diagnose patrol,
+combat and falling, but cannot validate the real `ADC_APPROACH` / `ADC_CORRECT` / `REVERSE` recovery sequence.
+Use scenario 34 in `node sim_selftest.js` and `python robots/mbri_adapter_selftest.py` for the current
+deterministic outer-fence alignment and reverse-mount contract checks.
+
+For a single external-policy run, add `--external-vision` to `sim_battle.js`. Without this opt-in, the built-in
+FSM may use `classifyRate`, but an external `decide(obs)` process only receives vision metadata and no generated
+detection result.
+
 ## Start Services and 3D Debugging
 
 Use two terminals when a browser view or remote Python battle is needed:

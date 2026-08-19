@@ -160,6 +160,46 @@ def decide(obs):
 
 完整观测协议和实车代码桥接说明见 [SIMULATOR.md](SIMULATOR.md)。
 
+### MBri 纯策略接入
+
+如果本机有 MBri 项目，可直接复用其 `RobotController` 决策逻辑；仿真器提供的
+`robots/mbri_adapter.py` 不会启动树莓派硬件，也不会修改 MBri 原项目：
+
+```powershell
+$env:MBRI_ROOT = 'D:\project\robocup\新建文件夹\MBri'
+$env:SIM_PYTHON = 'C:\Users\Neco\AppData\Local\Programs\Python\Python312\python.exe'
+node sim_battle.js --us "python robot_adapter.py robots/mbri_adapter.py" `
+  --them fsm --vehicles vehicle_profiles/mbri.json --seed 42
+python robots/mbri_adapter_selftest.py
+```
+
+该适配层只做传感器单位/字段和左右轮到 `{v,w}` 的转换；MBri profile 的回归红外使用台外围栏语义，
+以支持“围墙找正后倒车冲台”。灰度、红外、电机死区和视觉延迟仍需真机台架标定。
+不要把 MBri 的 `main.py` 直接作为 `decide(obs)` 文件导入。
+
+MBri 当前实车策略只覆盖掉台后的回归，不包含比赛开局的主动登台。因此双方 MBri 的策略评测应从
+`duel_center` 开始，避免把尚未实现的开局登台误记为策略失效。`--mirror-vehicles` 会为双方创建独立的
+MBri profile 副本：
+
+```powershell
+$env:MBRI_ROOT = 'D:\project\robocup\新建文件夹\MBri'
+python sim_runner.py eval --candidate robots\mbri_adapter.py `
+  --opponent "python robot_adapter.py robots/mbri_adapter.py" `
+  --vehicles vehicle_profiles\mbri.json --mirror-vehicles --scene duel_center `
+  --sim-vision --seeds 42,7,21,100,123 --trace
+```
+
+`--sim-vision` 只把固定 seed 的 `classifyRate` 结果作为有帧号的视觉输入提供给外部策略，不调用
+YOLO 或网络。MBri 的真机 YOLO 不识别敌车，因此模拟器的 `opponent` 标签会按“未识别到能量块”处理，
+由 MBri 原有数字红外确认后决定是否推敌。
+
+要批量导出 MBri 行为日志，可运行 `node sim_mbri_batch.js --maxsteps 600 --trace-every 5`；批处理会开启
+外部策略视觉桥（默认 `classifyRate`，有新鲜 YOLO 缓存时优先 YOLO）。结果会写入
+`.sim_runs/` 下的 `result.json`、`mbri-trace.jsonl`、`analysis.md` 与 `summary.csv`。其中 `fallContexts` 会把
+掉台时刻附近的灰度/红外、动作和 MBri 内部状态对齐，方便 AI 诊断；自动回台是仿真辅助开关，默认不影响其他策略或物理规则。
+自动回台批处理不验证 MBri 实际的找墙、校正和倒车上台状态机；当前应以 CORE 场景 34 与
+`robots/mbri_adapter_selftest.py` 的确定性回归为准。
+
 ## GitHub Pages 或其他静态托管
 
 可以将仓库根目录部署为静态网站，入口是 `wushu_ring_sim_3d.html`。静态托管只能展示和操作浏览器内的 3D 预览；它**不能**运行 Node.js、Python、文件夹导入或远程对战。

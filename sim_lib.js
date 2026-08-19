@@ -9,7 +9,8 @@
  *   → 子进程 stdin : {"t":..,"role":"us"|"them","timer":..,"scores":..,
  *                     "robot":{x,y,th,v,w,vehicle,onPlatform,hang,state,action},
  *                     "sensors":{兼容逻辑别名}, "rawSensors":{车辆真实通道},
- *                     "sensorLayout":{类型/位置/朝向}, "opponent":{...}, "objects":{...}}
+ *                     "sensorLayout":{类型/位置/朝向}, "perception":{场地灰度/视觉元数据},
+ *                     "opponent":{...}, "objects":{...}}
  *   ← 子进程 stdout: {"v":..,"w":..}   (超时 300ms 未回 → 按零动作处理)
  * ============================================================ */
 'use strict';
@@ -72,7 +73,8 @@ function resolveCmd(cmd){
   }
   return [exe, ...parts.slice(1)];
 }
-function spawnPolicy(cmd, role, onLog){
+function spawnPolicy(cmd, role, onLog, onStderr){
+  onStderr = typeof onStderr === 'function' ? onStderr : (() => {});
   const [exe, ...args] = resolveCmd(cmd);
   let child;
   try {
@@ -153,9 +155,30 @@ function spawnPolicy(cmd, role, onLog){
       else warnProtocol('没有等待请求的旧协议动作，已丢弃');
     }
   });
+  // stderr 既用于人类可读的短日志，也可由批处理工具按行采集原始诊断。
+  // 不改变 stdout 动作协议；按行拆分可避免多个 data chunk 合并时丢失
+  // 后续 MBRI_TRACE/用户诊断行。旧调用方不传 onStderr 时行为保持兼容。
+  let stderrBuf = '';
+  const emitStderrLine = line => {
+    const text = String(line || '').trim();
+    if (!text) return;
+    try { onStderr(role, text); } catch (e) {}
+  };
+  const flushStderr = () => {
+    if (!stderrBuf) return;
+    emitStderrLine(stderrBuf);
+    stderrBuf = '';
+  };
   child.stderr.on('data', d => {
-    const s = d.toString().trim();
+    const raw = d.toString();
+    const s = raw.trim();
     if (s) onLog(`[${role}子进程 stderr] ${s.slice(0, 160)}`);
+    stderrBuf += raw;
+    let i;
+    while ((i = stderrBuf.indexOf('\n')) >= 0){
+      emitStderrLine(stderrBuf.slice(0, i));
+      stderrBuf = stderrBuf.slice(i + 1);
+    }
   });
   child.once('spawn', () => {
     policy.started = true;
@@ -166,6 +189,7 @@ function spawnPolicy(cmd, role, onLog){
     for (const request of [...policy.pending.values()]) settle(request, null);
   };
   child.on('exit', code => {
+    flushStderr();
     policy.alive = false;
     if(!policy.stopping){
       policy.failed = true;
@@ -232,7 +256,22 @@ function spawnPolicy(cmd, role, onLog){
 }
 
 // ---------- 观测构造 ----------
-function mkObs(st, role){
+function perceptionForRole(st, role, vision){
+  if(!vision) return st.perception;
+  const base=st && st.perception && typeof st.perception==='object' ? st.perception : {};
+  const baseVision=base.vision && typeof base.vision==='object' ? base.vision : {};
+  const baseExternal=baseVision.external && typeof baseVision.external==='object' ? baseVision.external : {};
+  const roles=baseExternal.roles && typeof baseExternal.roles==='object' ? {...baseExternal.roles} : {};
+  roles[role]={...(roles[role]||{}),...vision};
+  return {
+    ...base,
+    vision:{
+      ...baseVision,
+      external:{...baseExternal,roles},
+    },
+  };
+}
+function mkObs(st, role, vision){
   const r = st.robots[role];
   return {
     t: st.simT, role, timer: st.timer, scores: st.scores,
@@ -242,6 +281,10 @@ function mkObs(st, role){
     rawSensors: st.rawSensors ? st.rawSensors[role] : st.sensors[role],
     sensorCompat: st.sensorCompat ? st.sensorCompat[role] : st.sensors[role],
     sensorLayout: st.sensorLayout ? st.sensorLayout[role] : undefined,
+    // 视觉仍由 CORE 的 classifyRate / 外部缓存决定；把元数据传给适配器，
+    // 不把 objects 类型注入视觉结果，保持“传感器接口不泄漏答案”的约束。
+    // 外部策略视觉是显式可选桥接；未开启时保持原 perception 引用和确定性轨迹。
+    perception: perceptionForRole(st, role, vision),
     opponent: st.robots[role === 'us' ? 'them' : 'us'],
     objects: st.objects,
   };
@@ -323,18 +366,30 @@ function resolveController(spec){
 // ---------- 对战运行器 ----------
 // opts: { api, seed, params, scene, fieldGray, vehicles:{us:{...},them:{...}}, dt, maxSteps,
 //         us: 'fsm'|cmd|@name, them: 'fsm'|cmd|@name,
-//         actionTimeout, traceEvery, includeTrace, realtime, shouldAbort, onLog, onProgress,
-//         skipReset }
+//         actionTimeout, traceEvery, includeTrace, realtime, externalVision, shouldAbort, onLog, onProgress,
+//         skipReset, autoMount?, autoMountRoles?, autoMountPose? }
 async function runBattle(opts){
   const api = opts.api;
-  const { resetAll, arm, stepSimExt, getState, getLog, US, THEM, onStage, hangOn } = api;
+  const { resetAll, arm, stepSimExt, getState, getLog, setPoseFor, logFor, US, THEM, onStage, hangOn } = api;
   const onLog = opts.onLog || (() => {});
   const dt = opts.dt || 0.05;
   const maxSteps = opts.maxSteps || 2400;
   const traceEvery = opts.traceEvery || 20;
   const realtime = opts.realtime !== false;
   const includeTrace = opts.includeTrace === true;
+  const externalVision = opts.externalVision === true && typeof api.getExternalVisionFor === 'function';
   const shouldAbort = opts.shouldAbort || (() => false);
+  // 仅用于“策略逻辑/日志”回放的安全辅助：默认关闭，且只自动回台曾经
+  // 上台后掉台的车辆。它不改变 CORE 的掉台判定、计分或 MBri 状态机。
+  const autoMountEnabled = opts.autoMount === true;
+  const autoMountRoles = new Set(
+    Array.isArray(opts.autoMountRoles) && opts.autoMountRoles.length
+      ? opts.autoMountRoles.filter(role => role === 'us' || role === 'them')
+      : ['us']
+  );
+  const autoMountPose = opts.autoMountPose && typeof opts.autoMountPose === 'object'
+    ? opts.autoMountPose : {};
+  const autoMountCounts = { us:0, them:0 };
 
   // 后台远程会话需要在 HTTP 响应前先完成一次 reset 以便 GUI 立即看到初始场景；
   // 通过 skipReset 复用该实例，避免 /battle/start 与 runBattle 重复初始化。
@@ -346,9 +401,9 @@ async function runBattle(opts){
   // 外部策略启动失败不能静默退回内置 FSM，否则评测对象根本没有运行。
   let usPol = null, themPol = null;
   try {
-    usPol = usCmd && usCmd !== 'fsm' ? spawnPolicy(usCmd, '我方', onLog) : null;
+    usPol = usCmd && usCmd !== 'fsm' ? spawnPolicy(usCmd, '我方', onLog, opts.onPolicyStderr) : null;
     if (usCmd && usCmd !== 'fsm' && !usPol) throw new Error('runner_error/policy_spawn: 我方策略子进程启动失败');
-    themPol = themCmd && themCmd !== 'fsm' ? spawnPolicy(themCmd, '对手', onLog) : null;
+    themPol = themCmd && themCmd !== 'fsm' ? spawnPolicy(themCmd, '对手', onLog, opts.onPolicyStderr) : null;
     if (themCmd && themCmd !== 'fsm' && !themPol) throw new Error('runner_error/policy_spawn: 对手策略子进程启动失败');
     const startupPolicies = [usPol, themPol].filter(Boolean);
     if (startupPolicies.length){
@@ -410,6 +465,26 @@ async function runBattle(opts){
       diagnostics.lastState[role]=state;
       diagnostics.lastMounted[role]=mounted;
     }
+  }
+  function autoMountDropped(){
+    if(!autoMountEnabled || typeof setPoseFor !== 'function') return [];
+    const mounted=[];
+    for(const role of autoMountRoles){
+      const r=role==='us'?US:THEM;
+      if(!seen[role].mounted || onStage(r) || r.fsm.state==='DONE') continue;
+      const requested=autoMountPose[role] && typeof autoMountPose[role]==='object'
+        ? autoMountPose[role] : {};
+      const fallback = role==='us' ? {x:1.55,y:1.90,th:0} : {x:2.25,y:1.90,th:Math.PI};
+      const x=Number.isFinite(Number(requested.x)) ? Number(requested.x) : fallback.x;
+      const y=Number.isFinite(Number(requested.y)) ? Number(requested.y) : fallback.y;
+      const th=Number.isFinite(Number(requested.th)) ? Number(requested.th) : fallback.th;
+      setPoseFor(r,x,y,th);
+      r.wasOn=true; r.dropPending=false;
+      autoMountCounts[role]++;
+      mounted.push(role);
+      if(typeof logFor==='function') logFor(r, `[sim] 自动回台(${autoMountCounts[role]})`, 'sim');
+    }
+    return mounted;
   }
   let traceLogCursor=0;
   let traceScores={us:0,them:0};
@@ -476,9 +551,14 @@ async function runBattle(opts){
       const st = getState();
       if (st.done) break;
       const t0 = Date.now();
+      const frameId=steps+1;
+      const vision={
+        us:externalVision ? api.getExternalVisionFor('us', `us-${frameId}`) : null,
+        them:externalVision ? api.getExternalVisionFor('them', `them-${frameId}`) : null,
+      };
       const [au, at] = await Promise.all([
-        usPol  ? usPol.ask(mkObs(st, 'us'), opts.actionTimeout) : Promise.resolve(null),
-        themPol ? themPol.ask(mkObs(st, 'them'), opts.actionTimeout) : Promise.resolve(null),
+        usPol  ? usPol.ask(mkObs(st, 'us', vision.us), opts.actionTimeout) : Promise.resolve(null),
+        themPol ? themPol.ask(mkObs(st, 'them', vision.them), opts.actionTimeout) : Promise.resolve(null),
       ]);
       for(const [role, policy] of [['us', usPol], ['them', themPol]]){
         if(policy && policy.failed){
@@ -504,6 +584,9 @@ async function runBattle(opts){
       // 登台指标只读核心机器人对象，不为每一帧额外创建全量状态快照。
       observeMilestones();
       observeDiagnostics();
+      autoMountDropped();
+      // 自动回台后更新里程碑，但不覆盖上一步已经记录的掉台诊断。
+      if(autoMountEnabled) observeMilestones();
       // 1:1 真实时间节流 (2026-08-12): 实车 FSM 线程按真实时间 50Hz 节流决策，
       // realtime=true 时每帧真实时间 ≥ dt，保证登台时序与实车线程一致；
       // AI 批量搜索可用 realtime=false 跳过等待，保持决策输入/输出协议不变。
@@ -564,6 +647,7 @@ async function runBattle(opts){
     perception: st.perception,
     policyStats: policies,
     warnings,
+    autoMount: { enabled:autoMountEnabled, roles:[...autoMountRoles], counts:{...autoMountCounts} },
     metrics: {
       us: { mounted: seen.us.mounted, mountTime: seen.us.mountTime, finalOnPlatform: !!st.robots.us.onPlatform, finalHang: !!st.robots.us.hang },
       them: { mounted: seen.them.mounted, mountTime: seen.them.mountTime, finalOnPlatform: !!st.robots.them.onPlatform, finalHang: !!st.robots.them.hang },

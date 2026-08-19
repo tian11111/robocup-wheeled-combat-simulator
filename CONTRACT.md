@@ -22,7 +22,7 @@
 | 约束 | 说明 |
 |---|---|
 | **stdout 纯净** | 子进程 stdout **只允许动作 JSON 行** `{"v":有限数,"w":有限数,"requestId":...}`；不含有限 `v/w` 的 JSON（如 `{"status":"ok"}`）也会被丢弃。实车 `FSM._log` 用 `print("[fsm]...")` 会污染协议 → `sim_robot_main` 已装 `_StdoutProxy` 把 `[fsm]` 行重定向到 stderr。**新代码禁止往 stdout 打印非 JSON** |
-| 输入 obs | 每帧一行 JSON：`{requestId,t, role, timer, scores, robot{...}, sensors{兼容别名}, rawSensors{真实通道}, sensorLayout{类型/布局}, opponent, objects}`（见 SIMULATOR.md） |
+| 输入 obs | 每帧一行 JSON：`{requestId,t, role, timer, scores, robot{...}, sensors{兼容别名}, rawSensors{真实通道}, sensorLayout{类型/布局}, perception{灰度/视觉元数据}, opponent, objects}`（见 SIMULATOR.md） |
 | 超时与迟到动作 | 单步响应超时 300ms 按零动作处理（sim_lib `actionTimeout`）。`robot_adapter.py` 自动回显 `requestId`，迟到动作按 ID 丢弃，绝不能被后续观测帧误用；旧程序未回显 ID 时桥会临时安全停车，直到其迟到动作被隔离丢弃。 |
 | 线程模型 | 实车 FSM 在子进程内独立线程跑 `fsm.run()`；`decide(obs)` 由桥主线程逐帧调用：更新传感器快照 → 回读电机指令 |
 | **发令时序** | `sim_robot_main` **模块加载时即 `fsm.arm()`**（run() 线程第一轮必消费信号）。禁止在 decide 里 arm——曾因线程启动与 arm 的竞态导致 WAIT_START 卡死 |
@@ -51,6 +51,10 @@
 - `actions.applied`：指令延迟队列后实际送入动力学的控制量；
 - `velocity`：积分得到的实际线速度/角速度，不得冒充请求动作；
 - `rawSensors`：当前车辆真实 profile 通道，`sensors` 仅为兼容别名。
+- `perception`：当前场地灰度和视觉实现元数据；启用外部 YOLO 时，按 `role` 从
+  `perception.vision.external.roles[role].detection` 读取最新规范化标签，必须检查 `ageMs`，
+  超过 `maxAgeMs` 的结果视为过期。对外部策略显式开启 `externalVision` 后，仿真 `classifyRate`
+  也会按当前可见目标写入同一位置；未开启时只提供元数据。该字段不包含仿真物体类型推断。
 
 每条详细轨迹还包含比赛阶段、比分增量、车辆姿态/动力学状态、能量块和本采样点新增事件；事件带单调
 `seq`，用于日志最多保留 500 条时的增量去重。`diagnostics.failure` 只允许作为自动归因起点，不能把

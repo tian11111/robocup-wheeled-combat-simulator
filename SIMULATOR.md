@@ -60,7 +60,8 @@
 
 传感器是车辆 profile 的一部分，不再假定所有车都有相同数量。每个通道使用车体坐标：
 `forward` 沿车头为正、`lateral` 向车体左侧为正、`angle` 为相对车头的弧度；`range/fov` 为量程和半视场角。
-当前核心支持 `gray`、`ir_ground`、`ir_edge`、`ir_distance`、`digital` 五种决策逻辑模型。
+当前核心支持 `gray`、`ir_ground`、`ir_edge`、`ir_distance`、`digital` 五种决策逻辑模型。`mode: "edge"`
+表示台阶/台壁回波；`mode: "fence"` 表示台外外围栏回波，可用于“先贴墙找正、再倒车冲台”的回归策略。
 
 本车已内置 `wheeledCombat11` profile（4 路底盘灰度、4 路数字对角红外、2 路铲下红外、1 路铲前红外），
 也提供可导入文件 `vehicle_profiles/robocup_wheeled_combat_11.json`。
@@ -412,7 +413,7 @@ curl http://127.0.0.1:8932/api/v1/evaluations/<id>
 | `POST /battle/start` | `{us, them, seed?, params?, fieldGray?, vehicles?, dt?, maxSteps?, realtime?}` | 启动后台远程对战，返回 `controlToken`；默认实时 20Hz |
 | `POST /battle/control` | `{token, command, ...}` | 持 `/battle/start` 返回的令牌控制进行中的后台对战；`command` 为 `arm/pause/resume/restart/scene/params` |
 | `POST /battle/stop` | — | 幂等请求停止后台对战并终止其策略子进程；运行中返回 `202/stopping`，收尾后回到 `idle` |
-| `POST /api/v1/evaluations` | `{us, them, candidate?, seeds[], params?, fieldGray?, vehicles?, scene?, includeTrace?, realtime?}` | 异步多 seed 评测，返回 `id`；候选可直接提交 Python `code` |
+| `POST /api/v1/evaluations` | `{us, them, candidate?, seeds[], params?, fieldGray?, vehicles?, scene?, includeTrace?, externalVision?, realtime?}` | 异步多 seed 评测，返回 `id`；`externalVision:true` 将确定性 `classifyRate` 帧提供给外部策略，候选可直接提交 Python `code` |
 | `GET /api/v1/evaluations/:id` | — | 查询评测进度、逐 seed 结果和汇总指标 |
 | `DELETE /api/v1/evaluations/:id` | — | 请求取消正在运行的评测 |
 | `GET /state` | `?compact=1` 可选 | 全量状态；紧凑模式保留位姿、传感器、车辆控制上限、比分和感知诊断，省略日志等大字段 |
@@ -457,6 +458,78 @@ node sim_battle.js --vehicles vehicles.json --us @my_robot --them fsm      # 带
 
 解释器优先从 PATH 解析 `python/python3/py`；未在 PATH 时可设置 `SIM_PYTHON`（其次读取 `PYTHON`），例如 `set SIM_PYTHON=C:\\Python312\\python.exe` 后照常使用 `python robot_adapter.py ...`。
 
+### MBri 实车策略接入（不改 MBri 原代码）
+
+仓库提供 `robots/mbri_adapter.py`，把 `D:\\project\\robocup\\新建文件夹\\MBri` 中的纯策略
+`RobotController.update(...)` 接到 `decide(obs) -> {v,w}`。它不会导入/启动 `main.py` 的树莓派硬件入口，
+也不会修改 MBri 的 `config.py`、状态机或驱动文件；只在仿真器侧做字段、ADC 单位和差速轮命令转换。
+
+```powershell
+$env:MBRI_ROOT = 'D:\\project\\robocup\\新建文件夹\\MBri'
+$env:SIM_PYTHON = 'C:\\Users\\Neco\\AppData\\Local\\Programs\\Python\\Python312\\python.exe'
+node sim_battle.js `
+  --us "python robot_adapter.py robots/mbri_adapter.py" `
+  --them fsm --vehicles vehicle_profiles/mbri.json --seed 42
+```
+
+`vehicle_profiles/mbri.json` 描述 MBri 的 14 路布局：四路灰度、六路数字红外、两路前方模拟红外和
+两路铲下红外。掉台回归中的六路数字红外和前方模拟红外采用 `fence` 语义：先对台外围墙找正，随后
+车尾朝擂台执行 MBri 原有的 `REVERSE` 倒车冲台。适配器将仿真灰度 `0..1000` 按 MBri 的四路 edge/center/white 标定点映射到 ADC，
+将归一化模拟红外转换为 `0..10000` ADC，将 YOLO/SimVision 的 `buff/debuff/opponent` 映射为 MBri
+需要的 `good/bad`。铲下红外按 MBri 新车实测极性做反相（仿真台面反射 `1` → MBri 安全低 ADC，
+台下/悬空 `0` → 高 ADC）。MBri 的左右电机开环量再按当前车辆 `maxSpeed/maxTurnRate` 转成 `v/w`；
+轮距仅作为 profile 信息保留，真实电机方向、死区和比例仍需台架复核。
+
+### MBri 双车评测场景
+
+MBri 当前 `ReentryController` 处理的是掉台后的找墙、矫正和倒车，不包含比赛开局的主动登台。因此评测
+MBri 对 MBri 时使用 `--scene duel_center`，让两车在擂台中部相向开始；这只隔离开局登台缺口，不能证明
+实车碰撞或摩擦已标定。单车 profile 默认只应用到我方，双车镜像时显式传 `--mirror-vehicles`：
+
+```powershell
+python sim_runner.py eval --candidate robots\mbri_adapter.py `
+  --opponent "python robot_adapter.py robots/mbri_adapter.py" `
+  --vehicles vehicle_profiles\mbri.json --mirror-vehicles --scene duel_center `
+  --sim-vision --seeds 42,7,21,100,123 --trace
+```
+
+`--sim-vision` 是批量评测中的确定性视觉桩，不请求 YOLO。它只在显式开启时向外部策略提供带连续
+`frameId` 的 `classifyRate` 结果；默认评测保持原有的纯传感器输入。MBri 真实 YOLO 不识别敌人，
+因此适配器会把 `opponent` 标签转换为一帧新的 `no_target`，让原有数字红外近物确认逻辑决定是否推敌，
+不会把敌车误作减益块。
+
+外部策略默认只收到 `perception.vision` 元数据；传 `externalVision:true`（`sim_battle.js` 对应
+`--external-vision`）后，仿真器会把当前可见目标交给独立随机流的 `classifyRate`，并写入
+`perception.vision.external.roles[role].detection`。如果有新鲜的 YOLO 缓存，则优先使用 YOLO；这条桥
+不会改变 MBri 的 `RobotController` 或 `decide` 接口，也不会让普通评测默认改变固定 seed 结果。
+
+可先运行不启动硬件的纯策略自测：
+
+```powershell
+$env:MBRI_ROOT = 'D:\\project\\robocup\\新建文件夹\\MBri'
+python robots/mbri_adapter_selftest.py
+```
+
+这是决策逻辑接入，不是实车物理等价证明。使用真实灰度/红外/视觉遥测前，应在 profile 或适配器的
+映射层单独标定，并保留 `fidelity.json` 的现有未标定状态；不要把真机 `main.py` 直接作为策略文件导入。
+
+需要批量观察 MBri 行为时可使用 `sim_mbri_batch.js`。它默认从台面中心开始、只对我方开启仿真辅助
+`autoMount`（曾上台后掉台才自动回台），不会改变默认 `runBattle` 行为，也不会修改 MBri 状态机：
+
+```powershell
+$env:MBRI_ROOT = 'D:\\project\\robocup\\新建文件夹\\MBri'
+$env:SIM_PYTHON = 'C:\\Users\\Neco\\AppData\\Local\\Programs\\Python\\Python312\\python.exe'
+node sim_mbri_batch.js --maxsteps 600 --trace-every 5
+```
+
+结果目录包含 `result.json`（每个 seed 的完整 `diagnostic-v1` 轨迹、事件、策略统计和 `fallContexts`）、
+`mbri-trace.jsonl`（适配器通过 stderr 输出的逐控制帧 `MBRI_TRACE`）以及 `analysis.md`（按 seed 的掉台上下文摘要），
+另有 `summary.csv`，
+默认写入 `.sim_runs/mbri-<UTC>/`。`maxsteps=600` 代表 30 秒仿真；要做完整 120 秒比赛可传 `--maxsteps 2400`，
+但外部 Python IPC 会明显慢于内置 FSM。`autoMount` 会在真实掉台后把车直接放回台面，因此这些批量结果只能
+用于巡逻、对抗和掉台诊断，不能证明 MBri 的 `ADC_APPROACH`、`ADC_CORRECT`、`REVERSE` 动态回归成功。当前该
+回归契约由 `node sim_selftest.js` 的场景 34 和 `python robots/mbri_adapter_selftest.py` 覆盖。
+
 obs 结构：
 
 ```json
@@ -467,8 +540,9 @@ obs 结构：
  "rawSensors":{"gray_front":940,"gray_rear":920,"gray_left":300,"gray_right":310,
                 "diag_left_front":0.1,"diag_left_rear":0.0,"diag_right_front":0.72,"diag_right_rear":0.3,
                 "shovel_under_left":1,"shovel_under_right":1,"shovel_front":0.9},
- "sensorLayout":{"id":"wheeledCombat11","channels":[{"id":"gray_front","type":"gray","forward":0.11,"lateral":0}]},
- "opponent":{"x":2.6,"y":2.0,"th":-2.2,"onPlatform":true,"state":"SCORE_BLOCK"},
+  "sensorLayout":{"id":"wheeledCombat11","channels":[{"id":"gray_front","type":"gray","forward":0.11,"lateral":0}]},
+  "perception":{"vision":{"mode":"default","external":{"roles":{"us":{"frameId":null,"detection":null}}}}},
+  "opponent":{"x":2.6,"y":2.0,"th":-2.2,"onPlatform":true,"state":"SCORE_BLOCK"},
  "objects":{"buffs":[{"x":1.4,"y":1.3,"onPlatform":true}],"debuff":{"x":2.2,"y":2.5,"onPlatform":true}}}
 ```
 

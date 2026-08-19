@@ -1,0 +1,30 @@
+{
+  "id": "mbri",
+  "label": "MBri 真实布局（仿真适配）",
+  "maxSpeed": 1.5,
+  "maxTurnRate": 4.0,
+  "trackWidth": 0.22,
+  "sensors": {
+    "id": "mbri14",
+    "channels": [
+      {"id":"gray_front","type":"gray","forward":0.11,"lateral":0},{"id":"gray_rear","type":"gray","forward":-0.11,"lateral":0},{"id":"gray_left","type":"gray","forward":0,"lateral":0.11},{"id":"gray_right","type":"gray","forward":0,"lateral":-0.11},
+      {"id":"left_front","type":"digital","angle":-0.785398,"range":1.6,"fov":0.55,"mode":"fence"},
+      {"id":"left_rear","type":"digital","angle":2.356194,"range":1.6,"fov":0.55,"mode":"fence"},
+      {"id":"right_front","type":"digital","angle":0.785398,"range":1.6,"fov":0.55,"mode":"fence"},
+      {"id":"right_rear","type":"digital","angle":-2.356194,"range":1.6,"fov":0.55,"mode":"fence"},
+      {"id":"front","type":"digital","angle":0,"range":2.2,"fov":0.4,"mode":"fence"},
+      {"id":"rear","type":"digital","angle":3.141593,"range":1.3,"fov":0.7,"mode":"fence"},
+      {"id":"front_analog_left","type":"ir_edge","forward":0.14,"lateral":0.06,"range":0.9,"fov":0.3,"mode":"fence"},
+      {"id":"front_analog_right","type":"ir_edge","forward":0.14,"lateral":-0.06,"range":0.9,"fov":0.3,"mode":"fence"},
+      {"id":"shovel_under_left","type":"ir_ground","forward":0.14,"lateral":0.06,"range":0.25,"fov":0.35,"mode":"ground"},
+      {"id":"shovel_under_right","type":"ir_ground","forward":0.14,"lateral":-0.06,"range":0.25,"fov":0.35,"mode":"ground"}
+    ],
+    "logical": {
+      "gF":"gray_front", "gB":"gray_rear", "gL":"gray_left", "gR":"gray_right",
+      "uL":"shovel_under_left", "uR":"shovel_under_right",
+      "sFL":"front_analog_left", "sFR":"front_analog_right",
+      "dLF":"left_front", "dLB":"left_rear", "dRF":"right_front", "dRB":"right_rear",
+      "f":"front", "r":"rear"
+    }
+  }
+}

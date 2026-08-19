@@ -329,6 +329,7 @@ async function runEvaluation(job, opts){
           traceEvery: opts.traceEvery,
           includeTrace: opts.includeTrace,
           realtime: opts.realtime,
+          externalVision: opts.externalVision,
           us: job.us,
           them: job.them,
           shouldAbort: () => !!job.cancelRequested,
@@ -608,6 +609,7 @@ const server = http.createServer(async (req, res) => {
           state: '/state',
           perRobot: ['x', 'y', 'th', 'v', 'w', 'vehicle', 'onPlatform', 'hang', 'state', 'action'],
           sensors: ['sensors (legacy aliases)', 'rawSensors (real channels)', 'sensorLayout (type/position/orientation)'],
+          perception: ['fieldGray', 'vision', 'vision.external.roles[role].detection (when enabled)'],
           objects: ['buffs', 'debuff'],
         },
         evaluation: {
@@ -620,6 +622,7 @@ const server = http.createServer(async (req, res) => {
             candidate: '{name?, role?, code?}',
             seeds: 'integer[]',
             includeTrace: 'boolean',
+            externalVision: 'boolean? (默认 false；使用确定性 classifyRate 视觉帧)',
             realtime: 'boolean? (默认 false，实车线程联调时设 true)',
             params: 'object?',
             vehicles: '{us?,them?}',
@@ -721,6 +724,7 @@ const server = http.createServer(async (req, res) => {
         traceEvery: Number.isFinite(Number(b.traceEvery)) ? Math.max(1, Math.min(1000, Math.floor(Number(b.traceEvery)))) : 20,
         actionTimeout: Number.isFinite(Number(b.actionTimeout)) ? Math.max(10, Math.min(5000, Math.floor(Number(b.actionTimeout)))) : 300,
         includeTrace: !!b.includeTrace,
+        externalVision: b.externalVision === true,
         // AI 批量搜索默认关闭真实时间节流；@realcar 等依赖线程时序的实车桥请显式传 true。
         realtime: b.realtime === true,
       };

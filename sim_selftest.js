@@ -85,6 +85,10 @@ for(const [name, expect] of [['center',[1.9,1.9]],['edge',[0.7,1.9]],['walkway',
 }
 T.scenePreset('opp_on');  assert(T.onStage(T.THEM), 'opp_on → 对手上台');
 T.scenePreset('opp_start'); assert(T.THEM.x>3.0&&T.THEM.y>3.0, 'opp_start → 对手回出发区');
+T.scenePreset('duel_center');
+assert(T.onStage(T.US) && T.onStage(T.THEM), 'duel_center → 双方均在台上');
+assert(T.US.x < T.THEM.x && Math.abs(T.US.th) < 0.01 && Math.abs(Math.abs(T.THEM.th)-Math.PI) < 0.01,
+  'duel_center → 双方相向');
 
 console.log('== 场景 9: 灰度模型 ==');
 const gRed=T.fieldGray(1.9,1.9), gWhite=T.fieldGray(2.2,2.2), gEdge=T.fieldGray(0.7,1.9), gFloor=T.fieldGray(0.3,0.3);
@@ -568,6 +572,36 @@ console.log('== 场景 33: SCORE_BLOCK 无进展恢复与正赛结束收敛 ==')
     `双方状态应收敛 FINISHED, 实际 ${final.robots.us.state}/${final.robots.them.state}`);
   assert(Number.isFinite(final.robots.us.vx) && Number.isFinite(final.robots.us.vy),
     '完整状态应暴露实际 vx/vy 供诊断');
+}
+
+console.log('== 场景 34: MBri 围墙找正后倒车登台 ==');
+{
+  const mbriProfile=JSON.parse(fs2.readFileSync('vehicle_profiles/mbri.json','utf8'));
+  const prepare=(seed, heading)=>{
+    T.resetAll({seed,vehicles:{us:mbriProfile}});
+    T.setVehicleFor('them',{maxSpeed:0.01});
+    T.setPoseFor(T.US,1.9,0.35,heading);
+    T.US.fsm.armed=true; T.US.fsm.manual=true; T.US.fsm.state='MANUAL';
+    T.THEM.fsm.armed=false; T.THEM.fsm.state='WAIT_START';
+    T.stepSimExt(0.05,{us:{v:0,w:0},them:null});
+    return T.getState().rawSensors.us;
+  };
+  // 台外南侧时，MBri 的“前方”应先看向南侧围墙，而非北侧台阶。
+  const fenceFacing=prepare(51,-Math.PI/2);
+  const stageFacing=prepare(52,Math.PI/2);
+  assert(fenceFacing.front===1 && fenceFacing.front_analog_left>0.5,
+    `MBri 前方朝围墙时应有数字/模拟回波, 实际 ${fenceFacing.front}/${fenceFacing.front_analog_left.toFixed(2)}`);
+  assert(stageFacing.front===0 && stageFacing.front_analog_left<0.5,
+    `MBri 前方朝台阶时不应误作围墙, 实际 ${stageFacing.front}/${stageFacing.front_analog_left.toFixed(2)}`);
+
+  prepare(53,-Math.PI/2);
+  let remounted=false;
+  // MBri REVERSE=-550 映射到约 -0.806m/s：车头朝围墙，车尾朝擂台，倒车上台。
+  for(let i=0;i<50;i++){
+    T.stepSimExt(0.05,{us:{v:-550/1023*1.5,w:0},them:null});
+    if(T.onStage(T.US)){ remounted=true; break; }
+  }
+  assert(remounted, `MBri 倒车冲台后应完整回到台面, 实际 (${T.US.x.toFixed(3)},${T.US.y.toFixed(3)})`);
 }
 
 console.log(failures===0 ? '\n全部通过 ✔' : `\n${failures} 项失败 ✘`);

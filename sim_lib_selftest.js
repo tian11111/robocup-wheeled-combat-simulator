@@ -80,6 +80,23 @@ async function testUnexpectedPolicyExit(){
   );
 }
 
+async function testExternalVisionBridge(){
+  const api = loadCore(__dirname);
+  api.resetAll({ seed: 42, scene: 'center' });
+  assert.strictEqual(api.getState().perception.vision.id, 'classifyRate');
+  assert.strictEqual(typeof api.getExternalVisionFor, 'function', 'CORE 应提供外部策略视觉桥');
+  api.setExternalVisionCache({ enabled: true, maxAgeMs: 800, clear: true });
+  api.updateExternalVisionResult('us', {
+    frameId: 'fixture-1', width: 640, height: 360,
+    detections: [{ label: 'opponent', confidence: 0.93, bbox: [280, 120, 80, 120] }],
+  }, Date.now());
+  const vision = api.getExternalVisionFor('us', 'us-1');
+  assert.strictEqual(vision.hasResult, true, '新鲜外部视觉缓存应进入外部策略观测');
+  assert.strictEqual(vision.detection.label, 'opponent');
+  assert.strictEqual(vision.detection.source, 'yolo');
+  api.setExternalVisionCache({ enabled: false, clear: true });
+}
+
 (async () => {
   const html = '<script src="vendor.js"></script><script type="text/javascript">\n// CORE-BEGIN\nmodule.exports = { ok:true };\n// CORE-END\n</script>';
   assert.ok(extractCoreScript(html, 'fixture.html').includes('module.exports = { ok:true }'));
@@ -90,6 +107,7 @@ async function testUnexpectedPolicyExit(){
   await testSpawnPolicy();
   await testDiagnosticTrace();
   await testUnexpectedPolicyExit();
+  await testExternalVisionBridge();
   console.log('sim_lib 自测通过 ✔');
 })().catch(error => {
   console.error('sim_lib 自测失败:', error && error.stack || error);

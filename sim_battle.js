@@ -16,6 +16,9 @@
  *   --maxsteps N        最大步数(默认 2400 = 2 分钟)
  *   --timeout MS        子进程单步响应超时(默认 300)
  *   --vehicles FILE|JSON  两车参数 profile 文件/JSON ({us:{...},them:{...})
+ *   --scene NAME        开局场景预设（如 center）
+ *   --auto-mount        仿真辅助：曾上台后掉台自动放回台面（默认关闭）
+ *   --external-vision   向外部策略 obs 注入 SimVision/YOLO 视觉结果（默认关闭）
  *   --quiet             只输出结果
  * ============================================================ */
 'use strict';
@@ -34,6 +37,12 @@ function readVehicles(raw){
   const vehicles = data && data.vehicles && typeof data.vehicles === 'object' ? data.vehicles : data;
   if (!vehicles || typeof vehicles !== 'object' || Array.isArray(vehicles)) {
     throw new Error('--vehicles 必须是 {us:{...},them:{...}} 对象或 JSON 文件');
+  }
+  // 与 sim_runner.py 保持一致：单车 profile 默认作用于我方，
+  // 这样 `vehicle_profiles/mbri.json` 可以直接用于本地回放。
+  if (!Object.prototype.hasOwnProperty.call(vehicles, 'us') &&
+      !Object.prototype.hasOwnProperty.call(vehicles, 'them')) {
+    return { us: vehicles };
   }
   return vehicles;
 }
@@ -58,6 +67,9 @@ const dt = parseFloat(arg('dt', 0.05));
 const maxSteps = parseInt(arg('maxsteps', 2400), 10);
 const timeout = parseInt(arg('timeout', 300), 10);
 const vehicles = readVehicles(arg('vehicles', null));
+const scene = arg('scene', null);
+const autoMount = process.argv.includes('--auto-mount');
+const externalVision = process.argv.includes('--external-vision');
 const quiet = process.argv.includes('--quiet');
 
 (async () => {
@@ -68,7 +80,7 @@ const quiet = process.argv.includes('--quiet');
   const onLog = quiet ? () => {} : m => console.log(`  ${m}`);
   const res = await runBattle({
     api, seed: seed === null ? undefined : parseInt(seed, 10),
-    dt, maxSteps, us, them, vehicles, actionTimeout: timeout, onLog,
+    dt, maxSteps, us, them, vehicles, scene, autoMount, externalVision, actionTimeout: timeout, onLog,
     onProgress: (steps, st) => console.log(
       `  [${st.simT.toFixed(0)}s] 我方${st.robots.us.state}(${st.robots.us.onPlatform?'台':'下'}) ` +
       `vs 对手${st.robots.them.state}(${st.robots.them.onPlatform?'台':'下'}) | ` +
@@ -80,6 +92,7 @@ const quiet = process.argv.includes('--quiet');
   console.log(`结果  我方${res.robots.us.state}(${res.robots.us.onPlatform?'台上':'台下'}) ` +
               `对手${res.robots.them.state}(${res.robots.them.onPlatform?'台上':'台下'})`);
   console.log(`原因  ${res.doneReason || '未结束'}`);
+  if (res.autoMount && res.autoMount.enabled) console.log(`自动回台  ${JSON.stringify(res.autoMount.counts)}`);
   if (!quiet){
     console.log('--- 事件日志 (尾 15 条) ---');
     for (const e of res.logTail.slice(-15)) console.log(`  [t=${e.t}s] ${e.msg}`);

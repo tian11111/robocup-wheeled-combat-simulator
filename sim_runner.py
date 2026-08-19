@@ -73,6 +73,16 @@ def read_vehicle_profiles(value):
     return {"us": data}
 
 
+def mirror_vehicle_profiles(vehicles):
+    """Give both sides an independent copy of one supplied vehicle profile."""
+    if vehicles is None:
+        raise RunnerError("--mirror-vehicles 需要同时提供 --vehicles")
+    if "us" not in vehicles or "them" in vehicles:
+        raise RunnerError("--mirror-vehicles 只适用于单车 profile；双车 profile 不需要此选项")
+    # JSON round-trip avoids sharing nested sensor-layout objects between roles.
+    return {"us": vehicles["us"], "them": json.loads(json.dumps(vehicles["us"]))}
+
+
 def parse_seeds(value):
     if not value:
         return list(DEFAULT_SEEDS)
@@ -466,7 +476,8 @@ def run_evaluation(env, policy, opponent, settings, on_start=None, on_finish=Non
         us=policy, them=opponent, seeds=settings["seeds"], params=settings["params"],
         vehicles=settings["vehicles"], field_gray=settings["field_gray"], max_steps=settings["max_steps"],
         trace_every=settings["trace_every"], include_trace=settings["trace"],
-        realtime=settings["realtime"],
+        realtime=settings["realtime"], scene=settings["scene"],
+        external_vision=settings["external_vision"],
     )
     if on_start:
         on_start(started)
@@ -519,13 +530,18 @@ def build_settings(args):
         raise RunnerError("--timeout 和 --poll 必须大于 0")
     if args.workers < 1 or args.workers > 32:
         raise RunnerError("--workers 必须在 1 到 32 之间")
+    vehicles = read_vehicle_profiles(args.vehicles)
+    if args.mirror_vehicles:
+        vehicles = mirror_vehicle_profiles(vehicles)
     return {
         "seeds": parse_seeds(args.seeds),
         "params": read_json_object(args.params, "--params"),
         "field_gray": read_json_object(args.field_gray, "--field-gray"),
-        "vehicles": read_vehicle_profiles(args.vehicles),
+        "scene": args.scene,
+        "vehicles": vehicles,
         "trace": bool(args.trace),
         "realtime": bool(args.realtime),
+        "external_vision": bool(args.sim_vision),
         "max_steps": args.max_steps,
         "trace_every": args.trace_every,
         "timeout": args.timeout,
@@ -702,9 +718,12 @@ def add_evaluation_args(parser):
     parser.add_argument("--opponent", default="fsm", help="对手：fsm、@注册名或子进程命令")
     parser.add_argument("--params", help="内联 JSON 或参数 JSON 文件")
     parser.add_argument("--vehicles", help="单车 profile 或 {us,them} 双车 profile JSON")
+    parser.add_argument("--mirror-vehicles", action="store_true", help="将单车 profile 独立复制给双方")
     parser.add_argument("--field-gray", help="实测灰度表 JSON 对象或 JSON 文件")
+    parser.add_argument("--scene", help="评测场景预设，例如 duel_center；默认使用比赛起点")
     parser.add_argument("--seeds", help="逗号分隔 seed；默认 42,7,21,100,123")
     parser.add_argument("--trace", action="store_true", help="在结果中保留轨迹")
+    parser.add_argument("--sim-vision", action="store_true", help="将确定性 classifyRate 视觉帧提供给外部策略")
     parser.add_argument("--realtime", action="store_true", help="启用真实时间节流，供实车线程联调")
     parser.add_argument("--max-steps", type=int, default=2400, help="每个 seed 最大仿真步数")
     parser.add_argument("--trace-every", type=int, default=20, help="轨迹采样步间隔")
