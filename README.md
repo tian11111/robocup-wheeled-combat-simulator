@@ -1,6 +1,6 @@
 # RoboCup Wheeled Combat Simulator
 
-2026 武术擂台轮式格斗机器人决策逻辑仿真器。提供 Three.js 3D 场景、确定性比赛规则核心、可配置车辆与传感器、Python 策略接入，以及本机 HTTP API，方便迭代和评估小车算法。
+2026 武术擂台轮式格斗机器人决策逻辑仿真器。提供 Three.js 3D 场景、确定性比赛规则核心、可配置车辆与传感器、Python 策略接入，以及本机 HTTP API，方便迭代和评估小车算法。该项目已废弃，新项目在https://github.com/tian11111/wheeled-combat-simulator
 
 > 这是**决策逻辑仿真**。台阶、传感器、摩擦与碰撞均为可调的简化模型，不能替代实车标定。
 
